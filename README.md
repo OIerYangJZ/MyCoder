@@ -1,0 +1,143 @@
+# Kernel v0.1
+
+A coding agent kernel implementing `research/kernel_v0.1_technical_spec.md`.
+
+The goal is not to reproduce a particular product's feature list. It is a kernel
+that is **small, verifiable, and explicit about where its security boundaries
+are** — and where they are not.
+
+```
+User / CLI
+    ↓
+Control Plane ──────────────────────────────┐
+    ↓                                       │
+Session / Turn Coordinator                  │
+    ↓                                       │
+Step Engine                                 │
+ ┌──┼──────────────┐                        │
+ ▼  ▼              ▼                        │
+Context  Model Runtime  Tool Runtime        │
+Engine        │              │              │
+              ▼              ▼              │
+        Egress Gate    Tool.resolve()       │
+                             │              │
+                             ▼              │
+                       Policy Engine        │
+                             ↓              │
+                      Sandbox Planner       │
+                             ↓              │
+                      Executor / Backend ◄──┘
+                             ↓
+                       Audited Result
+```
+
+## Running it
+
+Node **22.6 or newer**. Nothing needs installing to _run_ the kernel: it has
+**zero runtime dependencies**, Node strips the TypeScript types natively, and
+the test runner is `node --test`.
+
+```bash
+node src/cli/main.ts --help
+node src/cli/main.ts --print-config
+node src/cli/main.ts -m fake "fix the failing test"      # offline, scripted model
+node --test "tests/**/*.test.ts"
+```
+
+Type checking needs a compiler, the only thing this repo installs:
+
+```bash
+pnpm install        # typescript + @types/node, the sole devDependencies
+pnpm typecheck
+pnpm eval           # the 12 golden tasks from spec §27.2
+```
+
+Node's type stripping only checks that syntax is erasable, so `pnpm typecheck`
+is the only step that verifies types. Run it before opening a PR — CI does.
+
+## What v0.1 does
+
+- Session / Turn / Step lifecycle with an enforced state machine.
+- Streaming model runtime over a protocol-neutral IR, with Anthropic Messages,
+  OpenAI Responses and OpenAI-compatible Chat adapters — plus a `FakeModel` so
+  the whole kernel is testable offline.
+- Six core tools: `Read`, `Grep`, `Glob`, `Edit`, `Shell`, `GitDiff`, all behind
+  the two-phase `ToolDefinition → ToolExecution → AccessRequest` contract.
+- Permission profiles (`workspace-dev`, `read-only`, `review`) composed by
+  capability **intersection**, so no layer can widen another.
+- Secret path deny, content secret scanning, an in-memory secret broker whose
+  leases cannot be stringified back into a value, and environment scrubbing.
+- A single egress gate for every outbound byte, with per-channel host allowlists
+  and a metadata-only telemetry channel.
+- A freshness ledger: an `Edit` must cite the `Read` that showed the model the
+  region it is changing.
+- Atomic writes with unified diffs, rollback metadata and line-ending
+  preservation.
+- An append-only session event log, and resume that synthesises results for
+  interrupted tool calls.
+- Control commands (`/model`, `/goal`, `/loop`, `/permissions`, `/status`,
+  `/compact`, `/remote`) that change kernel state directly, never via the model.
+- Local and SSH execution backends behind one interface.
+- Skill / agent / hook discovery, where a definition can only narrow.
+
+## What it deliberately does not do
+
+MCP marketplace, agent teams, IDE plugins, a full TUI, browser use, embeddings,
+PageRank repo maps, model routing, cloud session sync, and a remote daemon. Each
+has a place to attach later; none is in the way now.
+
+**And one thing it does not claim**: on the local backend this is
+`policy-enforced`, not `os-isolated`. The kernel controls what tools may request
+and redacts everything they emit, but a subprocess that runs can still reach the
+filesystem and the network with your user's rights. `/status` says so in those
+words. Strong isolation needs a container or OS-sandbox backend, and until one is
+plugged in, "network is off" is _best-effort_ — the code and the UI both say
+that rather than implying a boundary that is not there.
+
+## Layout
+
+```
+src/
+├── cli/          argv parsing, shell-line parsing, the REPL, approval UI
+├── control/      slash commands → structured ControlResult
+├── session/      session, turn state machine, step freeze, event log, resume
+├── model/        protocol-neutral IR, runtime, profiles, adapters/
+├── context/      four planes, projector, freshness ledger, compaction
+├── tools/        contract, registry, runtime, builtin/
+├── edit/         edit engine, exact replace, atomic write, unified diff
+├── policy/       access requests, policy engine, profiles, protected paths
+├── security/     secret broker, secret scanner, egress gate, env scrub, redactor
+├── execution/    backend interface, local, ssh, sandbox planner, mutation detector
+├── extensions/   skills, agents, hooks
+├── config/       layered configuration, remotes
+└── util/         ids, errors, paths, glob, text, toml, json schema, sse, walk
+tests/
+├── unit/         utilities, policy matrix, adapters
+├── security/     canary suite, prompt injection, escalation, egress
+└── integration/  the §31 trajectory, control plane, resume
+docs/
+├── adr/          architecture decision records
+└── threat-model.md
+```
+
+## The test that matters most
+
+Spec §31 says the kernel has a skeleton when this passes fully offline:
+
+```
+Fake task → Grep → Read → Edit → Shell(fails) → Read → Edit → Shell(passes) → final
+```
+
+It is in `tests/integration/agent-loop.test.ts`, and it runs 100 times to check
+that no state leaks between sessions.
+
+The second-most-important one is `tests/security/canary.test.ts`: a canary
+credential is attacked eleven ways, and must appear zero times in the model
+payload, the event log, the network capture, or the logs. Per AGENTS.md rule 10,
+if that test fails, everything else stops.
+
+## Reference repositories
+
+`reference/**` is read-only, enforced by `ProtectedPaths`, and is for
+understanding design decisions and edge cases — never for copying internal types
+into our public API.

@@ -1,0 +1,42 @@
+# Project permission rules (spec Appendix C).
+#
+# These are an additional policy *layer*. Because layers combine by strictest
+# vote, nothing here can widen what the user's configuration allows — a rule can
+# only ever make this project more restrictive.
+
+[[rule]]
+action = "hard_deny"
+capability = "file.write"
+pattern = "../reference/**"
+note = "reference repositories are read-only (spec §23)"
+
+[[rule]]
+action = "hard_deny"
+capability = "file.read_to_model"
+pattern = "**/.env"
+
+[[rule]]
+action = "hard_deny"
+capability = "file.read_to_model"
+pattern = "~/.ssh/**"
+
+[[rule]]
+action = "allow"
+capability = "file.write"
+pattern = "src/**"
+
+[[rule]]
+action = "allow"
+capability = "file.write"
+pattern = "tests/**"
+
+[[rule]]
+action = "allow"
+capability = "file.write"
+pattern = "docs/**"
+
+[[rule]]
+action = "ask"
+capability = "network.connect"
+pattern = "*"
+note = "the kernel has no runtime dependencies; network access should be rare"

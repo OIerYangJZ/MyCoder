@@ -1,0 +1,262 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The kernel has zero *runtime* dependencies (ADR-0009). The only devDependencies
+# are the typecheck toolchain, so every job except `static` skips installing
+# altogether — a green run with no `install` step is the standing proof that the
+# property still holds, and the `static` job asserts it explicitly.
+
+jobs:
+  static:
+    name: Static Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Node's type stripping only checks that syntax is erasable, so nothing
+      # else in this workflow would catch a type error. `pnpm typecheck` is the
+      # only step that does — it is how the `PolicyEngine.combine` ReferenceError
+      # was found, on a path the tests reached but never executed.
+      - run: pnpm typecheck
+
+      # `pnpm lint` is scripts/lint.ts, not ESLint. It enforces the project's
+      # architecture invariants — no raw network client, no ambient environment
+      # reaching a child process, no provider names in the agent loop — which
+      # are the plan's "Architecture Stop" conditions expressed as a gate.
+      - run: pnpm lint
+
+      - run: pnpm format:check
+
+      - name: Assert the runtime dependency set is still empty
+        run: |
+          node -e '
+            const pkg = require("./package.json");
+            const runtime = Object.keys(pkg.dependencies ?? {});
+            const dev = Object.keys(pkg.devDependencies ?? {});
+            const allowedDev = ["typescript", "@types/node", "prettier"];
+            const strayDev = dev.filter((d) => !allowedDev.includes(d));
+            if (runtime.length) {
+              console.error("ADR-0009: expected no runtime dependencies, found:", runtime.join(", "));
+              process.exit(1);
+            }
+            if (strayDev.length) {
+              console.error("ADR-0009: devDependencies are limited to the static-check toolchain; found:", strayDev.join(", "));
+              process.exit(1);
+            }
+            console.log("no runtime dependencies, as documented in ADR-0009");
+          '
+
+      # Plan §3.3: CI proves the kernel blocks leaks, not that GitHub Secrets
+      # inject correctly. A real credential in the environment would make the
+      # canary suite test the wrong thing.
+      - name: Assert no real credentials are present
+        run: |
+          node -e '
+            const forbidden = Object.keys(process.env).filter((k) =>
+              /_API_KEY$|_TOKEN$|_SECRET$|^AWS_|^ANTHROPIC_|^OPENAI_/.test(k) &&
+              !["GITHUB_TOKEN"].includes(k) &&
+              (process.env[k] ?? "").length > 0
+            );
+            if (forbidden.length) {
+              console.error("CI must not carry real credentials, found:", forbidden.join(", "));
+              process.exit(1);
+            }
+            console.log("no provider credentials in the CI environment");
+          '
+
+  test:
+    name: Unit + Integration / Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the floor declared in `engines` (native type stripping landed in
+        # 22.6). 24 is the current line. Both must pass, so a change that only
+        # works on the newest runtime is caught here.
+        node: [22, 24]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: pnpm test
+
+  security:
+    name: Security Invariants
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # AGENTS.md rule 10: if the canary suite fails, all other work stops.
+      # It runs as its own job so that instruction is legible from the run list
+      # rather than buried in a combined test log.
+      - run: pnpm test:security
+
+  replay:
+    name: Replay Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Plan §4.2: live terminal state == event-log replay terminal state.
+      # If this fails the event log is not a faithful record, which makes both
+      # resume and the audit trail unsound — so it gets its own gate.
+      - run: pnpm test:replay
+
+  deterministic:
+    name: Deterministic Kernel x100
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Spec §28: the fake-provider trajectory must produce one identical event
+      # sequence across 100 runs. 100 is also the default, so this job pins the
+      # requirement rather than relying on the test file's constant.
+      - run: pnpm test:trajectory
+        env:
+          KERNEL_TRAJECTORY_REPEATS: 100
+
+  evals:
+    name: Golden Tasks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Spec §27.2. The runner exits non-zero on any task failure *or* on a
+      # single secret-boundary violation, even if every task otherwise passed.
+      - run: pnpm eval
+
+  platform:
+    name: Platform / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is absent *here* and present in `smoke` below. The full suite
+        # assumes POSIX — the local backend spawns `sh`, fixtures use
+        # `grep`/`cat` — so running it on Windows would be known-red, which just
+        # trains people to ignore a red matrix. The part that must hold
+        # everywhere is covered by the smoke job instead.
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # macOS is where the path layer earns its keep: APFS is case-insensitive
+      # and stores filenames in NFD, so `.ENV` and a decomposed filename must
+      # still hit the protected-path rules.
+      - run: pnpm test:platform
+        env:
+          # Portability is the question here, not determinism — the dedicated
+          # job above covers the full 100.
+          KERNEL_TRAJECTORY_REPEATS: 5
+
+  smoke:
+    name: Smoke / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Windows appears here and not in `platform` above, because the smoke
+      # suite is exactly the part that must hold on every OS: path
+      # canonicalisation and containment, protected-path matching, the
+      # permission matrix, secret detection, the parsers, and the CLI starting.
+      # The full suite still assumes POSIX (`sh`, `grep`, `cat`), which is a real
+      # v0.1 limitation recorded in docs/m2-hardening-report.md rather than
+      # hidden behind continue-on-error.
+      - run: pnpm test:smoke

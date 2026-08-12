@@ -1,0 +1,162 @@
+/**
+ * ExecutionBackend (spec §12.1).
+ *
+ * The agent loop must not be able to tell local from ssh from container
+ * (invariant: §12.1). Everything a tool can do to the outside world goes through
+ * this interface, and a tool only ever receives a `CapabilityExecutor` — a
+ * backend already narrowed to what the policy engine granted for this call.
+ *
+ * `enforce(profile)` is the seam where a real OS sandbox will slot in. Today the
+ * local backend enforces in-process, which is honest `policy-enforced` strength;
+ * `sandboxStrength` exists so the UI can say so rather than implying isolation
+ * we do not have (invariant 5).
+ */
+
+import type { CanonicalPath } from '../util/paths.ts';
+import type { SecretLease } from '../security/secret-broker.ts';
+
+export type BackendKind = 'local' | 'ssh' | 'container';
+
+/** How strong the isolation actually is. Displayed verbatim in `/status`. */
+export type SandboxStrength = 'policy-enforced' | 'os-isolated';
+
+export interface FileStat {
+  path: CanonicalPath;
+  size: number;
+  mtimeMs: number;
+  isFile: boolean;
+  isDirectory: boolean;
+  /** True when the *link itself* is a symlink, before resolution. */
+  isSymlink: boolean;
+}
+
+export interface DirEntry {
+  name: string;
+  isDirectory: boolean;
+  isSymlink: boolean;
+}
+
+export interface WriteOptions {
+  /** Preserve the file's existing mode when replacing it. */
+  mode?: number;
+  /** Create parent directories. */
+  createParents?: boolean;
+}
+
+export interface FileSystemBackend {
+  readFile(path: CanonicalPath): Promise<Buffer>;
+  /** Temp file + fsync + rename. Never a partial file on failure (spec §10.2). */
+  writeFileAtomic(path: CanonicalPath, data: Buffer, opts?: WriteOptions): Promise<void>;
+  stat(path: CanonicalPath): Promise<FileStat | undefined>;
+  listDir(path: CanonicalPath): Promise<DirEntry[]>;
+  mkdirp(path: CanonicalPath): Promise<void>;
+  /** Resolve symlinks. Returns undefined when the path does not exist. */
+  realpath(path: CanonicalPath): Promise<CanonicalPath | undefined>;
+}
+
+export interface ProcessSpec {
+  /**
+   * Argv only. A raw shell string is never accepted as the sole protocol
+   * (spec §9.2); the CLI parses user input into argv before it reaches here.
+   */
+  argv: readonly string[];
+  cwd: CanonicalPath;
+  /** Already scrubbed. Backends must not merge in the host environment. */
+  env: Record<string, string>;
+  timeoutMs: number;
+  stdin?: string;
+  maxOutputBytes?: number;
+}
+
+export interface ProcessResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  durationMs: number;
+  /** True when output was cut off at `maxOutputBytes`. */
+  outputTruncated: boolean;
+}
+
+export interface ProcessBackend {
+  exec(spec: ProcessSpec, signal?: AbortSignal): Promise<ProcessResult>;
+}
+
+export interface EnvironmentDescriptor {
+  platform: string;
+  kind: BackendKind;
+  workspaceRoot: CanonicalPath;
+  homeDir: string;
+  tmpDir: string;
+  /** Discovered once; Grep falls back to a built-in scanner when absent. */
+  hasRipgrep: boolean;
+  hasGit: boolean;
+  /** Honest description of what the backend actually isolates. */
+  sandboxStrength: SandboxStrength;
+  /** Free-form label shown in `/status`, e.g. "local (policy-enforced)". */
+  description: string;
+}
+
+/**
+ * The capability set granted for one tool execution.
+ *
+ * Derived from policy decisions by the sandbox planner. It is deliberately
+ * concrete — roots, not booleans — so the executor can re-check every path.
+ */
+export interface CapabilityProfile {
+  readRoots: readonly CanonicalPath[];
+  writeRoots: readonly CanonicalPath[];
+  allowExec: boolean;
+  /** `false` means no network at all; otherwise the permitted hosts. */
+  network: false | { hosts: readonly string[] };
+  /** Extra environment names permitted beyond the default allowlist. */
+  envAllow: readonly string[];
+  /** Credentials to inject, as `{ envName, lease }`. */
+  secretInjections: ReadonlyArray<{ envName: string; lease: SecretLease }>;
+  timeoutMs: number;
+  maxOutputBytes: number;
+}
+
+export function emptyCapabilityProfile(timeoutMs = 30_000): CapabilityProfile {
+  return {
+    readRoots: [],
+    writeRoots: [],
+    allowExec: false,
+    network: false,
+    envAllow: [],
+    secretInjections: [],
+    timeoutMs,
+    maxOutputBytes: 8 * 1024 * 1024,
+  };
+}
+
+/**
+ * A backend narrowed to one capability profile.
+ *
+ * This is the only object a tool's `execute()` receives. It cannot widen itself:
+ * there is no accessor for the unconstrained backend.
+ */
+export interface CapabilityExecutor {
+  readonly profile: CapabilityProfile;
+  readonly environment: EnvironmentDescriptor;
+  readonly fs: FileSystemBackend;
+  exec(
+    spec: Omit<ProcessSpec, 'env'> & { env?: Record<string, string> },
+    signal?: AbortSignal,
+  ): Promise<ProcessResult>;
+  /** Release any leases handed to this executor. Called after every tool call. */
+  dispose(): void;
+}
+
+export interface ExecutionBackend {
+  readonly id: string;
+  readonly kind: BackendKind;
+  readonly fs: FileSystemBackend;
+  readonly process: ProcessBackend;
+  readonly environment: EnvironmentDescriptor;
+  enforce(profile: CapabilityProfile): Promise<CapabilityExecutor>;
+  /** Verify the backend is reachable and the workspace is present. */
+  probe(): Promise<{ ok: boolean; detail: string }>;
+  close(): Promise<void>;
+}

@@ -1,0 +1,27 @@
+# Kernel's own project configuration (spec Appendix B).
+[project]
+name = "kernel"
+workspace = "."
+reference_roots = ["../reference"]
+
+[model]
+# `fake` keeps development offline by default; switch with `agent -m balanced`.
+default = "fake"
+
+[security]
+permission_profile = "workspace-dev"
+secret_redaction = true
+telemetry_content = false
+trace_upload = false
+
+[loop]
+max_steps = 16
+max_tool_calls = 64
+max_repeated_failures = 3
+
+[shell]
+default_network = false
+timeout_ms = 120000
+
+[generated_paths]
+allow = ["dist/**", "coverage/**", ".cache/**", "target/**", "node_modules/**"]

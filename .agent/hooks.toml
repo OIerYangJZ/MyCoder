@@ -1,0 +1,13 @@
+# Project hooks (spec §18.2).
+#
+# Project hooks run through the executor with a scrubbed environment, declare
+# their own AccessRequests, and sit under the session ceiling. They are never
+# trusted kernel hooks: PreModelRequest, PreNetworkEgress, PreTelemetryExport and
+# PreSecretInjection are kernel-internal and cannot be named here.
+
+# Uncomment once a linter is configured.
+# [[hooks]]
+# event = "PostToolUse"
+# matcher = "Edit"
+# command = ["node", "--test", "tests/unit/util.test.ts"]
+# timeout_ms = 60000
