@@ -63,9 +63,42 @@ KERNEL_SSH_WORKSPACE=/home/agent-test/workspaces/kernel-ssh-fixture \
   pnpm test:ssh
 ```
 
-The fixture creates a canary at `~/.agent-test-secret` on the remote and removes
-it, plus the workspace contents, on teardown. It touches nothing else. The
-machine should still be disposable — §12.
+### What the suite does to the remote machine
+
+Read this before pointing it at a host you care about.
+
+**It creates:** the workspace directory (if absent), files inside it, a git
+repository inside it, a canary at `$HOME/.agent-test-secret`, and one file
+beside the workspace (`kernel-alpha3-plain.txt`, for the §16 enforcement-level
+case).
+
+**It deletes, on teardown:** the _contents_ of the workspace — including
+dotfiles, so the `.git` it created goes too — plus the canary and the tracked
+file beside the workspace. The workspace directory itself is kept, in case you
+created it with particular ownership. Nothing else on the machine is touched.
+
+**`KERNEL_SSH_WORKSPACE` is checked before anything is created**, because that
+deletion is driven by an environment variable. `checkRemoteWorkspace` refuses:
+
+| Refused                                                                          | Why                                                                                   |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `/`, or an empty/unexpanded variable                                             | the original `startsWith('/')` check accepted `/`, which would have meant `rm -rf /*` |
+| fewer than three path segments                                                   | `/home/agent` is a whole account; `/srv` is a mount point                             |
+| anything under `/etc /usr /var /root /bin /sbin /lib /boot /dev /proc /sys /run` | system locations                                                                      |
+| the home directory itself                                                        | the canary lives there, and its neighbours are your dotfiles                          |
+| any path containing `..`                                                         | traversal would let the effective target escape every check above                     |
+
+`tests/live/ssh-workspace-guard.test.ts` asserts each of those rejections and a
+matching acceptance, offline, on every commit — so the guard cannot be quietly
+loosened, and equally cannot be "hardened" into one that refuses everything and
+disables the suite instead.
+
+`$HOME` is asked of the remote rather than derived from the workspace path. The
+earlier version guessed it from the first two segments, which is right for
+`/home/user/...` and wrong for `/opt/...` — and being wrong meant writing the
+canary into a system directory.
+
+The machine should still be disposable — §12.
 
 The kernel never reads a private key (§13). Authentication is OpenSSH's job,
 resolved from the alias; `~/.ssh/id_*` is in the protected-path set and is
@@ -75,8 +108,9 @@ unreachable from a session.
 
 ## Defects this validation found
 
-All three were invisible to the fixture-based tests, and two of them meant the
-backend did not work against real OpenSSH at all. This is the return on §11.1.
+Four defects, three in the kernel and one in this fixture. All were invisible to
+the previous fixture-based tests, and two of the kernel ones meant the backend
+did not work against real OpenSSH at all. This is the return on §11.1.
 
 ### 1. `-o SendEnv=` is a syntax error — no SSH connection could ever succeed
 
@@ -140,6 +174,29 @@ Fixed by treating `exit` as the authoritative signal — the client is gone and
 will write nothing further — with a 100 ms grace period for buffered output, and
 `close` as an optimisation that usually arrives first. After the fix,
 `controlMaster: true` settles in 1605 ms.
+
+### 4. The fixture's own VPS path had an unguarded `rm -rf /*`
+
+In the fixture rather than the kernel, but worth recording here because it is the
+same failure mode and it was aimed at a _user's machine_.
+
+Teardown deletes the workspace contents, and the target comes from
+`KERNEL_SSH_WORKSPACE`. The only validation was `startsWith('/')` — which `/`
+satisfies. An unset or mistyped variable would have run `rm -rf /*` on the remote
+host. The same never-executed function also guessed `$HOME` from the first two
+path segments (wrong for `/opt/...`, which meant writing the canary into a system
+directory), used a glob that missed dotfiles so `.git` survived every teardown,
+and left one file beside the workspace uncollected.
+
+Fixed with `checkRemoteWorkspace()` — refusing `/`, paths under three segments,
+system prefixes, the home directory and any `..` — plus asking the remote for
+`$HOME`, a teardown that sees dotfiles, and a `trackForCleanup()` registry.
+`tests/live/ssh-workspace-guard.test.ts` covers it offline, 25 cases, each
+rejection paired with an acceptance.
+
+**The rest of that function is still unexecuted.** The guard is tested; the
+`$HOME` probe, the teardown command and the litter registry have not run once.
+Expect the first real-VPS attempt to surface something.
 
 ---
 

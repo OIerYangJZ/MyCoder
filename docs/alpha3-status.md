@@ -12,8 +12,9 @@ milestone. Every claim below maps to a row in
 mechanically.
 
 > **The headline is not the pass rate.** It is that turning three checklist
-> areas into executable gates found **four defects that all previous testing had
-> missed** — two of which meant a shipped subsystem could not work at all. That
+> areas into executable gates found **five defects that all previous testing had
+> missed** — two of which meant a shipped subsystem could not work at all, and
+> one of which was an unguarded `rm -rf /*` aimed at a user's remote machine. That
 > is the return alpha.3 was designed to produce, and it is described in §2 below
 > rather than buried.
 
@@ -27,10 +28,10 @@ mechanically.
 | `pnpm lint`                              | 9 rules, 0 violations                                               |
 | `pnpm lint:selftest`                     | 87/87 (70 linter fixtures + 17 evidence-gate)                       |
 | `pnpm format:check`                      | clean                                                               |
-| `pnpm test`                              | **509 tests, 459 pass, 0 fail, 50 skipped**                         |
+| `pnpm test`                              | **534 tests, 484 pass, 0 fail, 50 skipped**                         |
 | `pnpm test:ssh` (real OpenSSH, loopback) | **50/50**                                                           |
 | `pnpm test:evals`                        | 23/23                                                               |
-| `pnpm evidence`                          | 139 requirements — 130 PASS, 0 FAIL, 8 NOT TESTED, 1 NOT APPLICABLE |
+| `pnpm evidence`                          | 145 requirements — 135 PASS, 0 FAIL, 9 NOT TESTED, 1 NOT APPLICABLE |
 | `pnpm eval` (scripted)                   | 12/12; 0 secret boundary violations                                 |
 | `pnpm test:replay`                       | pass                                                                |
 | determinism ×100                         | pass                                                                |
@@ -39,7 +40,7 @@ The 50 skipped tests are the SSH matrix under a plain `pnpm test`; it is opt-in
 via `KERNEL_SSH=1` and runs as its own CI job. It skips with a stated reason, not
 silently.
 
-Test count went 308 → 509. Nothing from alpha.2 was deleted or weakened.
+Test count went 308 → 534. Nothing from alpha.2 was deleted or weakened.
 
 ## 2. What the new gates found
 
@@ -103,7 +104,40 @@ out by file, so the rule stays live on the next line added to those files.
 rule needs a must-fail fixture, a must-pass fixture, and assertions on its
 documented exceptions, and a new rule with no fixtures fails the suite.
 
-### 2.4 A prompt fixture did not meet §30
+### 2.4 The real-VPS code path had a `rm -rf /*` waiting in it
+
+Found while preparing for a VPS run, in code that **had never been executed**.
+
+`tests/live/ssh-harness.ts` deletes the workspace contents on teardown, on a
+machine that belongs to someone else, and the target came from
+`KERNEL_SSH_WORKSPACE`. The only validation was `startsWith('/')` — which `/`
+satisfies. A mistyped or unexpanded variable would have run `rm -rf /*` on the
+user's VPS.
+
+Three more in the same function, all from the same cause (never run):
+
+- `$HOME` was _guessed_ from the first two path segments. Right for
+  `/home/user/...`, wrong for `/opt/...` — and being wrong meant writing the
+  canary into a system directory.
+- Teardown used `rm -rf <ws>/*`, whose glob misses dotfiles, so the `.git` the
+  git test creates survived every run.
+- The §16 case deliberately writes a file _beside_ the workspace, and nothing
+  collected it.
+
+Fixed with `checkRemoteWorkspace()` — a pure, exported, offline-tested guard
+that refuses `/`, paths under three segments deep, system prefixes, the home
+directory, and anything containing `..` — plus asking the remote for `$HOME`,
+a teardown that sees dotfiles, and a `trackForCleanup()` registry for
+out-of-workspace litter. 25 cases in
+`tests/live/ssh-workspace-guard.test.ts`, each rejection paired with an
+acceptance so the guard cannot be tightened into one that silently disables the
+suite.
+
+This is the clearest instance of the milestone's own thesis: the guard is now
+tested, but **the rest of `realRemote()` still has zero execution evidence** and
+is marked `NOT TESTED` accordingly.
+
+### 2.5 A prompt fixture did not meet §30
 
 `multi-file-rename` had no `livePrompt`, so a live run would have driven it with
 `"Rename oldName to newName everywhere."` — a label for a scripted sequence, not
@@ -163,6 +197,10 @@ reference to a doc that did not exist yet.
 - **Not validated against a real VPS.** Every SSH row came from loopback: same
   uid, same filesystem, no network hop. `docs/alpha3-ssh-validation.md` says so
   at the top, and the VPS-only rows are `NOT TESTED` with a runbook.
+- **The `realRemote()` fixture path has never executed.** It is now guarded and
+  the guard is tested, but the `$HOME` probe, the teardown command and the litter
+  registry behind it have not run once. Given §2.4, assume there is more wrong in
+  there and run the first VPS attempt expecting to fix something.
 - **No live model run this milestone.** The eval methodology is implemented and
   verified offline; live repeated-run results are `NOT TESTED` and need a
   credential and a budget. alpha.2's live evidence still stands for alpha.2.

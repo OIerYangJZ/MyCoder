@@ -719,10 +719,14 @@ describe('remote secret boundary (§16)', () => {
     // That is precisely what `sandboxStrength: 'policy-enforced'` claims, and
     // precisely what `os-isolated` would not. §15 says not to claim the latter;
     // this test is the evidence for the former.
-    await fixture.raw(
-      `printf 'unregistered-plain-value-a41f\\n' > ${shq(`${fixture.workspace}/../plain.txt`)}`,
-    );
-    const result = await exec(['sh', '-c', `cat ${shq(`${fixture.workspace}/../plain.txt`)} 2>&1 || true`]);
+    // Deliberately outside the workspace, so it is registered for teardown. On
+    // a real host nothing else would collect it, and a validation suite that
+    // leaves a file behind on every run is one people stop being willing to run.
+    const outside = `${fixture.workspace}/../kernel-alpha3-plain.txt`;
+    fixture.trackForCleanup(outside);
+
+    await fixture.raw(`printf 'unregistered-plain-value-a41f\\n' > ${shq(outside)}`);
+    const result = await exec(['sh', '-c', `cat ${shq(outside)} 2>&1 || true`]);
 
     const reachable = result.stdout.includes('unregistered-plain-value-a41f');
     assert.equal(

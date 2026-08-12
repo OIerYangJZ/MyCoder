@@ -60,6 +60,16 @@ export interface SshFixture {
   facts(): Promise<{ os: string; sshd: string; client: string }>;
   /** Run a raw command on the remote, outside the kernel. Setup/assertions only. */
   raw(script: string): Promise<{ stdout: string; stderr: string; code: number | null }>;
+  /**
+   * Register an absolute remote path created *outside* the workspace, so
+   * teardown removes it.
+   *
+   * On loopback the whole tree is a temp directory and this is a formality. On
+   * a real host it is the difference between a clean machine and one that
+   * accumulates a file per run — the §16 case that writes beside the workspace
+   * is deliberately outside the jail, so nothing else would collect it.
+   */
+  trackForCleanup(absoluteRemotePath: string): void;
   cleanup(): Promise<void>;
 }
 
@@ -104,39 +114,149 @@ export async function startSshFixture(): Promise<SshFixture> {
 
 // --- a real remote ---------------------------------------------------------
 
-async function realRemote(alias: string): Promise<SshFixture> {
-  const workspace = process.env.KERNEL_SSH_WORKSPACE;
+/**
+ * Paths this fixture will never treat as a disposable workspace.
+ *
+ * The cleanup step deletes the workspace's contents, on a machine that belongs
+ * to someone else. `KERNEL_SSH_WORKSPACE` is an environment variable, and
+ * environment variables are one typo and one unset-variable expansion away from
+ * being empty or `/`. The original guard was `startsWith('/')`, which `/`
+ * satisfies — so a mistyped variable would have run `rm -rf /*` on the user's
+ * VPS. Nothing about the suite's purpose requires that risk to exist.
+ */
+const FORBIDDEN_WORKSPACE_PREFIXES = [
+  '/bin',
+  '/boot',
+  '/dev',
+  '/etc',
+  '/lib',
+  '/proc',
+  '/root',
+  '/run',
+  '/sbin',
+  '/sys',
+  '/usr',
+  '/var',
+];
+
+export interface WorkspaceGuardResult {
+  ok: boolean;
+  problem?: string;
+}
+
+/**
+ * Refuse a remote workspace that cleanup must not be pointed at.
+ *
+ * Pure, exported and tested, because "the destructive step is guarded" is
+ * exactly the kind of claim §32 says must not be prose. The rules:
+ *
+ *   absolute            an environment variable that failed to expand is empty
+ *   at least 3 segments `/home/agent/ws` yes, `/home/agent` no, `/srv` no —
+ *                       a workspace should be a directory *someone made for
+ *                       this*, not a whole account or a mount point
+ *   no system prefix    see the list above
+ *   not the home dir    the canary lives there; deleting its contents would
+ *                       take the user's dotfiles with it
+ *   no traversal        `..` would let the effective target escape the checks
+ */
+export function checkRemoteWorkspace(workspace: string, home: string): WorkspaceGuardResult {
   if (!workspace || !workspace.startsWith('/')) {
-    throw new Error('KERNEL_SSH_REMOTE requires KERNEL_SSH_WORKSPACE to be an absolute remote path');
+    return { ok: false, problem: 'must be an absolute remote path' };
+  }
+  if (workspace.includes('..')) {
+    return { ok: false, problem: 'must not contain a traversal segment' };
+  }
+
+  const normalised = workspace.replace(/\/+$/, '');
+  const segments = normalised.split('/').filter(Boolean);
+
+  if (segments.length < 3) {
+    return {
+      ok: false,
+      problem:
+        `is only ${segments.length} segment(s) deep. Use a dedicated directory such as ` +
+        '/home/<user>/workspaces/kernel-ssh-fixture — this suite deletes the workspace contents on teardown',
+    };
+  }
+  for (const prefix of FORBIDDEN_WORKSPACE_PREFIXES) {
+    if (normalised === prefix || normalised.startsWith(`${prefix}/`)) {
+      return { ok: false, problem: `is inside ${prefix}, which is a system location` };
+    }
+  }
+  if (home && (normalised === home.replace(/\/+$/, '') || normalised === '/')) {
+    return { ok: false, problem: 'is the home directory itself, whose contents must not be deleted' };
+  }
+
+  return { ok: true };
+}
+
+async function realRemote(alias: string): Promise<SshFixture> {
+  const workspace = (process.env.KERNEL_SSH_WORKSPACE ?? '').replace(/\/+$/, '');
+
+  // The remote's own `$HOME`, asked rather than derived. The previous version
+  // guessed it from the first two path segments, which is right for
+  // `/home/user/...` and wrong for `/opt/...`, `/srv/...` and every container
+  // image that puts the account somewhere else — and being wrong meant writing
+  // the canary into a system directory.
+  const homeProbe = await rawSsh(alias, 'printf %s "$HOME"', []);
+  const home = homeProbe.stdout.trim();
+  if (homeProbe.code !== 0 || !home.startsWith('/')) {
+    throw new Error(
+      `could not determine $HOME on "${alias}" (exit ${homeProbe.code}): ${homeProbe.stderr.trim().slice(0, 300)}`,
+    );
+  }
+
+  const guard = checkRemoteWorkspace(workspace, home);
+  if (!guard.ok) {
+    throw new Error(
+      `KERNEL_SSH_WORKSPACE ${JSON.stringify(workspace)} ${guard.problem}.\n` +
+        'This suite deletes the workspace contents on teardown, so the path is checked before anything is created.',
+    );
   }
 
   const remote = defaultRemoteConfig('alpha3-validation', alias, workspace);
-  const canaryPath = `${homeOf(workspace)}/${CANARY_BASENAME}`;
+  const canaryPath = `${home}/${CANARY_BASENAME}`;
+
+  // Anything created outside the workspace is registered here so teardown can
+  // remove it. Without this, the §16 case that deliberately writes beside the
+  // workspace would leave a file on the user's machine after every run.
+  const litter = new Set<string>([canaryPath]);
 
   const fixture: SshFixture = {
     remote,
     workspace,
     canaryPath,
-    description: `real remote host via ssh alias "${alias}"`,
+    description: `real remote host via ssh alias "${alias}" (workspace ${workspace})`,
     loopback: false,
     facts: () => gatherFacts(fixture),
     raw: (script) => rawSsh(alias, script, []),
+    trackForCleanup: (p) => litter.add(p),
+
     async cleanup() {
-      // Only what this suite created. A real host is the user's, and removing
-      // anything else from it would be an overreach.
-      await rawSsh(alias, `rm -f ${shq(canaryPath)}; rm -rf ${shq(workspace)}/*`, []);
+      // Re-checked immediately before deleting. The guard above ran against the
+      // value at construction time; this asserts nothing has reassigned it
+      // since, so the destructive command cannot be reached by any path that
+      // has not passed the check.
+      if (!checkRemoteWorkspace(workspace, home).ok) return;
+
+      // `find -mindepth 1 -maxdepth 1 -exec rm -rf` rather than `rm -rf <ws>/*`.
+      // The glob misses dotfiles, so the `.git` the git test creates survived
+      // every teardown; `find` sees it. `-exec rm -rf` rather than `-delete`
+      // because git marks its object files read-only, and `rm -rf` is the form
+      // that reliably removes such a tree. The workspace directory itself is
+      // kept — the user may have created it with particular ownership.
+      const targets = [...litter].map(shq).join(' ');
+      await rawSsh(
+        alias,
+        `find ${shq(workspace)} -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null; rm -rf ${targets}`,
+        [],
+      );
     },
   };
 
   await fixture.raw(`mkdir -p ${shq(workspace)}`);
   await fixture.raw(`umask 077; printf '%s\\n' ${shq(REMOTE_CANARY)} > ${shq(canaryPath)}`);
   return fixture;
-}
-
-/** `/home/x/workspaces/w` → `/home/x`; best-effort parent for the canary. */
-function homeOf(workspace: string): string {
-  const parts = workspace.split('/').filter(Boolean);
-  return parts.length > 1 ? `/${parts.slice(0, 2).join('/')}` : '/tmp';
 }
 
 // --- a loopback sshd -------------------------------------------------------
@@ -282,6 +402,10 @@ async function loopbackSshd(): Promise<SshFixture> {
     loopback: true,
     facts: () => gatherFacts(fixture),
     raw: (script) => rawSsh(alias, script, extraArgs),
+    // Everything loopback creates is inside `base`, which is removed wholesale
+    // below, so tracking is a no-op here. The method exists so a test written
+    // against one target cannot silently litter the other.
+    trackForCleanup: () => {},
     async cleanup() {
       proc.kill('SIGTERM');
       await new Promise((r) => setTimeout(r, 150));
