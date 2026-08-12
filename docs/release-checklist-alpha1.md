@@ -6,7 +6,7 @@ memory.
 ## Status: tagged
 
 Repository: `OIerYangJZ/agent-kernel` (private)
-CI run: `31580334685` — twelve jobs, all green.
+CI run: `31580522670` on commit `c7f7a43c7e89` — twelve jobs, all green.
 
 ## Pre-tag gate
 
@@ -35,7 +35,7 @@ pnpm test:smoke         # on Linux, macOS and Windows
 - [x] Release commit hash recorded below
 
 ```
-release commit: 84059453e1bb92644fd3901fcdb69d9b75b66a5f
+release commit: c7f7a43c7e89ad25f3770718d01ac1b3fbcdba60
 ```
 
 ## What `alpha.1` claims
