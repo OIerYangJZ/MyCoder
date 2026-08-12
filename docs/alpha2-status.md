@@ -49,7 +49,7 @@ the Anthropic path has been live-validated. It has not.
 | live-provider integration tests         | **PASS**              | `pnpm test:live:model` → 9/9                                                       |
 | 12 real-model Golden Tasks              | **PASS**              | `KERNEL_LIVE_MODEL=deepseek pnpm eval` → 10/10, 8/10, 10/10; 2 scripted-only       |
 | trajectory/cost metrics                 | **PASS**              | `EvalResult` artifacts under `evals/results/`                                      |
-| complete regression against alpha.1     | **PASS**              | 301 tests green (was 274)                                                          |
+| complete regression against alpha.1     | **PASS**              | 308 tests green (was 274)                                                          |
 
 ## 2. Architecture (§4, §35, §36)
 
@@ -65,13 +65,14 @@ changed from Anthropic to DeepSeek partway through the milestone, and **no file
 in Kernel Core changed as a result**. The work was a config file and an existing
 protocol adapter.
 
-Kernel Core changed in three places this milestone, all generic:
+Kernel Core changed in four places this milestone, all generic:
 
 1. `model.request` / `model.response` became `.started` / `.completed` /
    `.failed` (§42). The third did not exist; a failed request was recorded as a
    response carrying an error, making §34 classification guess from payload shape.
 2. Usage gained provenance and cost gained a configured price (§17, §18).
 3. Model requests gained connect and idle deadlines (defect 5 below).
+4. The context-overflow retry path was corrected (defect 9 below).
 
 None mentions a provider.
 
@@ -189,6 +190,23 @@ each asserted by a named test rather than by this number.
    warning test asserted on `DEEPSEEK_API_KEY` being unset — true in CI, false
    for anyone who has run the live suite. It now generates a per-run variable
    name, so it stops depending on the developer's shell.
+
+9. **Context overflow never actually retried.** §23's compact-and-retry has been
+   broken since it was written. The handler transitioned the turn back to
+   `preparing` and then `continue`d into a loop whose first act is to transition
+   to `preparing` — an illegal same-state transition. Every overflow therefore
+   failed the turn with `INTERNAL_ERROR` on the _first_ occurrence, and the
+   compaction it had just performed was thrown away. Now bounded by
+   `maxModelRequests` and ending in `LOOP_BUDGET_EXCEEDED`, which is the error
+   the user needs: "the run was stopped", not "one request was too big", the
+   latter reading as _try again_ and repeating the cost.
+
+10. **Hook and Skill credential isolation was claimed but never asserted.** §50
+    lists them separately from Shell; only Shell had a test. Hooks now have one
+    that runs in ordinary CI with a synthetic credential, rather than only when
+    someone has a real key exported. Skills are covered structurally — they have
+    no execution path of their own, and a test now fails if `skills.ts` ever
+    acquires one.
 
 `HttpModelRuntime` had no direct tests before this milestone; adapters were
 covered by fixtures, but retry, cancellation and timeout were not. Defect 5 was

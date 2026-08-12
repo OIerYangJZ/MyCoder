@@ -410,7 +410,11 @@ export class Session {
           turn.transition('compacting', this.clock.now(), 'provider reported context overflow');
           await this.forceCompact(model, turn.turnId);
           await this.append('context.pressure', { source: 'provider' }, turn.turnId, step.stepId);
-          turn.transition('preparing', this.clock.now());
+          // Deliberately *not* transitioning back to 'preparing' here: the top of
+          // the loop does that, and doing it twice is an illegal
+          // preparing -> preparing transition. That threw INTERNAL_ERROR on the
+          // first overflow, so the compact-and-retry this block exists to
+          // perform never actually happened.
           continue;
         }
         turn.fail(modelTurn.error, this.clock.now());
