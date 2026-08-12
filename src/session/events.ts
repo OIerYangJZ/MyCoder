@@ -29,8 +29,9 @@ export type KernelEventType =
   | 'step.context_frozen'
   | 'step.completed'
   // model
-  | 'model.request'
-  | 'model.response'
+  | 'model.request.started'
+  | 'model.request.completed'
+  | 'model.request.failed'
   | 'model.error'
   // tools
   | 'tool.call'
@@ -124,7 +125,11 @@ export interface ModelResponsePayload {
   toolCallCount: number;
   textLength: number;
   usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
+  /** Whether each token count was reported by the provider or estimated (§17). */
+  usageProvenance?: { inputTokens: string; outputTokens: string };
+  /** Absent when no pricing is configured — never a fabricated figure (§18). */
   costUsd?: number;
+  costProvenance?: string;
 }
 
 export interface ToolCallPayload {
@@ -265,7 +270,7 @@ export const REPLAY_EVENT_TYPES: ReadonlySet<KernelEventType> = new Set<KernelEv
   'turn.completed',
   'turn.failed',
   'turn.cancelled',
-  'model.response',
+  'model.request.completed',
   'tool.call',
   'tool.result',
   'tool.synthetic_result',

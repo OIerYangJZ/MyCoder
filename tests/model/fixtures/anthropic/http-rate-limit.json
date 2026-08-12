@@ -1,0 +1,8 @@
+{
+  "status": 429,
+  "retryAfterSeconds": 4,
+  "body": {
+    "type": "error",
+    "error": { "type": "rate_limit_error", "message": "Number of requests has exceeded your rate limit" }
+  }
+}

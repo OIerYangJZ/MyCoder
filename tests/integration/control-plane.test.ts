@@ -337,7 +337,7 @@ describe('resume (§21.3)', () => {
       payload: { input: 'fix the bug', origin: 'user' },
     });
     await store.append(sessionId, {
-      type: 'model.response',
+      type: 'model.request.completed',
       payload: { textLength: 20, finishReason: 'tool_calls' },
     });
     await store.append(sessionId, {

@@ -278,7 +278,22 @@ const RULES: Rule[] = [
     rationale:
       'AGENTS.md #7 / spec §2.5 / invariant 6 — and the plan\'s "Architecture Stop". Provider quirks belong in ' +
       'model/adapters/. A provider name in the loop means the loop has learned to branch on one.',
-    applies: (f) => under(f, 'src/session/', 'src/context/', 'src/tools/', 'src/policy/', 'src/edit/'),
+    // alpha.2 §4 and §35 name the full set of directories that must stay
+    // provider-neutral. `security/` and `execution/` were missing: a credential
+    // path or an executor that learned a vendor name would be exactly the
+    // coupling this rule exists to stop.
+    applies: (f) =>
+      under(
+        f,
+        'src/session/',
+        'src/context/',
+        'src/tools/',
+        'src/policy/',
+        'src/security/',
+        'src/execution/',
+        'src/edit/',
+        'src/control/',
+      ),
     check: (f, _l, code) =>
       scan(
         f,

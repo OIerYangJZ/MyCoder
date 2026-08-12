@@ -68,7 +68,7 @@ export async function replayTerminalState(
     const payload = event.payload as Record<string, unknown>;
 
     switch (event.type) {
-      case 'model.request':
+      case 'model.request.started':
         modelRequests += 1;
         break;
 

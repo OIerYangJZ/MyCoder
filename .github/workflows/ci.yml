@@ -132,6 +132,27 @@ jobs:
       # rather than buried in a combined test log.
       - run: pnpm test:security
 
+  provider:
+    name: Offline Provider Fixtures
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.2 §26: adapter behaviour stays regression-tested with no
+      # credential and no network. Live validation is a separate, manually
+      # dispatched workflow — this job is what keeps ordinary CI meaningful
+      # between live runs.
+      - run: pnpm test:model
+
   replay:
     name: Replay Gate
     runs-on: ubuntu-latest

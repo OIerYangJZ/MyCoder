@@ -1,0 +1,84 @@
+name: Live Model Validation
+
+# alpha.2 §27, §49: never on push or pull_request. A secret-bearing job must not
+# be reachable from an untrusted PR, and a live run costs real money — so it is
+# always something a maintainer chose to start.
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Provider to validate (exactly one, per §2.1)
+        type: choice
+        default: anthropic
+        options: [anthropic, openai]
+      model:
+        description: Model alias from `pnpm agent /model list`
+        type: string
+        default: fast
+      golden_tasks:
+        description: Also run the 12 golden tasks against the live model (costs more)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-model-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Live / ${{ inputs.provider }} / ${{ inputs.model }}
+    runs-on: ubuntu-latest
+    # A protected environment gates who may spend money and keeps the credential
+    # out of forks entirely.
+    environment: live-model
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Offline gates first. There is no point spending money to discover that
+      # the adapter was already broken.
+      - run: pnpm test:model
+      - run: pnpm test:security
+
+      - name: Live provider validation
+        run: pnpm test:live:model
+        env:
+          KERNEL_LIVE_PROVIDER: ${{ inputs.provider }}
+          KERNEL_LIVE_MODEL: ${{ inputs.model }}
+          # Only this step receives the credential. It reaches the Model Runtime
+          # through the SecretBroker; Shell, Hooks and Skills never see it (§28).
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Golden tasks against the live model
+        if: ${{ inputs.golden_tasks }}
+        run: pnpm eval
+        env:
+          KERNEL_LIVE_PROVIDER: ${{ inputs.provider }}
+          KERNEL_LIVE_MODEL: ${{ inputs.model }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      # §32: the result artifact is the record of the run. It contains token
+      # counts and cost, never prompts or source.
+      - name: Upload eval artifact
+        if: ${{ always() && inputs.golden_tasks }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ inputs.provider }}-${{ inputs.model }}
+          path: evals/results/
+          if-no-files-found: ignore

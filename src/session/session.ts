@@ -30,6 +30,7 @@ import {
   type ModelTurn,
 } from '../model/ir.ts';
 import type { ModelRegistry, ResolvedModelProfile } from '../model/profiles.ts';
+import { addUsage, emptyUsage, estimateCost, resolveUsage, type UsageReport } from '../model/usage.ts';
 import { ModelRegistry as Registry } from '../model/profiles.ts';
 import { ContextEngine, type GoalState } from '../context/context-engine.ts';
 import { ContextProjector } from '../context/projector.ts';
@@ -110,6 +111,8 @@ export class Session {
   /** One entry per finished turn; the live half of the replay gate (§4.2). */
   private readonly turnOutcomes: TurnOutcomeRecord[] = [];
   private compactionCount = 0;
+  /** Cumulative usage with per-field provenance (§17). */
+  private usageReport = emptyUsage();
   private usage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -185,6 +188,11 @@ export class Session {
 
   get usageSnapshot(): typeof this.usage {
     return { ...this.usage };
+  }
+
+  /** Cumulative usage with provenance, for the eval result schema (§31). */
+  get usageReportSnapshot(): UsageReport {
+    return this.usageReport;
   }
 
   /**
@@ -381,6 +389,21 @@ export class Session {
       }
 
       if (modelTurn.error) {
+        // §42: a failed request gets its own event. Recording it as a
+        // `completed` response with an error field made failure classification
+        // (§34) guess from the payload shape.
+        await this.append(
+          'model.request.failed',
+          {
+            requestId: modelTurn.requestId,
+            code: modelTurn.error.code,
+            retryable: modelTurn.error.retryable,
+            blame: modelTurn.error.blame,
+          },
+          turn.turnId,
+          step.stepId,
+        );
+
         if (modelTurn.error.code === 'MODEL_CONTEXT_OVERFLOW') {
           // The provider rejected the request as too large. Compact and retry
           // once; the loop budget stops this becoming an infinite cycle.
@@ -398,8 +421,13 @@ export class Session {
       // during tool execution still leaves an auditable assistant turn.
       if (modelTurn.parts.length > 0) this.context.appendAssistant(modelTurn.parts);
 
+      const usageReport = resolveUsage(modelTurn.usage, { responseText: modelTurn.text });
+      const cost = estimateCost(usageReport, model.profile.pricing);
+      this.usageReport = addUsage(this.usageReport, usageReport);
+      if (cost.provenance !== 'unknown') this.usage.costUsd += cost.usd;
+
       await this.append(
-        'model.response',
+        'model.request.completed',
         {
           requestId: modelTurn.requestId,
           finishReason: modelTurn.finishReason,
@@ -407,6 +435,14 @@ export class Session {
           toolCallCount: modelTurn.toolCalls.length,
           textLength: modelTurn.text.length,
           usage: modelTurn.usage,
+          // §17: provenance travels with the number, so an eval can tell a
+          // reported token count from one we estimated.
+          usageProvenance: {
+            inputTokens: usageReport.inputTokens.provenance,
+            outputTokens: usageReport.outputTokens.provenance,
+          },
+          costUsd: cost.provenance === 'unknown' ? undefined : cost.usd,
+          costProvenance: cost.provenance,
         } satisfies ModelResponsePayload,
         turn.turnId,
         step.stepId,
@@ -482,7 +518,7 @@ export class Session {
     const request = this.buildRequest(step);
 
     await this.append(
-      'model.request',
+      'model.request.started',
       {
         requestId: request.requestId,
         provider: request.provider,
@@ -705,10 +741,9 @@ export class Session {
     this.usage.outputTokens += modelTurn.usage.outputTokens ?? 0;
     this.usage.cachedInputTokens += modelTurn.usage.cachedInputTokens ?? 0;
 
-    const inRate = model.profile.costPerMTokIn;
-    const outRate = model.profile.costPerMTokOut;
-    if (inRate !== undefined) this.usage.costUsd += ((modelTurn.usage.inputTokens ?? 0) / 1e6) * inRate;
-    if (outRate !== undefined) this.usage.costUsd += ((modelTurn.usage.outputTokens ?? 0) / 1e6) * outRate;
+    // Cost is computed from the provenance-aware report at the call site, so
+    // an estimated token count cannot silently become a confident dollar figure.
+    void model;
   }
 
   private async append(type: string, payload: unknown, turnId?: TurnId, stepId?: StepId): Promise<void> {

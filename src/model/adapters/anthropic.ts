@@ -317,9 +317,15 @@ function toAnthropicMessages(messages: readonly ModelMessage[]): unknown[] {
           if (part.text !== '') content.push({ type: 'text', text: part.text });
           break;
         case 'reasoning':
-          // Replay thinking verbatim when we hold a signature; otherwise drop
-          // it, because an unsigned thinking block is rejected by the API.
-          if (part.opaque && part.signature) {
+          // Replay is keyed on which field is present, not on both being
+          // present. Visible extended thinking arrives as `text` + `signature`
+          // and carries no `opaque`; requiring `opaque` here silently dropped it,
+          // and the API rejects a follow-up tool turn whose thinking block is
+          // missing. Redacted thinking is the opposite shape: `opaque`, no text.
+          //
+          // Unsigned readable thinking is still dropped — the API rejects it,
+          // and inventing a signature is not an option.
+          if (part.signature) {
             content.push({ type: 'thinking', thinking: part.text ?? '', signature: part.signature });
           } else if (part.opaque) {
             content.push({ type: 'redacted_thinking', data: part.opaque });

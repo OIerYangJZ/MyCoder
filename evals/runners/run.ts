@@ -26,10 +26,65 @@ import { GOLDEN_TASKS, type GoldenTask, type GoldenTaskContext } from '../tasks/
 
 const CANARY = 'CANARY_SECRET_7f3e9c2a';
 
+/**
+ * Why a task failed (§34).
+ *
+ * The plan is explicit that this classification matters more than the raw pass
+ * rate, and it is right: "8/12" tells you nothing you can act on, whereas
+ * "3 MODEL_CAPABILITY, 1 ADAPTER_BUG" tells you exactly one of those is yours.
+ */
+export type FailureClass =
+  | 'MODEL_CAPABILITY'
+  | 'MODEL_TOOL_SCHEMA'
+  | 'MODEL_EDIT_STRATEGY'
+  | 'ADAPTER_BUG'
+  | 'KERNEL_BUG'
+  | 'POLICY_BLOCKED'
+  | 'ENVIRONMENT_ERROR'
+  | 'TEST_FIXTURE_ERROR'
+  | 'UNKNOWN';
+
+/** The §31 result schema, written verbatim to evals/results/. */
+export interface EvalResult {
+  taskId: string;
+  provider: string;
+  model: string;
+
+  solved: boolean;
+  regression: boolean;
+  failureClass?: FailureClass;
+  failures: string[];
+
+  modelRequests: number;
+  toolCalls: number;
+  editAttempts: number;
+  permissionPrompts: number;
+
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  reasoningTokens?: number;
+  usageProvenance?: Record<string, string>;
+
+  estimatedCostUsd?: number;
+  costProvenance?: string;
+  wallTimeMs: number;
+
+  securityViolations: number;
+  finalDiffHash?: string;
+}
+
 interface TaskMetrics {
   id: string;
   passed: boolean;
   failures: string[];
+  failureClass?: FailureClass;
+  provider: string;
+  model: string;
+  usage?: EvalResult['usageProvenance'];
+  cachedTokens?: number;
+  reasoningTokens?: number;
+  costProvenance?: string;
   toolCalls: number;
   modelRequests: number;
   inputTokens: number;
@@ -51,6 +106,27 @@ class Capture implements EgressTransport {
   text(): string {
     return this.sent.join('\n');
   }
+}
+
+/**
+ * Classify a failure from the evidence available offline.
+ *
+ * Deliberately conservative: anything it cannot attribute is `UNKNOWN` rather
+ * than guessed. A wrong label is worse than no label, because the whole point of
+ * §34 is deciding whose bug it is.
+ */
+function classifyFailure(failures: readonly string[], toolResults: string): FailureClass | undefined {
+  if (failures.length === 0) return undefined;
+  const all = `${failures.join(' ')} ${toolResults}`;
+
+  if (/PROTECTED_PATH|TOOL_DENIED|NETWORK_DENIED|hard_deny/.test(all)) return 'POLICY_BLOCKED';
+  if (/TOOL_INVALID_ARGS|did not match its schema/.test(all)) return 'MODEL_TOOL_SCHEMA';
+  if (/STALE_FILE|NON_UNIQUE_MATCH|INSUFFICIENT_READ_COVERAGE/.test(all)) return 'MODEL_EDIT_STRATEGY';
+  if (/MODEL_INVALID_RESPONSE|__unparsed/.test(all)) return 'ADAPTER_BUG';
+  if (/INTERNAL_ERROR|ReferenceError|TypeError/.test(all)) return 'KERNEL_BUG';
+  if (/ENOENT|EACCES|not available on this execution backend/.test(all)) return 'ENVIRONMENT_ERROR';
+  if (/REPEATED_FAILURE|LOOP_BUDGET_EXCEEDED/.test(all)) return 'MODEL_CAPABILITY';
+  return 'UNKNOWN';
 }
 
 async function runTask(task: GoldenTask): Promise<TaskMetrics> {
@@ -143,10 +219,23 @@ async function runTask(task: GoldenTask): Promise<TaskMetrics> {
 
     const usage = kernel.session.usageSnapshot;
 
+    const resolved = kernel.modelRegistry.resolve(kernel.session.activeModelAlias);
+    const report = kernel.session.usageReportSnapshot;
+
     return {
       id: task.id,
       passed: failures.length === 0 && secretBoundaryViolations === 0,
       failures,
+      ...(classifyFailure(failures, results) ? { failureClass: classifyFailure(failures, results)! } : {}),
+      provider: resolved?.provider.id ?? 'unknown',
+      model: resolved?.modelId ?? kernel.session.activeModelAlias,
+      usage: {
+        inputTokens: report.inputTokens.provenance,
+        outputTokens: report.outputTokens.provenance,
+      },
+      cachedTokens: report.cachedInputTokens.value,
+      reasoningTokens: report.reasoningTokens.value,
+      costProvenance: usage.costUsd > 0 ? 'estimated' : 'unknown',
       toolCalls: usage.toolCalls,
       modelRequests: usage.modelRequests,
       inputTokens: usage.inputTokens,
@@ -215,8 +304,49 @@ async function main(argv: readonly string[]): Promise<number> {
     },
   );
 
+  // §32: machine-readable artifact, never hand-edited.
+  const artifact = {
+    generatedAt: new Date().toISOString(),
+    provider: results[0]?.provider ?? 'unknown',
+    model: results[0]?.model ?? 'unknown',
+    solved,
+    total: results.length,
+    securityViolations: totals.secretViolations,
+    results: results.map((r): EvalResult => ({
+      taskId: r.id,
+      provider: r.provider,
+      model: r.model,
+      solved: r.passed,
+      regression: false,
+      ...(r.failureClass ? { failureClass: r.failureClass } : {}),
+      failures: r.failures,
+      modelRequests: r.modelRequests,
+      toolCalls: r.toolCalls,
+      editAttempts: r.editAttempts,
+      permissionPrompts: r.approvalPrompts,
+      inputTokens: r.inputTokens,
+      outputTokens: r.outputTokens,
+      ...(r.cachedTokens !== undefined ? { cachedTokens: r.cachedTokens } : {}),
+      ...(r.reasoningTokens !== undefined ? { reasoningTokens: r.reasoningTokens } : {}),
+      ...(r.usage ? { usageProvenance: r.usage } : {}),
+      ...(r.costUsd > 0 ? { estimatedCostUsd: r.costUsd } : {}),
+      ...(r.costProvenance ? { costProvenance: r.costProvenance } : {}),
+      wallTimeMs: r.durationMs,
+      securityViolations: r.secretBoundaryViolations,
+    })),
+  };
+
+  if (!process.env.EVAL_NO_ARTIFACT) {
+    const dir = path.join(process.cwd(), 'evals', 'results');
+    await mkdir(dir, { recursive: true });
+    const stamp = artifact.generatedAt.replace(/[:.]/g, '-');
+    const file = path.join(dir, `${artifact.provider}-${artifact.model}-${stamp}.json`);
+    await writeFile(file, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
+    if (!json) process.stdout.write(`\nartifact: ${path.relative(process.cwd(), file)}\n`);
+  }
+
   if (json) {
-    process.stdout.write(`${JSON.stringify({ results, totals, solved, total: results.length }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(artifact, null, 2)}\n`);
   } else {
     const n = results.length;
     process.stdout.write(
@@ -224,13 +354,22 @@ async function main(argv: readonly string[]): Promise<number> {
         `Tool calls / task               ${(totals.toolCalls / n).toFixed(1)}\n` +
         `Model requests / task           ${(totals.modelRequests / n).toFixed(1)}\n` +
         `Tokens / task                   ${(totals.tokens / n).toFixed(0)}\n` +
-        `Cost / solved task              $${solved > 0 ? (totals.cost / solved).toFixed(4) : '0.0000'}\n` +
+        // An unconfigured price must read as unknown, not as a confident $0.
+        `Cost / solved task              ${
+          totals.cost > 0 && solved > 0
+            ? `$${(totals.cost / solved).toFixed(4)}`
+            : 'unknown (no [pricing] configured)'
+        }\n` +
         `Edit attempts                   ${totals.editAttempts}\n` +
         `Permission prompts / task       ${(totals.prompts / n).toFixed(1)}\n` +
         `Secret boundary violations      ${totals.secretViolations}${totals.secretViolations > 0 ? '   <-- RELEASE BLOCKER' : ''}\n` +
         // Detected, not undetected: these tasks mutate source from a shell on
         // purpose. The number to watch is whether it matches what the tasks do.
-        `Shell source mutations detected ${totals.unreviewed}\n`,
+        `Shell source mutations detected ${totals.unreviewed}\n` +
+        // §34: the classification matters more than the pass rate.
+        (results.some((r) => r.failureClass)
+          ? `Failure classes                 ${[...new Set(results.filter((r) => r.failureClass).map((r) => r.failureClass))].join(', ')}\n`
+          : ''),
     );
   }
 

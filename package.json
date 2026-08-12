@@ -2,7 +2,7 @@
   "name": "@agent/kernel",
   "version": "0.1.0",
   "private": true,
-  "description": "Coding Agent Kernel v0.1 — small, verifiable, with explicit security boundaries.",
+  "description": "Coding Agent Kernel v0.1 \u2014 small, verifiable, with explicit security boundaries.",
   "type": "module",
   "engines": {
     "node": ">=22.6.0"
@@ -16,24 +16,26 @@
   },
   "scripts": {
     "agent": "node src/cli/main.ts",
-    "test": "node --test --experimental-strip-types \"tests/**/*.test.ts\"",
-    "test:unit": "node --test --experimental-strip-types \"tests/unit/**/*.test.ts\"",
-    "test:security": "node --test --experimental-strip-types \"tests/security/**/*.test.ts\"",
-    "test:integration": "node --test --experimental-strip-types \"tests/integration/**/*.test.ts\"",
-    "test:trajectory": "node --test --experimental-strip-types tests/integration/agent-loop.test.ts",
-    "test:replay": "node --test --experimental-strip-types tests/integration/replay-gate.test.ts",
-    "test:platform": "node --test --experimental-strip-types \"tests/unit/**/*.test.ts\" \"tests/integration/**/*.test.ts\"",
-    "test:smoke": "node --test --experimental-strip-types \"tests/smoke/**/*.test.ts\"",
     "eval": "node evals/runners/run.ts",
-    "typecheck": "tsc --noEmit",
-    "lint": "node scripts/lint.ts",
     "format": "prettier --write \"**/*.{ts,json,md,yml}\"",
-    "format:check": "prettier --check \"**/*.{ts,json,md,yml}\""
+    "format:check": "prettier --check \"**/*.{ts,json,md,yml}\"",
+    "lint": "node scripts/lint.ts",
+    "test": "node --test --experimental-strip-types \"tests/**/*.test.ts\"",
+    "test:integration": "node --test --experimental-strip-types \"tests/integration/**/*.test.ts\"",
+    "test:live:model": "KERNEL_LIVE=1 node --test --experimental-strip-types \"tests/live/**/*.test.ts\"",
+    "test:model": "node --test --experimental-strip-types \"tests/model/**/*.test.ts\"",
+    "test:platform": "node --test --experimental-strip-types \"tests/unit/**/*.test.ts\" \"tests/integration/**/*.test.ts\"",
+    "test:replay": "node --test --experimental-strip-types tests/integration/replay-gate.test.ts",
+    "test:security": "node --test --experimental-strip-types \"tests/security/**/*.test.ts\"",
+    "test:smoke": "node --test --experimental-strip-types \"tests/smoke/**/*.test.ts\"",
+    "test:trajectory": "node --test --experimental-strip-types tests/integration/agent-loop.test.ts",
+    "test:unit": "node --test --experimental-strip-types \"tests/unit/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
     "prettier": "^3.9.6",
     "typescript": "^5.9.3"
   },
-  "comment:dependencies": "v0.1 intentionally ships with zero RUNTIME dependencies; typescript, @types/node and prettier are devDependencies used only by `pnpm typecheck` and `pnpm format:check`. `pnpm lint` is scripts/lint.ts, a zero-dependency architecture linter — see its header for why it is not ESLint. Node >=22.6 strips TypeScript types natively and provides node:test, fetch, crypto and fs/promises. Glob matching, unified diff, TOML parsing and JSON Schema validation are implemented in src/util/ so that the kernel — and in particular its security tests — can run fully offline with no supply chain surface. See docs/adr/ADR-0009-zero-runtime-dependencies.md."
+  "comment:dependencies": "v0.1 intentionally ships with zero RUNTIME dependencies; typescript, @types/node and prettier are devDependencies used only by `pnpm typecheck` and `pnpm format:check`. `pnpm lint` is scripts/lint.ts, a zero-dependency architecture linter \u2014 see its header for why it is not ESLint. Node >=22.6 strips TypeScript types natively and provides node:test, fetch, crypto and fs/promises. Glob matching, unified diff, TOML parsing and JSON Schema validation are implemented in src/util/ so that the kernel \u2014 and in particular its security tests \u2014 can run fully offline with no supply chain surface. See docs/adr/ADR-0009-zero-runtime-dependencies.md."
 }

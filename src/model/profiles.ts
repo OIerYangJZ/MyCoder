@@ -10,6 +10,8 @@
 
 export type EditStrategyName = 'exact' | 'search_replace' | 'apply_patch';
 
+import type { ModelPricing } from './usage.ts';
+
 export interface ModelProfile {
   family: string;
   contextWindow: number;
@@ -21,8 +23,12 @@ export interface ModelProfile {
   toolReliability: 'low' | 'medium' | 'high';
   /** Tokens reserved for the response when deciding whether to compact. */
   reservedOutputTokens: number;
-  costPerMTokIn?: number;
-  costPerMTokOut?: number;
+  /**
+   * Pricing is configuration, never a constant baked into the kernel: it
+   * changes, it varies by tier, and a wrong number produces confident wrong
+   * costs. Unset means cost is reported as `unknown` (§18).
+   */
+  pricing?: ModelPricing;
 }
 
 export type ProviderProtocol = 'anthropic-messages' | 'openai-responses' | 'openai-chat' | 'fake';

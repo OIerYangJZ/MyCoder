@@ -92,7 +92,7 @@ export async function replaySession(
         break;
       }
 
-      case 'model.response': {
+      case 'model.request.completed': {
         flushResults();
         const payload = event.payload as { textLength?: number };
         // The log deliberately does not store assistant text (spec §21.2), so

@@ -1,0 +1,10 @@
+{
+  "status": 400,
+  "body": {
+    "type": "error",
+    "error": {
+      "type": "invalid_request_error",
+      "message": "prompt is too long: 250000 tokens > 200000 maximum context length"
+    }
+  }
+}
