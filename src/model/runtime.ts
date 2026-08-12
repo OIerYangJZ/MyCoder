@@ -246,10 +246,15 @@ export class HttpModelRuntime implements ModelRuntime {
         if (options.turnId) egressCtx.turnId = options.turnId;
         if (options.stepId) egressCtx.stepId = options.stepId;
 
+        // Deliberately not `.unref()`ed. A deadline that cannot itself hold the
+        // event loop open is a deadline that silently fails to fire when it is
+        // the only thing left pending -- precisely the hang it exists to
+        // prevent. It is cleared on every exit path, so it never outlives the
+        // request.
         watchdog = setTimeout(() => {
           timedOut = 'connect';
           attempt$.abort();
-        }, this.connectTimeoutMs).unref();
+        }, this.connectTimeoutMs);
 
         const response = await Promise.race([this.egress.send(egressReq, egressCtx), aborted]);
 
@@ -285,7 +290,7 @@ export class HttpModelRuntime implements ModelRuntime {
         watchdog = setTimeout(() => {
           timedOut = 'idle';
           attempt$.abort();
-        }, this.idleTimeoutMs).unref();
+        }, this.idleTimeoutMs);
 
         const state = newAdapterState(request.requestId);
         const messages = decodeSse(response.stream, attempt$.signal)[Symbol.asyncIterator]();
