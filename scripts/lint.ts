@@ -24,6 +24,7 @@
 
 import { readdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = process.cwd();
 
@@ -445,7 +446,18 @@ async function main(argv: readonly string[]): Promise<number> {
   return 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+/** True when this module is the process entry point, on every platform. */
+function isMain(moduleUrl: string): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return moduleUrl === pathToFileURL(entry).href;
+}
+
+// Run when invoked directly rather than imported. `pathToFileURL` is required
+// rather than string concatenation: on Windows `process.argv[1]` is a
+// backslash path, so `file://${argv[1]}` never equals `import.meta.url` and the
+// entry point silently does nothing — exit 0, no output, no error.
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code;

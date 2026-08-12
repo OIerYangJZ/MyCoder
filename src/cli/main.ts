@@ -13,6 +13,7 @@
 
 import * as readline from 'node:readline/promises';
 import { stdin, stdout, stderr } from 'node:process';
+import { pathToFileURL } from 'node:url';
 
 import { createKernel, KERNEL_VERSION, type Kernel } from '../kernel.ts';
 import { describeConfig } from '../config/config.ts';
@@ -212,8 +213,18 @@ async function runOnce(kernel: Kernel, input: string, json: boolean): Promise<nu
   return outcome.turn.state === 'completed' ? 0 : 1;
 }
 
-// Run when invoked directly rather than imported by a test.
-if (import.meta.url === `file://${process.argv[1]}`) {
+/** True when this module is the process entry point, on every platform. */
+function isMain(moduleUrl: string): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return moduleUrl === pathToFileURL(entry).href;
+}
+
+// Run when invoked directly rather than imported. `pathToFileURL` is required
+// rather than string concatenation: on Windows `process.argv[1]` is a
+// backslash path, so `file://${argv[1]}` never equals `import.meta.url` and the
+// entry point silently does nothing — exit 0, no output, no error.
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code;
