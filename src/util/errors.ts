@@ -11,6 +11,7 @@ export const ERROR_CODES = [
   'MODEL_RATE_LIMIT',
   'MODEL_CONTEXT_OVERFLOW',
   'MODEL_INVALID_RESPONSE',
+  'MODEL_TIMEOUT',
   'TOOL_NOT_FOUND',
   'TOOL_INVALID_ARGS',
   'TOOL_DENIED',
@@ -65,6 +66,7 @@ const DEFAULT_BLAME: Record<ErrorCode, Blame> = {
   MODEL_RATE_LIMIT: 'provider',
   MODEL_CONTEXT_OVERFLOW: 'kernel',
   MODEL_INVALID_RESPONSE: 'provider',
+  MODEL_TIMEOUT: 'environment',
   TOOL_NOT_FOUND: 'model',
   TOOL_INVALID_ARGS: 'model',
   TOOL_DENIED: 'user',
@@ -91,6 +93,7 @@ const DEFAULT_BLAME: Record<ErrorCode, Blame> = {
 const RETRYABLE: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'MODEL_RATE_LIMIT',
   'MODEL_INVALID_RESPONSE',
+  'MODEL_TIMEOUT',
   'TOOL_TIMEOUT',
   'CONCURRENT_MODIFICATION',
   'REMOTE_UNAVAILABLE',

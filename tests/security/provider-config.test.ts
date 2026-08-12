@@ -116,7 +116,13 @@ describe('user config may define a provider endpoint', () => {
   });
 
   test('a missing credential is a visible warning, not a silent failure', async () => {
-    const f = await fixture({ user: USER_PROVIDER });
+    // The variable is named per-run rather than reusing DEEPSEEK_API_KEY: this
+    // test asserts what happens when a credential is *absent*, and anyone who
+    // has run the live suite has that one exported. A test that only passes on
+    // machines without a key is a test that stops testing exactly when the
+    // feature starts being used.
+    const absentVar = `MYCODER_ABSENT_KEY_${process.pid}`;
+    const f = await fixture({ user: USER_PROVIDER.replace('DEEPSEEK_API_KEY', absentVar) });
     try {
       const kernel = await createKernel({
         workspaceDir: f.workspace,
@@ -129,9 +135,9 @@ describe('user config may define a provider endpoint', () => {
         logLevel: 'silent',
       });
       try {
-        // DEEPSEEK_API_KEY is not set in this process.
+        assert.equal(process.env[absentVar], undefined, 'fixture precondition');
         assert.ok(
-          kernel.config.warnings.some((w) => /DEEPSEEK_API_KEY/.test(w)),
+          kernel.config.warnings.some((w) => w.includes(absentVar)),
           'the user should be told which variable is missing, before a request fails',
         );
       } finally {

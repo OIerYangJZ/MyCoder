@@ -100,6 +100,19 @@ export interface HttpModelRuntimeOptions {
   logger?: Logger;
   retry?: RetryPolicy;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Time allowed for the provider to return response *headers*. A provider that
+   * accepts the connection and then never answers would otherwise hang the turn
+   * forever: the loop's wall-clock budget is only consulted between steps, so
+   * nothing above this layer can break out of a stalled request.
+   */
+  connectTimeoutMs?: number;
+  /**
+   * Maximum gap *between* stream events. Deliberately not a total-request
+   * deadline — a long generation is legitimate and must not be killed for being
+   * slow, only for having stopped.
+   */
+  idleTimeoutMs?: number;
   onRequestAudit?: (audit: { requestId: string; payloadHash: string; payloadBytes: number }) => void;
 }
 
@@ -111,6 +124,8 @@ export class HttpModelRuntime implements ModelRuntime {
   private readonly logger: Logger;
   private readonly retry: RetryPolicy;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly connectTimeoutMs: number;
+  private readonly idleTimeoutMs: number;
   private readonly onRequestAudit: HttpModelRuntimeOptions['onRequestAudit'];
 
   constructor(opts: HttpModelRuntimeOptions) {
@@ -121,6 +136,8 @@ export class HttpModelRuntime implements ModelRuntime {
     this.logger = opts.logger ?? createLogger({ scope: 'model' });
     this.retry = opts.retry ?? DEFAULT_RETRY;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.connectTimeoutMs = opts.connectTimeoutMs ?? 60_000;
+    this.idleTimeoutMs = opts.idleTimeoutMs ?? 120_000;
     if (opts.onRequestAudit) this.onRequestAudit = opts.onRequestAudit;
   }
 
@@ -172,6 +189,34 @@ export class HttpModelRuntime implements ModelRuntime {
       attempt += 1;
       let lease: Awaited<ReturnType<SecretBroker['resolve']>> | undefined;
 
+      // One controller per attempt, fed by both the caller's signal and our own
+      // watchdogs. `timedOut` distinguishes the two afterwards: a caller
+      // cancellation must never be retried (§19), a timeout should be.
+      const attempt$ = new AbortController();
+      let timedOut: 'connect' | 'idle' | undefined;
+      const onCallerAbort = (): void => attempt$.abort();
+      if (options.signal) {
+        if (options.signal.aborted) attempt$.abort();
+        else options.signal.addEventListener('abort', onCallerAbort, { once: true });
+      }
+      let watchdog: NodeJS.Timeout | undefined;
+
+      // Racing the abort explicitly rather than trusting the transport to honour
+      // the signal: a transport that ignores it would otherwise hang forever,
+      // which is precisely the failure the watchdogs exist to prevent. Handled
+      // eagerly so an abort after a successful attempt is not an unhandled
+      // rejection.
+      const aborted = new Promise<never>((_, reject) => {
+        const fail = (): void => {
+          const e = new Error('aborted');
+          e.name = 'AbortError';
+          reject(e);
+        };
+        if (attempt$.signal.aborted) fail();
+        else attempt$.signal.addEventListener('abort', fail, { once: true });
+      });
+      aborted.catch(() => {});
+
       try {
         const headers: Record<string, string> = { ...wire.headers };
 
@@ -192,7 +237,7 @@ export class HttpModelRuntime implements ModelRuntime {
           body: wire.body,
           stream: true,
         };
-        if (options.signal) egressReq.signal = options.signal;
+        egressReq.signal = attempt$.signal;
 
         const egressCtx: Parameters<EgressGate['send']>[1] = {
           sessionId: options.sessionId,
@@ -201,7 +246,16 @@ export class HttpModelRuntime implements ModelRuntime {
         if (options.turnId) egressCtx.turnId = options.turnId;
         if (options.stepId) egressCtx.stepId = options.stepId;
 
-        const response = await this.egress.send(egressReq, egressCtx);
+        watchdog = setTimeout(() => {
+          timedOut = 'connect';
+          attempt$.abort();
+        }, this.connectTimeoutMs).unref();
+
+        const response = await Promise.race([this.egress.send(egressReq, egressCtx), aborted]);
+
+        // Headers are in; from here the deadline is per-chunk, not total.
+        watchdog?.refresh();
+        timedOut = undefined;
 
         if (response.status >= 400) {
           const body = response.body ?? (await drainToString(response.stream));
@@ -227,11 +281,27 @@ export class HttpModelRuntime implements ModelRuntime {
           return;
         }
 
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => {
+          timedOut = 'idle';
+          attempt$.abort();
+        }, this.idleTimeoutMs).unref();
+
         const state = newAdapterState(request.requestId);
-        for await (const message of decodeSse(response.stream, options.signal)) {
-          for (const event of adapter.translate(message, state)) yield event;
-          if (state.finished) break;
+        const messages = decodeSse(response.stream, attempt$.signal)[Symbol.asyncIterator]();
+        try {
+          for (;;) {
+            const next = await Promise.race([messages.next(), aborted]);
+            if (next.done === true) break;
+            watchdog?.refresh(); // progress, not completion: reset the gap timer
+            for (const event of adapter.translate(next.value, state)) yield event;
+            if (state.finished) break;
+          }
+        } finally {
+          await messages.return?.(undefined); // release the reader on every path
         }
+        clearTimeout(watchdog);
+        watchdog = undefined;
         if (adapter.finish) {
           for (const event of adapter.finish(state)) yield event;
         }
@@ -248,7 +318,19 @@ export class HttpModelRuntime implements ModelRuntime {
         }
         return;
       } catch (e) {
-        const err = this.classify(e);
+        // A watchdog abort surfaces as a generic AbortError, which would
+        // otherwise be reported as the user cancelling — the opposite of what
+        // happened, and unretryable to boot.
+        const err =
+          timedOut && !options.signal?.aborted
+            ? kernelError(
+                'MODEL_TIMEOUT',
+                timedOut === 'connect'
+                  ? `Provider "${resolved.provider.id}" did not respond within ${this.connectTimeoutMs}ms.`
+                  : `Provider "${resolved.provider.id}" stopped sending for ${this.idleTimeoutMs}ms.`,
+                { blame: 'environment', retryable: true, safeDetails: { phase: timedOut } },
+              )
+            : this.classify(e);
         if (err.retryable && attempt < this.retry.maxAttempts && !options.signal?.aborted) {
           this.logger.warn('retrying model request', { attempt, code: err.code });
           await this.sleep(this.backoff(attempt));
@@ -258,6 +340,8 @@ export class HttpModelRuntime implements ModelRuntime {
         yield { type: 'finish', finishReason: 'error' };
         return;
       } finally {
+        clearTimeout(watchdog);
+        options.signal?.removeEventListener('abort', onCallerAbort);
         lease?.release();
       }
     }

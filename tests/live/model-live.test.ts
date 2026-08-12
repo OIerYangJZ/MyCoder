@@ -15,11 +15,12 @@
 
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import { createKernel, type Kernel } from '../../src/kernel.ts';
+import { resolveKernelDirs } from '../../src/util/platform.ts';
 import { collectModelEvents, type ModelEvent } from '../../src/model/ir.ts';
 import { resolveUsage } from '../../src/model/usage.ts';
 
@@ -73,14 +74,39 @@ let base: string | undefined;
 async function boot(): Promise<Kernel> {
   base = await mkdtemp(path.join(tmpdir(), 'live-model-'));
   const root = path.join(base, 'workspace');
-  await (await import('node:fs/promises')).mkdir(root, { recursive: true });
+  await mkdir(root, { recursive: true });
+
+  // Config comes from the *real* user directory — that is where the provider
+  // endpoint is declared, and isolating it (as an earlier version did) meant the
+  // alias under test did not exist. Data and cache stay in a temp directory so a
+  // live run never writes into the developer's session store.
+  const real = resolveKernelDirs();
 
   const k = await createKernel({
     workspaceDir: root,
-    dirsRoot: path.join(base, 'kernel-dirs'),
+    dirs: {
+      config: real.config,
+      data: path.join(base, 'data'),
+      cache: path.join(base, 'cache'),
+      home: real.home,
+    },
     modelOverride: ALIAS,
     logLevel: 'silent',
   });
+
+  const resolved = k.modelRegistry.resolve(ALIAS);
+  if (!resolved) {
+    const known = k.modelRegistry
+      .listAliases()
+      .map((a) => a.alias)
+      .join(', ');
+    throw new Error(
+      `model alias "${ALIAS}" is not registered.\n` +
+        `Known aliases: ${known}\n` +
+        `Declare it in ${real.config}/config.toml — see docs/configuring-a-provider.md.`,
+    );
+  }
+
   return k;
 }
 

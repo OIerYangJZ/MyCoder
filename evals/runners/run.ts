@@ -20,11 +20,27 @@ import { pathToFileURL } from 'node:url';
 import { createKernel } from '../../src/kernel.ts';
 import { FakeModel } from '../../src/model/adapters/fake.ts';
 import { ScriptedPrompter } from '../../src/cli/prompter.ts';
-import type { EgressResponse, EgressTransport } from '../../src/security/egress-gate.ts';
+import { resolveKernelDirs } from '../../src/util/platform.ts';
+import { fetchTransport, type EgressResponse, type EgressTransport } from '../../src/security/egress-gate.ts';
 import type { ModelMessage } from '../../src/model/ir.ts';
 import { GOLDEN_TASKS, type GoldenTask, type GoldenTaskContext } from '../tasks/golden.ts';
 
 const CANARY = 'CANARY_SECRET_7f3e9c2a';
+
+/**
+ * Live mode (§29): drive the tasks with a **real** model instead of the scripted
+ * FakeModel.
+ *
+ * The scripted mode tests the kernel — given this exact sequence of tool calls,
+ * do freshness, policy and the ledger behave? It cannot tell you whether a real
+ * model can *produce* that sequence, which is the entire question §29 asks. The
+ * task definitions need no change: the checks are already written against
+ * outcomes (file contents, tool results, leak surfaces), not against the script.
+ *
+ *   KERNEL_LIVE_MODEL=deepseek node evals/runners/run.ts
+ */
+const LIVE_ALIAS = process.env.KERNEL_LIVE_MODEL;
+const LIVE = Boolean(LIVE_ALIAS);
 
 /**
  * Why a task failed (§34).
@@ -97,6 +113,38 @@ interface TaskMetrics {
   durationMs: number;
 }
 
+/**
+ * Records every outbound payload *and* performs it.
+ *
+ * Live mode still has to answer "did the canary reach the network?", so the leak
+ * surface must be captured on the real path rather than by replacing it.
+ */
+class RecordingPassthrough implements EgressTransport {
+  readonly sent: string[] = [];
+  async send(req: Parameters<EgressTransport['send']>[0]): Promise<EgressResponse> {
+    this.sent.push(`${req.url}\n${req.body ?? ''}`);
+    return fetchTransport.send(req);
+  }
+  /** Every byte sent, model traffic included — the surface a canary must not reach. */
+  text(): string {
+    return this.sent.join('\n');
+  }
+  /**
+   * Bytes sent by *tools*.
+   *
+   * "Did anything leave the process?" means something different once the model
+   * itself is on the network: in live mode the provider request is expected
+   * traffic, and counting it would fail every network-denial task for a reason
+   * that has nothing to do with the denial.
+   */
+  toolText(providerBaseUrl?: string): string {
+    const rest = providerBaseUrl
+      ? this.sent.filter((entry) => !entry.startsWith(providerBaseUrl))
+      : this.sent;
+    return rest.join('\n');
+  }
+}
+
 class Capture implements EgressTransport {
   readonly sent: string[] = [];
   async send(req: { url: string; body?: string }): Promise<EgressResponse> {
@@ -146,13 +194,28 @@ async function runTask(task: GoldenTask): Promise<TaskMetrics> {
     await symlink(path.join(root, target), full);
   }
 
-  const transport = new Capture();
+  const transport = LIVE ? new RecordingPassthrough() : new Capture();
   const prompter = new ScriptedPrompter(task.approvals ?? []);
+
+  // Live mode reads the *real* config directory, because that is the only place
+  // a provider endpoint may be declared (a project config that could define one
+  // would be a redirection vector). Data and cache stay in the temp tree so a
+  // run never touches the developer's session store.
+  const real = resolveKernelDirs();
+  const dirs = LIVE
+    ? {
+        config: real.config,
+        data: path.join(base, 'data'),
+        cache: path.join(base, 'cache'),
+        home: real.home,
+      }
+    : undefined;
 
   const kernel = await createKernel({
     workspaceDir: root,
-    dirsRoot: path.join(base, 'kernel'),
+    ...(dirs ? { dirs } : { dirsRoot: path.join(base, 'kernel') }),
     ...(task.profile ? { profileOverride: task.profile } : {}),
+    ...(LIVE ? { modelOverride: LIVE_ALIAS! } : {}),
     egressTransport: transport,
     prompter,
     logLevel: 'silent',
@@ -164,10 +227,16 @@ async function runTask(task: GoldenTask): Promise<TaskMetrics> {
   const receipt = (suffix: string): string =>
     kernel.freshness.list().find((r) => r.path.endsWith(suffix))?.receiptId ?? 'missing-receipt';
 
-  const model = new FakeModel({
-    responder: (_request, index) => task.script(receipt)[index],
-  });
-  (kernel.modelRuntime as unknown as { routes: Map<string, unknown> }).routes.set('fake', model);
+  // In live mode the model decides for itself; the script is exactly what we are
+  // no longer supplying.
+  if (!LIVE) {
+    const model = new FakeModel({
+      responder: (_request, index) => task.script(receipt)[index],
+    });
+    (kernel.modelRuntime as unknown as { routes: Map<string, unknown> }).routes.set('fake', model);
+  } else {
+    void receipt; // scripts are unused live
+  }
 
   const toolResults = (): string[] => {
     const out: string[] = [];
@@ -186,18 +255,21 @@ async function runTask(task: GoldenTask): Promise<TaskMetrics> {
     return parts.join('\n');
   };
 
+  const providerBaseUrl = kernel.modelRegistry.resolve(kernel.session.activeModelAlias)?.provider.baseUrl;
+
   const ctx: GoldenTaskContext = {
     kernel,
     read: (rel) => readFile(path.join(root, rel), 'utf8'),
     toolResults,
     eventLog,
-    networkCapture: () => transport.text(),
+    networkCapture: () =>
+      transport instanceof RecordingPassthrough ? transport.toolText(providerBaseUrl) : transport.text(),
   };
 
   const failures: string[] = [];
 
   try {
-    await kernel.session.runTurn(task.prompt);
+    await kernel.session.runTurn(LIVE ? (task.livePrompt ?? task.prompt) : task.prompt);
 
     for (const check of task.checks) {
       try {
@@ -256,8 +328,13 @@ async function runTask(task: GoldenTask): Promise<TaskMetrics> {
 async function main(argv: readonly string[]): Promise<number> {
   const json = argv.includes('--json');
   const filters = argv.filter((a) => !a.startsWith('--'));
-  const tasks =
+  const selected =
     filters.length > 0 ? GOLDEN_TASKS.filter((t) => filters.some((f) => t.id.includes(f))) : GOLDEN_TASKS;
+
+  // Reported, never silently dropped: a run that quietly shrank its own task set
+  // would read as a clean sheet.
+  const skipped = LIVE ? selected.filter((t) => t.scriptedOnly) : [];
+  const tasks = LIVE ? selected.filter((t) => !t.scriptedOnly) : selected;
 
   if (tasks.length === 0) {
     process.stderr.write(`No golden task matches ${filters.join(', ')}\n`);
@@ -277,6 +354,12 @@ async function main(argv: readonly string[]): Promise<number> {
           `${String(metrics.durationMs).padStart(5)} ms\n`,
       );
       for (const failure of metrics.failures) process.stdout.write(`      ${failure}\n`);
+    }
+  }
+
+  if (!json && skipped.length > 0) {
+    for (const task of skipped) {
+      process.stdout.write(`skip  ${task.id.padEnd(32)} ${task.scriptedOnly}\n`);
     }
   }
 
@@ -350,7 +433,9 @@ async function main(argv: readonly string[]): Promise<number> {
   } else {
     const n = results.length;
     process.stdout.write(
-      `\nTask success                    ${solved}/${n}\n` +
+      `\nTask success                    ${solved}/${n}` +
+        (skipped.length > 0 ? ` (${skipped.length} scripted-only, skipped live)` : '') +
+        '\n' +
         `Tool calls / task               ${(totals.toolCalls / n).toFixed(1)}\n` +
         `Model requests / task           ${(totals.modelRequests / n).toFixed(1)}\n` +
         `Tokens / task                   ${(totals.tokens / n).toFixed(0)}\n` +
