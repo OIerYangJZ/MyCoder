@@ -262,19 +262,52 @@ describe('atomic write works on the native filesystem', () => {
 describe('the CLI starts', () => {
   const CLI = path.join(process.cwd(), 'src', 'cli', 'main.ts');
 
+  /**
+   * The environment a Node child genuinely needs, per platform.
+   *
+   * This is not the kernel's `scrubEnv` — that has its own tests. The question
+   * here is only whether the CLI starts, so the child gets what the OS requires
+   * and nothing sensitive. On Windows that list is longer than on POSIX:
+   * `os.tmpdir()` reads TEMP/TMP, and process creation wants SystemRoot,
+   * SystemDrive, windir, COMSPEC and PATHEXT.
+   */
+  function childEnv(dataRoot: string): Record<string, string> {
+    const env: Record<string, string> = {
+      PATH: process.env.PATH ?? '',
+      HOME: process.env.HOME ?? homedir(),
+      AGENT_DATA_DIR: path.join(dataRoot, 'data'),
+      AGENT_CONFIG_DIR: path.join(dataRoot, 'config'),
+      AGENT_CACHE_DIR: path.join(dataRoot, 'cache'),
+    };
+
+    if (process.platform === 'win32') {
+      for (const name of [
+        'USERPROFILE',
+        'SystemRoot',
+        'SystemDrive',
+        'windir',
+        'COMSPEC',
+        'PATHEXT',
+        'TEMP',
+        'TMP',
+        'NUMBER_OF_PROCESSORS',
+        'PROCESSOR_ARCHITECTURE',
+        'LOCALAPPDATA',
+        'APPDATA',
+      ]) {
+        const value = process.env[name];
+        if (value !== undefined) env[name] = value;
+      }
+    }
+
+    return env;
+  }
+
   async function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {
     const dataRoot = await mkdtemp(path.join(tmpdir(), 'smoke-cli-'));
     return new Promise((resolve) => {
       const child = spawn(process.execPath, [CLI, ...args], {
-        env: {
-          PATH: process.env.PATH ?? '',
-          HOME: process.env.HOME ?? homedir(),
-          USERPROFILE: process.env.USERPROFILE ?? homedir(),
-          SystemRoot: process.env.SystemRoot ?? '',
-          AGENT_DATA_DIR: path.join(dataRoot, 'data'),
-          AGENT_CONFIG_DIR: path.join(dataRoot, 'config'),
-          AGENT_CACHE_DIR: path.join(dataRoot, 'cache'),
-        },
+        env: childEnv(dataRoot),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
@@ -292,19 +325,33 @@ describe('the CLI starts', () => {
     });
   }
 
+  /**
+   * A CLI test that fails with `actual: ''` and nothing else tells you the
+   * child produced no stdout and not why. Every assertion here reports the exit
+   * code and stderr, so a failure on a platform you cannot reach is still
+   * diagnosable from the CI log.
+   */
+  function detail(r: { stdout: string; stderr: string; code: number | null }): string {
+    return `\nexit=${r.code}\nstdout=${JSON.stringify(r.stdout.slice(0, 400))}\nstderr=${JSON.stringify(r.stderr.slice(0, 800))}`;
+  }
+
   test('--version and --help work', async () => {
     const version = await runCli(['--version']);
-    assert.equal(version.code, 0);
-    assert.match(version.stdout, /\d+\.\d+\.\d+/);
+    assert.equal(version.code, 0, `--version exited non-zero${detail(version)}`);
+    assert.match(version.stdout, /\d+\.\d+\.\d+/, `--version printed no version${detail(version)}`);
 
     const help = await runCli(['--help']);
-    assert.equal(help.code, 0);
-    assert.match(help.stdout, /Usage:/);
+    assert.equal(help.code, 0, `--help exited non-zero${detail(help)}`);
+    assert.match(help.stdout, /Usage:/, `--help printed no usage${detail(help)}`);
   });
 
   test('--print-config resolves platform directories', async () => {
     const result = await runCli(['--print-config']);
-    assert.equal(result.code, 0);
-    assert.match(result.stdout, /permission profile\s+:/);
+    assert.equal(result.code, 0, `--print-config exited non-zero${detail(result)}`);
+    assert.match(
+      result.stdout,
+      /permission profile\s+:/,
+      `--print-config printed nothing usable${detail(result)}`,
+    );
   });
 });
