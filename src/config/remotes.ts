@@ -3,7 +3,7 @@
  *
  * Remotes live in the **user's** config directory, never in the project:
  *
- *   ~/.config/agent/remotes.toml
+ *   ~/.config/mycoder/remotes.toml
  *
  * A project file may reference a remote by name and nothing more. It cannot
  * define one, cannot supply a host, and certainly cannot supply a key — which is

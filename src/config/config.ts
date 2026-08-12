@@ -2,7 +2,7 @@
  * Configuration loading (spec §22, Appendix B/C).
  *
  * Reads, in increasing priority:
- *   ~/.config/agent/config.toml          (user)
+ *   ~/.config/mycoder/config.toml          (user)
  *   <workspace>/.agent/config.toml       (project)
  *   <workspace>/.agent/permissions.toml  (project permission rules)
  *   CLI flags                            (applied by the caller, on top)
@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { posix } from 'node:path';
 
+import { PROJECT_DIR, projectDirCandidates } from '../app.ts';
 import { parseToml, TomlParseError, type TomlTable, type TomlValue } from '../util/toml.ts';
 import { toPosix, type CanonicalPath } from '../util/paths.ts';
 import type { Capability } from '../policy/access.ts';
@@ -58,7 +59,7 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
   let config = defaultConfig();
 
   const userPath = path.join(opts.userConfigDir, 'config.toml');
-  const projectPath = path.join(opts.workspaceRoot, '.agent', 'config.toml');
+  const projectPath = await firstExisting(read, projectDirCandidates(opts.workspaceRoot), 'config.toml');
 
   for (const [file, label] of [
     [userPath, 'user config'],
@@ -96,7 +97,11 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
   if (opts.overrides) config = mergeConfig(config, opts.overrides);
   config = applySystemCeiling(config);
 
-  const permissionsPath = path.join(opts.workspaceRoot, '.agent', 'permissions.toml');
+  const permissionsPath = await firstExisting(
+    read,
+    projectDirCandidates(opts.workspaceRoot),
+    'permissions.toml',
+  );
   const permissions = await readTomlFile(read, permissionsPath, 'project permissions');
   let projectRules: PolicyRule[] = [];
   if (permissions) {
@@ -107,6 +112,29 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
   }
 
   return { config, projectRules, sources, userProviderIds: [...userProviderIds] };
+}
+
+/**
+ * First candidate directory that actually contains `name`.
+ *
+ * Falls back to the primary path when none exists, so the "file is absent"
+ * message names the directory people should create.
+ */
+async function firstExisting(
+  read: (p: string) => Promise<string>,
+  dirs: readonly string[],
+  name: string,
+): Promise<string> {
+  for (const dir of dirs) {
+    const candidate = path.join(dir, name);
+    try {
+      await read(candidate);
+      return candidate;
+    } catch {
+      // keep looking
+    }
+  }
+  return path.join(dirs[0] ?? PROJECT_DIR, name);
 }
 
 async function readTomlFile(

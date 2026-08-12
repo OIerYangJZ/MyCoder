@@ -14,6 +14,7 @@
 
 import * as path from 'node:path';
 
+import { PROJECT_DIR, projectDir } from './app.ts';
 import { canonicalize, displayPath, type CanonicalPath } from './util/paths.ts';
 import { newSessionId, type SessionId } from './util/ids.ts';
 import { createLogger, installLogSanitizer, type Logger, type LogLevel } from './util/logger.ts';
@@ -156,7 +157,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   const dirs = opts.dirs ?? resolveKernelDirs(opts.dirsRoot ? { root: opts.dirsRoot } : {});
   const workspaceResolved = await canonicalize(opts.workspaceDir, { cwd: process.cwd() });
   const workspaceRoot = workspaceResolved.path;
-  const agentTmpDir = path.join(workspaceRoot, '.agent', 'tmp') as CanonicalPath;
+  const agentTmpDir = path.join(projectDir(workspaceRoot), 'tmp') as CanonicalPath;
 
   // 3. Configuration, then remotes.
   const overrides: Partial<KernelConfig> = {};
@@ -237,7 +238,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   ];
   if (loaded.projectRules.length > 0) {
     layers.push({
-      name: 'project:.agent/permissions.toml',
+      name: `project:${PROJECT_DIR}/permissions.toml`,
       source: 'project',
       profile: projectRulesProfile(loaded.projectRules),
     });
@@ -450,7 +451,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     (opts.nonInteractive
       ? new DenyAllPrompter()
       : new DenyAllPrompter(
-          'Approval is required. Run without --non-interactive, or grant it in .agent/permissions.toml.',
+          `Approval is required. Run without --non-interactive, or grant it in ${PROJECT_DIR}/permissions.toml.`,
         ));
 
   const toolRuntime = new ToolRuntime({

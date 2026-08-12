@@ -11,6 +11,7 @@
 
 import * as path from 'node:path';
 
+import { PROJECT_DIR } from '../app.ts';
 import { toPosix, type CanonicalPath } from '../util/paths.ts';
 import type { Capability } from './access.ts';
 
@@ -287,7 +288,7 @@ export function reviewProfile(ctx: ProfileContext): PermissionProfile {
 
 export function workspaceDevProfile(ctx: ProfileContext): PermissionProfile {
   const root = ctx.workspaceRoot;
-  const tmp = ctx.agentTmpDir ?? path.join(root, '.agent', 'tmp');
+  const tmp = ctx.agentTmpDir ?? path.join(root, PROJECT_DIR, 'tmp');
 
   return {
     name: 'workspace-dev',

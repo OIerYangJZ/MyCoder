@@ -9,6 +9,8 @@
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 
+import { APP_NAME, ENV_CACHE_DIR, ENV_CONFIG_DIR, ENV_DATA_DIR } from '../app.ts';
+
 export interface KernelDirs {
   /** User configuration: config.toml, remotes.toml, skills/, agents/. */
   config: string;
@@ -41,18 +43,18 @@ export function resolveKernelDirs(opts: ResolveDirsOptions = {}): KernelDirs {
     };
   }
 
-  // An explicit AGENT_* override wins on every platform: it is what CI and the
+  // An explicit MYCODER_* override wins on every platform: it is what CI and the
   // security tests use to keep a run out of the developer's real session store.
-  const explicitConfig = env.AGENT_CONFIG_DIR;
-  const explicitData = env.AGENT_DATA_DIR;
-  const explicitCache = env.AGENT_CACHE_DIR;
+  const explicitConfig = env[ENV_CONFIG_DIR];
+  const explicitData = env[ENV_DATA_DIR];
+  const explicitCache = env[ENV_CACHE_DIR];
 
   if (platform === 'darwin') {
-    const support = path.join(home, 'Library', 'Application Support', 'agent');
+    const support = path.join(home, 'Library', 'Application Support', APP_NAME);
     return {
-      config: explicitConfig ?? path.join(home, '.config', 'agent'),
+      config: explicitConfig ?? path.join(home, '.config', APP_NAME),
       data: explicitData ?? support,
-      cache: explicitCache ?? path.join(home, 'Library', 'Caches', 'agent'),
+      cache: explicitCache ?? path.join(home, 'Library', 'Caches', APP_NAME),
       home,
     };
   }
@@ -61,9 +63,9 @@ export function resolveKernelDirs(opts: ResolveDirsOptions = {}): KernelDirs {
     const appData = env.APPDATA ?? path.join(home, 'AppData', 'Roaming');
     const localAppData = env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local');
     return {
-      config: explicitConfig ?? path.join(appData, 'agent'),
-      data: explicitData ?? path.join(localAppData, 'agent'),
-      cache: explicitCache ?? path.join(localAppData, 'agent', 'cache'),
+      config: explicitConfig ?? path.join(appData, APP_NAME),
+      data: explicitData ?? path.join(localAppData, APP_NAME),
+      cache: explicitCache ?? path.join(localAppData, APP_NAME, 'cache'),
       home,
     };
   }
@@ -73,9 +75,9 @@ export function resolveKernelDirs(opts: ResolveDirsOptions = {}): KernelDirs {
   const xdgData = env.XDG_DATA_HOME ?? path.join(home, '.local', 'share');
   const xdgCache = env.XDG_CACHE_HOME ?? path.join(home, '.cache');
   return {
-    config: explicitConfig ?? path.join(xdgConfig, 'agent'),
-    data: explicitData ?? path.join(xdgData, 'agent'),
-    cache: explicitCache ?? path.join(xdgCache, 'agent'),
+    config: explicitConfig ?? path.join(xdgConfig, APP_NAME),
+    data: explicitData ?? path.join(xdgData, APP_NAME),
+    cache: explicitCache ?? path.join(xdgCache, APP_NAME),
     home,
   };
 }

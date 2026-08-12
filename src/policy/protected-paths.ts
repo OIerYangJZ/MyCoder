@@ -13,6 +13,7 @@
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 
+import { APP_NAME } from '../app.ts';
 import { GlobSet } from '../util/glob.ts';
 import { toPosix, type CanonicalPath } from '../util/paths.ts';
 
@@ -125,6 +126,9 @@ function kernelPolicyPaths(home: string, configDir: string): string[] {
     `${toPosix(configDir)}/config.toml`,
     `${toPosix(configDir)}/permissions.toml`,
     `${toPosix(configDir)}/remotes.toml`,
+    // Both the current and the legacy name: a session must not be able to
+    // rewrite its own policy under either.
+    `${toPosix(home)}/.config/${APP_NAME}/**`,
     `${toPosix(home)}/.config/agent/**`,
   ];
 }
@@ -150,7 +154,7 @@ export class ProtectedPaths {
 
   constructor(opts: ProtectedPathsOptions = {}) {
     const home = opts.home ?? homedir();
-    const configDir = opts.configDir ?? path.join(home, '.config', 'agent');
+    const configDir = opts.configDir ?? path.join(home, '.config', APP_NAME);
 
     this.secretFiles = new GlobSet([...SECRET_FILE_PATTERNS, ...(opts.extraSecretPatterns ?? [])]);
     this.secretExceptions = new GlobSet(SECRET_FILE_EXCEPTIONS);

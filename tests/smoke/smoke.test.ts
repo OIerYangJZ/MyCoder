@@ -275,9 +275,9 @@ describe('the CLI starts', () => {
     const env: Record<string, string> = {
       PATH: process.env.PATH ?? '',
       HOME: process.env.HOME ?? homedir(),
-      AGENT_DATA_DIR: path.join(dataRoot, 'data'),
-      AGENT_CONFIG_DIR: path.join(dataRoot, 'config'),
-      AGENT_CACHE_DIR: path.join(dataRoot, 'cache'),
+      MYCODER_DATA_DIR: path.join(dataRoot, 'data'),
+      MYCODER_CONFIG_DIR: path.join(dataRoot, 'config'),
+      MYCODER_CACHE_DIR: path.join(dataRoot, 'cache'),
     };
 
     if (process.platform === 'win32') {

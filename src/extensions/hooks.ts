@@ -16,6 +16,7 @@
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { projectDirCandidates } from '../app.ts';
 import { globMatch } from '../util/glob.ts';
 import { parseToml, TomlParseError, type TomlTable, type TomlValue } from '../util/toml.ts';
 import { truncateForModel } from '../util/text.ts';
@@ -73,13 +74,18 @@ export async function loadHooks(
   workspaceRoot: string,
   readFileImpl: (p: string) => Promise<string> = (p) => readFile(p, 'utf8'),
 ): Promise<HookLoadResult> {
-  const file = path.join(workspaceRoot, '.agent', 'hooks.toml');
-  let content: string;
-  try {
-    content = await readFileImpl(file);
-  } catch {
-    return { hooks: [], warnings: [] };
+  let file = '';
+  let content: string | undefined;
+  for (const dir of projectDirCandidates(workspaceRoot)) {
+    file = path.join(dir, 'hooks.toml');
+    try {
+      content = await readFileImpl(file);
+      break;
+    } catch {
+      content = undefined;
+    }
   }
+  if (content === undefined) return { hooks: [], warnings: [] };
 
   let table: TomlTable;
   try {

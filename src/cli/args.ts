@@ -1,21 +1,23 @@
 /**
  * CLI argument parsing (spec §15.1).
  *
- *   agent [prompt]
- *   agent -c, --continue
- *   agent -r, --resume <session-id>
- *   agent -m, --model <alias>
- *   agent --profile <permission-profile>
- *   agent --cwd <path>
- *   agent --remote <remote-name>
- *   agent --read-only
- *   agent --no-telemetry
- *   agent --json
+ *   mycoder [prompt]
+ *   mycoder -c, --continue
+ *   mycoder -r, --resume <session-id>
+ *   mycoder -m, --model <alias>
+ *   mycoder --profile <permission-profile>
+ *   mycoder --cwd <path>
+ *   mycoder --remote <remote-name>
+ *   mycoder --read-only
+ *   mycoder --no-telemetry
+ *   mycoder --json
  *
  * Hand-rolled rather than pulled from a CLI library: the flag set is small and
  * fixed, and these flags sit above project configuration in the priority order
  * (§22), so it is worth being able to read exactly how each one is interpreted.
  */
+
+import { APP_DISPLAY_NAME } from '../app.ts';
 
 export interface CliArgs {
   prompt?: string;
@@ -166,24 +168,24 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   return args;
 }
 
-export const USAGE = `agent — a coding agent kernel
+export const USAGE = `${APP_DISPLAY_NAME} — a coding agent kernel
 
 Usage:
-  agent [prompt]                  start a session, optionally with a first task
-  agent -c, --continue            continue the most recent session
-  agent -r, --resume <id>         resume a specific session
-  agent -m, --model <alias>       select a model (see /model list)
-  agent --profile <name>          permission profile: read-only | workspace-dev | review
-  agent --cwd <path>              workspace root (defaults to the current directory)
-  agent --remote <name>           run tools on a configured SSH remote
-  agent --read-only               force the read-only profile
-  agent --no-telemetry            disable telemetry entirely
-  agent --json                    emit machine-readable events on stdout
-  agent --non-interactive         deny anything that would need approval
-  agent --print-config            print the effective configuration and exit
-  agent --log-level <level>       silent | error | warn | info | debug | trace
-  agent -h, --help                this message
-  agent -v, --version             print the version
+  mycoder [prompt]                  start a session, optionally with a first task
+  mycoder -c, --continue            continue the most recent session
+  mycoder -r, --resume <id>         resume a specific session
+  mycoder -m, --model <alias>       select a model (see /model list)
+  mycoder --profile <name>          permission profile: read-only | workspace-dev | review
+  mycoder --cwd <path>              workspace root (defaults to the current directory)
+  mycoder --remote <name>           run tools on a configured SSH remote
+  mycoder --read-only               force the read-only profile
+  mycoder --no-telemetry            disable telemetry entirely
+  mycoder --json                    emit machine-readable events on stdout
+  mycoder --non-interactive         deny anything that would need approval
+  mycoder --print-config            print the effective configuration and exit
+  mycoder --log-level <level>       silent | error | warn | info | debug | trace
+  mycoder -h, --help                this message
+  mycoder -v, --version             print the version
 
 Inside a session, control commands change kernel state directly:
   /model  /goal  /loop  /permissions  /status  /compact  /remote  /help

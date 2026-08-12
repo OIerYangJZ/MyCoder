@@ -32,9 +32,9 @@ async function runCli(args: string[], stdin = '', cwd?: string): Promise<RunResu
         PATH: process.env.PATH ?? '',
         HOME: process.env.HOME ?? '',
         // Keep the test out of the developer's real session store.
-        AGENT_DATA_DIR: path.join(dataRoot, 'data'),
-        AGENT_CONFIG_DIR: path.join(dataRoot, 'config'),
-        AGENT_CACHE_DIR: path.join(dataRoot, 'cache'),
+        MYCODER_DATA_DIR: path.join(dataRoot, 'data'),
+        MYCODER_CONFIG_DIR: path.join(dataRoot, 'config'),
+        MYCODER_CACHE_DIR: path.join(dataRoot, 'cache'),
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });

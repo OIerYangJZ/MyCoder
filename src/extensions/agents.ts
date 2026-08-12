@@ -16,6 +16,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { projectDirCandidates } from '../app.ts';
 import { asStringList, parseFrontmatter } from '../util/frontmatter.ts';
 import { truncateForModel } from '../util/text.ts';
 import { buildProfile, type PermissionProfile, type ProfileContext } from '../policy/profiles.ts';
@@ -35,7 +36,7 @@ export interface AgentDefinition {
 
 export function agentSearchPaths(workspaceRoot: string, userConfigDir: string): string[] {
   return [
-    path.join(workspaceRoot, '.agent', 'agents'),
+    ...projectDirCandidates(workspaceRoot).map((d) => path.join(d, 'agents')),
     path.join(userConfigDir, 'agents'),
     path.join(workspaceRoot, '.claude', 'agents'),
   ];

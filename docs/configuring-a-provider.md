@@ -12,10 +12,10 @@ Any endpoint speaking one of the three supported protocols can be added from
 ## Where the file goes
 
 ```
-~/.config/agent/config.toml
+~/.config/mycoder/config.toml
 ```
 
-**User config only.** A project's `.agent/config.toml` may _select_ an alias but
+**User config only.** A project's `.mycoder/config.toml` may _select_ an alias but
 may never _define_ a provider — declaring an endpoint means declaring where every
 prompt and every file the model has read gets sent, and a checked-in repository
 file must not be able to decide that. A project that tries is ignored with a
@@ -24,7 +24,7 @@ warning. This is the same rule the spec applies to SSH remotes (§19.2).
 ## DeepSeek
 
 ```toml
-# ~/.config/agent/config.toml
+# ~/.config/mycoder/config.toml
 
 [model.provider.deepseek]
 protocol    = "openai-chat"

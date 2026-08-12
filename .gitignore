@@ -1,5 +1,5 @@
 node_modules/
-.agent/tmp/
+.mycoder/tmp/
 dist/
 coverage/
 *.log

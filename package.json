@@ -1,15 +1,15 @@
 {
-  "name": "@agent/kernel",
+  "name": "mycoder",
   "version": "0.1.0",
   "private": true,
-  "description": "Coding Agent Kernel v0.1 \u2014 small, verifiable, with explicit security boundaries.",
+  "description": "MyCoder \u2014 a coding agent kernel: small, verifiable, with explicit security boundaries.",
   "type": "module",
   "engines": {
     "node": ">=22.6.0"
   },
   "packageManager": "pnpm@10.33.0",
   "bin": {
-    "agent": "./src/cli/main.ts"
+    "mycoder": "./src/cli/main.ts"
   },
   "exports": {
     ".": "./src/index.ts"
@@ -30,7 +30,8 @@
     "test:smoke": "node --test --experimental-strip-types \"tests/smoke/**/*.test.ts\"",
     "test:trajectory": "node --test --experimental-strip-types tests/integration/agent-loop.test.ts",
     "test:unit": "node --test --experimental-strip-types \"tests/unit/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "mycoder": "node src/cli/main.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

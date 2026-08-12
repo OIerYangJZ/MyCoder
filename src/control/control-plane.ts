@@ -11,6 +11,7 @@
  * anything the model can influence.
  */
 
+import { APP_DISPLAY_NAME, PROJECT_DIR } from '../app.ts';
 import { describeSandbox, networkEnforcementLevel } from '../execution/sandbox.ts';
 import { ModelRegistry } from '../model/profiles.ts';
 import type { GoalState } from '../context/context-engine.ts';
@@ -476,7 +477,7 @@ const handleRemote: ControlHandler = async (args, host) => {
       return {
         ok: true,
         command: 'remote',
-        message: 'No remotes are configured. Add them to ~/.config/agent/remotes.toml.',
+        message: `No remotes are configured. Add them to your ${APP_DISPLAY_NAME} config directory as remotes.toml.`,
       };
     }
     return {
@@ -534,7 +535,7 @@ const handleSkills: ControlHandler = (_args, host) => ({
   command: 'skills',
   message:
     host.skills.length === 0
-      ? 'No skills discovered. Add them under .agent/skills/<name>/SKILL.md.'
+      ? `No skills discovered. Add them under ${PROJECT_DIR}/skills/<name>/SKILL.md.`
       : 'Skills:\n' +
         host.skills.map((s) => `  ${s.name.padEnd(24)} ${s.description}`).join('\n') +
         "\n\nA skill can only narrow this session's capabilities, never widen them.",
@@ -545,7 +546,7 @@ const handleAgents: ControlHandler = (_args, host) => ({
   command: 'agents',
   message:
     host.agents.length === 0
-      ? 'No agents discovered. Add them under .agent/agents/<name>.md.'
+      ? `No agents discovered. Add them under ${PROJECT_DIR}/agents/<name>.md.`
       : 'Agents:\n' +
         host.agents.map((a) => `  ${a.name.padEnd(24)} ${a.description}`).join('\n') +
         "\n\nA subagent's capabilities are always a subset of this session's.",
@@ -556,7 +557,7 @@ const handleHooks: ControlHandler = (_args, host) => ({
   command: 'hooks',
   message:
     host.hooks.length === 0
-      ? 'No hooks configured. Add them to .agent/hooks.toml.'
+      ? `No hooks configured. Add them to ${PROJECT_DIR}/hooks.toml.`
       : 'Hooks:\n' +
         host.hooks.map((h) => `  ${h.event.padEnd(18)} ${h.command.join(' ')}`).join('\n') +
         '\n\nProject hooks run through the executor with a scrubbed environment and are never trusted kernel hooks.',

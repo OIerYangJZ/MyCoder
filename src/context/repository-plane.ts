@@ -13,6 +13,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { PROJECT_DIR } from '../app.ts';
 import { sha256Hex } from '../util/ids.ts';
 import { toPosix, type CanonicalPath } from '../util/paths.ts';
 import { truncateForModel } from '../util/text.ts';
@@ -21,6 +22,8 @@ import { walkFiles } from '../util/walk.ts';
 /** Files that carry project-level instructions for an agent. */
 export const INSTRUCTION_FILES: readonly string[] = [
   'AGENTS.md',
+  `${PROJECT_DIR}/AGENTS.md`,
+  `${PROJECT_DIR}/instructions.md`,
   '.agent/AGENTS.md',
   '.agent/instructions.md',
   'CLAUDE.md',

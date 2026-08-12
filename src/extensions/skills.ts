@@ -20,6 +20,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { projectDirCandidates } from '../app.ts';
 import { asStringList, parseFrontmatter } from '../util/frontmatter.ts';
 import { truncateForModel } from '../util/text.ts';
 import { buildProfile, type PermissionProfile, type ProfileContext } from '../policy/profiles.ts';
@@ -40,7 +41,10 @@ export interface SkillDefinition {
 
 /** Search order (spec §16.1); earlier wins on a name collision. */
 export function skillSearchPaths(workspaceRoot: string, userConfigDir: string, compat = true): string[] {
-  const paths = [path.join(workspaceRoot, '.agent', 'skills'), path.join(userConfigDir, 'skills')];
+  const paths = [
+    ...projectDirCandidates(workspaceRoot).map((d) => path.join(d, 'skills')),
+    path.join(userConfigDir, 'skills'),
+  ];
   if (compat) {
     paths.push(path.join(workspaceRoot, '.claude', 'skills'), path.join(workspaceRoot, '.agents', 'skills'));
   }
