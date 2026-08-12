@@ -26,6 +26,8 @@ export const INSTRUCTION_FILES: readonly string[] = [
   `${PROJECT_DIR}/instructions.md`,
   '.agent/AGENTS.md',
   '.agent/instructions.md',
+  // lint-allow no-provider-names-in-core: a well-known instruction filename other tools
+  // already write, not a branch on a provider. Reading it couples us to nothing.
   'CLAUDE.md',
   '.cursorrules',
   'CONVENTIONS.md',

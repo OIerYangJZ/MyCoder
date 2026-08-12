@@ -144,6 +144,53 @@ a hard step, request, tool-call, time and cost budget.
 7. **A model can still write bad code.** Nothing here is a correctness guarantee;
    the freshness ledger and the mutation detector make changes reviewable, not
    right.
+8. **The remote SSH workspace jail is a path check, not a boundary.** It confines
+   Read/Edit/Glob and the working directory, but not which absolute paths a
+   remote _shell command_ may name. Redaction is what keeps a secret out of the
+   model there, and redaction only knows values it has been told about. This is
+   what `sandboxStrength: 'policy-enforced'` means, and it is measured rather
+   than assumed — see `docs/alpha3-ssh-validation.md`.
+9. **A cancelled remote command may leave a live remote process.** The local turn
+   ends and the tool exchange closes; whether the orphan dies is OpenSSH and
+   remote-OS behaviour. Surfaced as uncertainty rather than claimed as success.
+
+## Credential storage (alpha.3 §10)
+
+`api_key_file` plus mode `0600` is **local credential persistence, not a
+hardware-backed secret vault.** The distinction matters because the convenience
+is real and the temptation to over-read the guarantee is correspondingly real.
+
+It protects against:
+
+- accidental inclusion in a repository — the file is refused if it is inside the
+  workspace or a reference tree;
+- ordinary tool and model reads — the configured path is hard-denied to Read,
+  Grep, Glob disclosure, Shell, Hook, Skill and Subagent, and the denial cannot
+  be lifted by any profile, project rule or approval;
+- ambient process inheritance — child processes get a constructed environment,
+  never the host's;
+- logs, the event log and telemetry — the value is registered with the Redactor
+  for the lease's lifetime, and leases stringify to `secret_ref://…`;
+- other local users under normal POSIX permissions — group and other bits are
+  refused, and a file owned by someone else is refused outright.
+
+It does **not** claim protection against:
+
+- root;
+- same-user arbitrary native code — a process running as you can read a file you
+  can read, and no permission bit distinguishes the two;
+- a compromised OS;
+- debugger or process-memory inspection while a lease is live.
+
+**Windows is a real gap.** There are no POSIX mode bits, so the permission check
+is skipped and `CredentialFileInfo.mode` is undefined. The symlink, file-type,
+workspace-containment and protected-path rules still apply; the "no other local
+account can read this" property does not. Do not read a green Windows run as
+evidence of that property.
+
+Future Keychain / Secret Service / Credential Manager integration replaces the
+_source_ without changing `SecretBroker`, its lease model, or anything
+downstream. See ADR-0011.
 
 ## Release blockers
 

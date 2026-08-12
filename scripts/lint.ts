@@ -35,13 +35,38 @@ export interface Violation {
   message: string;
 }
 
-interface Rule {
+/**
+ * The projections a rule may inspect.
+ *
+ * Two are needed, and conflating them is how five rules in this file were
+ * silently dead until the self-test suite was written (alpha.3 §39).
+ *
+ * `code` blanks string *contents*, which is right for a rule about identifiers:
+ * `fetch(` inside a string is a mention, not a call, and `// never read
+ * process.env` is advice, not a read.
+ *
+ * `text` keeps string contents, which is required for anything whose subject
+ * *is* a string: a module specifier (`'./step'`), a credential literal, a
+ * provider name in a comparison. Matching those against `code` can never
+ * succeed, and a rule that can never succeed reports zero violations — which is
+ * indistinguishable from a clean repository.
+ */
+export interface RuleContext {
+  file: string;
+  lines: readonly string[];
+  /** Comments, regex literals and string contents blanked. */
+  code: string;
+  /** Comments and regex literals blanked; string contents preserved. */
+  text: string;
+}
+
+export interface Rule {
   name: string;
   /** Why this rule exists, printed with the first violation. */
   rationale: string;
   /** Files this rule applies to, relative to the repo root and POSIX-slashed. */
   applies(file: string): boolean;
-  check(file: string, lines: readonly string[], source: string): Violation[];
+  check(ctx: RuleContext): Violation[];
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -59,7 +84,19 @@ interface Rule {
  * semantically right to blank them — a rule that *describes* `process.env` in a
  * pattern is not *reading* it.
  */
-function blankNonCode(source: string): string {
+export interface BlankOptions {
+  /**
+   * Keep the characters inside string literals, blanking only the quotes.
+   *
+   * Comments and regex literals are still blanked either way: a rule that
+   * *describes* `process.env` in a pattern is not *reading* it, and a comment
+   * saying "do not call fetch() here" is the opposite of a violation.
+   */
+  keepStringContents?: boolean;
+}
+
+export function blankNonCode(source: string, opts: BlankOptions = {}): string {
+  const keepStrings = opts.keepStringContents ?? false;
   let out = '';
   let i = 0;
   const n = source.length;
@@ -94,21 +131,23 @@ function blankNonCode(source: string): string {
         i += 1;
         continue;
       }
+      // The quote characters themselves are kept when contents are: a rule
+      // matching `from 'node:http'` needs the delimiters to anchor on.
       if (c === "'") {
         state = 'single';
-        out += ' ';
+        out += keepStrings ? c : ' ';
         i += 1;
         continue;
       }
       if (c === '"') {
         state = 'double';
-        out += ' ';
+        out += keepStrings ? c : ' ';
         i += 1;
         continue;
       }
       if (c === '`') {
         state = 'template';
-        out += ' ';
+        out += keepStrings ? c : ' ';
         i += 1;
         continue;
       }
@@ -169,7 +208,9 @@ function blankNonCode(source: string): string {
 
     // inside a string literal
     if (c === '\\') {
-      out += '  ';
+      // Escapes are preserved verbatim when contents are kept, so a specifier
+      // or a credential literal survives intact rather than gaining two spaces.
+      out += keepStrings ? source.slice(i, i + 2) : '  ';
       i += 2;
       continue;
     }
@@ -179,15 +220,87 @@ function blankNonCode(source: string): string {
       (state === 'template' && c === '`')
     ) {
       state = 'code';
-      out += ' ';
+      out += keepStrings ? c : ' ';
       i += 1;
       continue;
     }
-    out += c === '\n' ? '\n' : ' ';
+    out += c === '\n' ? '\n' : keepStrings ? c : ' ';
     i += 1;
   }
 
   return out;
+}
+
+/**
+ * Suppression pragmas.
+ *
+ * Reviving the five dead rules (see `RuleContext`) surfaced eight sites in
+ * `src/` where a vendor name is *data*, not coupling: the secret scanner has to
+ * know what an `sk-ant-` key looks like, `scrubEnv` has to name the variables it
+ * denies, and the default egress allowlist has to name the hosts it allows. The
+ * rule is right that a provider name in `src/security/` deserves a second look;
+ * it is wrong that these particular ones are defects.
+ *
+ * The alternative — carving whole files out of the rule — would also stop
+ * covering the next line added to those files, which is the line that would
+ * actually be a defect. A per-line pragma with a mandatory reason keeps the rule
+ * live everywhere and puts the justification where the reader is:
+ *
+ *   // lint-allow no-provider-names-in-core: a secret scanner must know key shapes
+ *
+ * on the offending line or the line immediately above it. The reason is not
+ * decorative — a pragma without one does not suppress anything, so a bare
+ * `// lint-allow` cannot be used to silence a rule without saying why.
+ *
+ * `lint-allow-file` exists for one case: a file whose *content is fixtures*, of
+ * which there is currently exactly one (the linter's own self-test).
+ */
+const PRAGMA = /(?:^|\W)lint-allow\s+([a-z-]+)\s*:\s*(\S.*)$/;
+const FILE_PRAGMA = /(?:^|\W)lint-allow-file\s+([a-z-]+)\s*:\s*(\S.*)$/;
+
+/** Rules suppressed for a whole file by a header pragma. */
+function fileSuppressions(lines: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  // Header only: a `lint-allow-file` buried at line 400 would be invisible to
+  // anyone reading the top of the file to find out what it is exempt from.
+  for (const line of lines.slice(0, 40)) {
+    const m = FILE_PRAGMA.exec(line);
+    if (m) out.add(m[1]!);
+  }
+  return out;
+}
+
+const IS_COMMENT = /^\s*(?:\/\/|\*|\/\*)/;
+
+/**
+ * True when this rule is pragma-suppressed at this 1-based line.
+ *
+ * The search covers the offending line and the *whole* contiguous comment block
+ * above it, not just the single line above. A justification worth writing is
+ * often two sentences long, and a suppression that silently stopped working
+ * because someone wrapped the comment would put the rule back to firing on a
+ * site that was already reviewed — which is how a gate gets switched off.
+ */
+function suppressedAt(lines: readonly string[], line: number, rule: string): boolean {
+  const matches = (candidate: string | undefined): boolean => {
+    if (candidate === undefined) return false;
+    const m = PRAGMA.exec(candidate);
+    return m !== null && m[1] === rule;
+  };
+
+  if (matches(lines[line - 1])) return true;
+
+  for (let i = line - 2; i >= 0; i -= 1) {
+    const candidate = lines[i];
+    if (candidate === undefined || !IS_COMMENT.test(candidate)) break;
+    if (matches(candidate)) return true;
+  }
+  return false;
+}
+
+export function applySuppressions(violations: readonly Violation[], lines: readonly string[]): Violation[] {
+  const forFile = fileSuppressions(lines);
+  return violations.filter((v) => !forFile.has(v.rule) && !suppressedAt(lines, v.line, v.rule));
 }
 
 function scan(file: string, code: string, pattern: RegExp, rule: string, message: string): Violation[] {
@@ -204,23 +317,24 @@ const under = (file: string, ...dirs: string[]): boolean => dirs.some((d) => fil
 
 // --- rules -----------------------------------------------------------------
 
-const RULES: Rule[] = [
+export const RULES: Rule[] = [
   {
     name: 'no-raw-network',
     rationale:
       'AGENTS.md #9 / spec §14.1: every outbound byte must go through EgressGate.send(), which is where ' +
       'host allowlists, secret scanning and audit live. A second network client is a second, unaudited egress path.',
     applies: (f) => f !== 'src/security/egress-gate.ts',
-    check: (f, _l, code) => [
-      ...scan(f, code, /(^|[^.\w])fetch\s*\(/, 'no-raw-network', 'calls fetch() directly'),
+    check: ({ file, code, text }) => [
+      ...scan(file, code, /(^|[^.\w])fetch\s*\(/, 'no-raw-network', 'calls fetch() directly'),
+      // The module specifier is a string, so this one reads `text`.
       ...scan(
-        f,
-        code,
+        file,
+        text,
         /from\s+['"]node:https?['"]|require\(['"]https?['"]\)/,
         'no-raw-network',
         'imports node:http(s)',
       ),
-      ...scan(f, code, /new\s+WebSocket\s*\(/, 'no-raw-network', 'opens a WebSocket directly'),
+      ...scan(file, code, /new\s+WebSocket\s*\(/, 'no-raw-network', 'opens a WebSocket directly'),
     ],
   },
 
@@ -230,9 +344,9 @@ const RULES: Rule[] = [
       'AGENTS.md #8 / spec §13.4 / invariant 13: a child process must never inherit the host environment. ' +
       'Build it with scrubEnv() and inject credentials as an explicit SecretLease.',
     applies: () => true,
-    check: (f, _l, code) =>
+    check: ({ file, code }) =>
       scan(
-        f,
+        file,
         code,
         /env\s*:\s*process\.env/,
         'no-ambient-env-spawn',
@@ -254,7 +368,7 @@ const RULES: Rule[] = [
         'src/execution/local.ts', // PATH lookup for optional tooling
         'src/kernel.ts', // registers provider credentials by reference at boot
       ].includes(f),
-    check: (f, _l, code) => scan(f, code, /\bprocess\.env\b/, 'no-host-env-read', 'reads process.env'),
+    check: ({ file, code }) => scan(file, code, /\bprocess\.env\b/, 'no-host-env-read', 'reads process.env'),
   },
 
   {
@@ -263,10 +377,10 @@ const RULES: Rule[] = [
       "Spec §12: spawning is the executor's job. A tool that spawns directly bypasses the capability profile, " +
       'the environment scrub and the output redactor.',
     applies: (f) => under(f, 'src/') && !under(f, 'src/execution/'),
-    check: (f, _l, code) =>
+    check: ({ file, text }) =>
       scan(
-        f,
-        code,
+        file,
+        text,
         /from\s+['"]node:child_process['"]/,
         'no-child-process-outside-execution',
         'imports node:child_process',
@@ -294,14 +408,32 @@ const RULES: Rule[] = [
         'src/edit/',
         'src/control/',
       ),
-    check: (f, _l, code) =>
-      scan(
-        f,
-        code,
+    check: ({ file, text }) => [
+      // The vendor name standing alone: a string comparison, a config key, a
+      // bare identifier. Case-insensitive, since `DeepSeek` and `deepseek` are
+      // the same coupling.
+      ...scan(
+        file,
+        text,
         /\b(anthropic|openai|claude|gpt-\d|gemini|deepseek)\b/i,
         'no-provider-names-in-core',
         'names a specific model provider outside the adapter layer',
       ),
+      // The vendor name buried in an identifier — `openaiQuirk`,
+      // `useAnthropic`, `deepseek_mode` — which `\b` cannot see, because the
+      // boundary is a case change or an underscore rather than a non-word
+      // character. This one is deliberately case-*sensitive*: a lookahead
+      // cannot distinguish `Q` from `q` under the `i` flag, so the two spellings
+      // have to be written out. The cost is a longer pattern; the alternative is
+      // a rule that misses the most idiomatic way to write the coupling.
+      ...scan(
+        file,
+        text,
+        /(?:anthropic|openai|claude|gemini|deepseek)(?=[A-Z0-9_])|[a-z0-9_](?:Anthropic|OpenAI|OpenAi|Claude|Gemini|DeepSeek)/,
+        'no-provider-names-in-core',
+        'names a specific model provider inside an identifier, outside the adapter layer',
+      ),
+    ],
   },
 
   {
@@ -310,10 +442,10 @@ const RULES: Rule[] = [
       'Node runs this source directly with no bundler, so a relative import without a .ts extension fails at ' +
       'runtime — and only on the code path that imports it.',
     applies: (f) => f.endsWith('.ts'),
-    check: (f, _l, code) =>
+    check: ({ file, text }) =>
       scan(
-        f,
-        code,
+        file,
+        text,
         /(?:from|import)\s*\(?\s*['"]\.\.?\/[^'"]*(?<!\.ts)(?<!\.js)(?<!\.json)['"]/,
         'explicit-ts-extension',
         'relative import is missing its .ts extension',
@@ -326,9 +458,9 @@ const RULES: Rule[] = [
       'Tool arguments and provider payloads are untrusted input. `unknown` forces a check at the boundary; ' +
       '`any` silently removes it.',
     applies: (f) => under(f, 'src/'),
-    check: (f, _l, code) => [
-      ...scan(f, code, /:\s*any\b/, 'no-any', 'uses the `any` type'),
-      ...scan(f, code, /\bas\s+any\b/, 'no-any', 'casts to `any`'),
+    check: ({ file, code }) => [
+      ...scan(file, code, /:\s*any\b/, 'no-any', 'uses the `any` type'),
+      ...scan(file, code, /\bas\s+any\b/, 'no-any', 'casts to `any`'),
     ],
   },
 
@@ -344,9 +476,9 @@ const RULES: Rule[] = [
       'Spec §26.1 counts the user-visible debug log as a leak surface. The logger routes through the secret ' +
       'redactor; console.log does not.',
     applies: (f) => under(f, 'src/') && !under(f, 'src/cli/'),
-    check: (f, _l, code) =>
+    check: ({ file, code }) =>
       scan(
-        f,
+        file,
         code,
         /\bconsole\.(log|error|warn|info|debug)\s*\(/,
         'no-console-in-kernel',
@@ -360,25 +492,27 @@ const RULES: Rule[] = [
       'Plan §3.3: CI must never depend on a real credential. Fixtures use obviously-fake values so a leak in ' +
       'the fixture itself is not a leak of anything.',
     applies: (f) => under(f, 'tests/', 'evals/'),
-    check: (f, _l, code) => [
+    // Reads `text`: a credential in a fixture *is* a string literal, so the
+    // code projection could never have matched one.
+    check: ({ file, text }) => [
       // Real key shapes, minus the documented fake prefixes.
       ...scan(
-        f,
-        code,
+        file,
+        text,
         /\bsk-ant-api03-(?!abcdef)[A-Za-z0-9_-]{20,}/,
         'no-real-credentials-in-tests',
         'contains something shaped like a real Anthropic key',
       ),
       ...scan(
-        f,
-        code,
+        file,
+        text,
         /\bghp_(?!fake|abcdef)[A-Za-z0-9]{30,}/,
         'no-real-credentials-in-tests',
         'contains something shaped like a real GitHub token',
       ),
       ...scan(
-        f,
-        code,
+        file,
+        text,
         /\bAKIA(?!FAKEVALUE)[A-Z0-9]{16}\b/,
         'no-real-credentials-in-tests',
         'contains something shaped like a real AWS key id',
@@ -419,13 +553,19 @@ export async function lint(): Promise<Violation[]> {
 
   for (const file of files) {
     const source = await readFile(path.join(ROOT, file), 'utf8');
-    const code = blankNonCode(source);
-    const lines = source.split('\n');
+    const ctx: RuleContext = {
+      file,
+      lines: source.split('\n'),
+      code: blankNonCode(source),
+      text: blankNonCode(source, { keepStringContents: true }),
+    };
 
+    const found: Violation[] = [];
     for (const rule of RULES) {
       if (!rule.applies(file)) continue;
-      violations.push(...rule.check(file, lines, code));
+      found.push(...rule.check(ctx));
     }
+    violations.push(...applySuppressions(found, ctx.lines));
   }
 
   return violations.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);

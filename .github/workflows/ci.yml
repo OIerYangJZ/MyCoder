@@ -87,6 +87,117 @@ jobs:
             console.log("no provider credentials in the CI environment");
           '
 
+  lint-selftest:
+    name: Linter Self-Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.3 §39. `pnpm lint` is a release blocker whose own failure mode is
+      # silence: a rule whose pattern stops matching reports zero violations,
+      # which is what a clean repository looks like. Writing this suite found
+      # five rules that could never fire — they matched inside string literals,
+      # which the code projection blanks — so the gate had been partly decorative
+      # for as long as those rules had existed.
+      - run: pnpm lint:selftest
+
+  evidence:
+    name: Release Evidence Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.3 §32.1: a checklist item without named evidence is not PASS.
+      # This does not run the tests — the jobs below do — it checks that every
+      # claim in docs/alpha3-evidence-matrix.md points at something that exists.
+      # alpha.2 shipped two prose-only PASS lines that were both false.
+      - run: pnpm evidence
+
+  credential-security:
+    name: Credential Security
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.3 §9. Its own job for the same reason the canary suite has one:
+      # "the persisted credential is unreachable from the session it serves" is
+      # the property that makes `api_key_file` acceptable at all, so its failure
+      # should be legible from the run list rather than buried in a combined log.
+      - run: pnpm test:credentials
+
+  ssh:
+    name: Real SSH Matrix
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.3 §11–§21, against a real OpenSSH server the fixture starts on
+      # loopback — real host key, real auth, real remote shell. Not a VPS: same
+      # uid, same filesystem, no network hop, and docs/alpha3-ssh-validation.md
+      # says so. What it buys is that the matrix runs on every commit, which is
+      # how the three defects in docs/alpha3-ssh-validation.md were found —
+      # two of which meant the backend could not connect to real OpenSSH at all.
+      - name: Ensure an sshd binary is present
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server
+
+      - run: pnpm test:ssh
+
+  eval-methodology:
+    name: Eval Methodology
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.3 §24–§31. The methodology is itself a release gate, so the family
+      # split, the omission/wrong-action distinction and the Kernel Correctness
+      # arithmetic get executable evidence rather than a description.
+      - run: pnpm test:evals
+
   test:
     name: Unit + Integration / Node ${{ matrix.node }}
     runs-on: ubuntu-latest

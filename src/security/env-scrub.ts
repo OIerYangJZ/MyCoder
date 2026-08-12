@@ -52,7 +52,10 @@ export const CREDENTIAL_ENV_PATTERNS: readonly string[] = [
   'GITHUB_TOKEN',
   'GH_TOKEN',
   'NPM_TOKEN',
+  // lint-allow no-provider-names-in-core: a denylist of credential-shaped variable names.
+  // The allowlist is what actually builds the environment; these are belt-and-braces.
   'OPENAI_API_KEY',
+  // lint-allow no-provider-names-in-core: as above.
   'ANTHROPIC_API_KEY',
   'SSH_AUTH_SOCK',
   'SSH_AGENT_PID',

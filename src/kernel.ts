@@ -16,13 +16,19 @@ import * as path from 'node:path';
 
 import { PROJECT_DIR, projectDir } from './app.ts';
 import { canonicalize, displayPath, type CanonicalPath } from './util/paths.ts';
+import { toKernelError } from './util/errors.ts';
 import { newSessionId, type SessionId } from './util/ids.ts';
 import { createLogger, installLogSanitizer, type Logger, type LogLevel } from './util/logger.ts';
 import { systemClock, type Clock } from './util/clock.ts';
 import { resolveKernelDirs, sessionsDir, type KernelDirs } from './util/platform.ts';
 
 import { Redactor } from './security/redactor.ts';
-import { InMemorySecretBroker } from './security/secret-broker.ts';
+import { InMemorySecretBroker, type SecretSource } from './security/secret-broker.ts';
+import {
+  checkCredentialFile,
+  chooseCredentialSource,
+  describeCredentialSource,
+} from './security/credential-file.ts';
 import {
   DefaultEgressGate,
   defaultEgressPolicy,
@@ -72,7 +78,7 @@ import { replaySession, workspaceIdentity, checkResumeIdentity } from './session
 
 import { loadConfig, projectRulesProfile } from './config/config.ts';
 import { loadRemotes } from './config/remotes.ts';
-import type { KernelConfig } from './config/schema.ts';
+import type { KernelConfig, ProviderEndpointConfig } from './config/schema.ts';
 
 import { discoverSkills, type SkillDefinition } from './extensions/skills.ts';
 import { discoverAgents, type AgentDefinition } from './extensions/agents.ts';
@@ -179,7 +185,8 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   config.warnings.push(...remotesResult.warnings);
 
   // 4. Secrets. Provider credentials are registered by reference; the value is
-  //    read from the host environment only inside the broker.
+  //    read from the host environment or a credential file only inside the
+  //    broker.
   const secrets = new InMemorySecretBroker(redactor, clock);
   for (const [ref, variable] of [
     ['provider/anthropic', 'ANTHROPIC_API_KEY'],
@@ -194,11 +201,29 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     const resolved = await canonicalize(root, { cwd: workspaceRoot });
     referenceRoots.push(resolved.path);
   }
+
+  // Credential files are resolved *before* ProtectedPaths is built, because the
+  // validated path is one of its constructor inputs (alpha.3 §7). There is
+  // deliberately no window in which a credential path is configured but not yet
+  // protected: the object that enforces the denial cannot be constructed
+  // without the list.
+  const credentials = await resolveProviderCredentials({
+    providers: config.model.providers ?? {},
+    workspaceRoot,
+    referenceRoots,
+    home: dirs.home,
+    // A relative `api_key_file` anchors to the config directory that declared
+    // it, not to the workspace — see CredentialFileCheckOptions.cwd.
+    configDir: dirs.config,
+    warnings: config.warnings,
+  });
+
   const protectedPaths = new ProtectedPaths({
     home: dirs.home,
     configDir: dirs.config,
     referenceRoots,
     extraSecretPatterns: config.security.extraSecretPaths ?? [],
+    credentialPaths: credentials.protectedPaths,
   });
 
   // 6. Execution backend.
@@ -327,24 +352,21 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   // that a project file tried to define, so everything here came from the
   // user's own config.
   for (const [id, entry] of Object.entries(config.model.providers ?? {})) {
+    const credential = credentials.byProvider.get(id);
+
     modelRegistry.registerEndpoint({
       id,
       protocol: entry.protocol,
       baseUrl: entry.baseUrl,
       authScheme: entry.authScheme ?? 'Bearer',
-      ...(entry.apiKeyEnv ? { authSecretRef: `provider/${id}` } : {}),
+      ...(credential?.source ? { authSecretRef: `provider/${id}` } : {}),
       ...(entry.extraHeaders ? { extraHeaders: entry.extraHeaders } : {}),
     });
 
-    // The credential is registered by *reference*: the broker reads the host
-    // environment variable, and nothing downstream ever sees the value.
-    if (entry.apiKeyEnv && process.env[entry.apiKeyEnv]) {
-      secrets.register(`provider/${id}`, { kind: 'host-env', variable: entry.apiKeyEnv });
-    } else if (entry.apiKeyEnv) {
-      config.warnings.push(
-        `provider "${id}" expects ${entry.apiKeyEnv}, which is not set; requests to it will fail with MODEL_AUTH_ERROR`,
-      );
-    }
+    // The credential is registered by *reference*. The broker reads the file or
+    // the environment variable; nothing downstream ever sees the value, and the
+    // file's path is already in the protected set by the time this runs.
+    if (credential?.source) secrets.register(`provider/${id}`, credential.source);
   }
 
   for (const [alias, entry] of Object.entries(config.model.aliases ?? {})) {
@@ -694,6 +716,10 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     skills: skills.map((s) => ({ name: s.name, description: s.description })),
     agents: agents.map((a) => ({ name: a.name, description: a.description })),
     hooks: hookLoad.hooks.map((h: HookDefinition) => ({ event: h.event, command: h.command })),
+    credentialSources: [...credentials.byProvider].map(([provider, c]) => ({
+      provider,
+      description: c.description,
+    })),
     now: () => clock.now(),
 
     async connectRemote(name: string) {
@@ -805,4 +831,123 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
 /** Display helper shared by the CLI. */
 export function relative(workspaceRoot: CanonicalPath, p: CanonicalPath): string {
   return displayPath(workspaceRoot, p);
+}
+
+interface ResolvedCredential {
+  /** Absent when the provider has no usable credential configured. */
+  source?: SecretSource;
+  /** The `/status` line: names the source, never the value. */
+  description: string;
+}
+
+interface ResolvedCredentials {
+  byProvider: Map<string, ResolvedCredential>;
+  /** Canonical credential-file paths, for the protected-path set. */
+  protectedPaths: CanonicalPath[];
+}
+
+/**
+ * Resolve every provider's credential source (alpha.3 §5–§7).
+ *
+ * Three properties this function exists to guarantee, none of which survive
+ * being spread across the call sites:
+ *
+ *  1. **Precedence is applied once**, by `chooseCredentialSource`, so `file`
+ *     beating `env` is a single testable rule rather than an if-chain that
+ *     drifts.
+ *  2. **A rejected file is never a silent fallback.** If `api_key_file` is
+ *     configured but insecure, the provider ends up with *no* credential even
+ *     when `api_key_env` is also set and would have worked. Quietly falling
+ *     back would mean the run succeeds and the user never learns their key file
+ *     is world-readable — the failure has to be attached to the thing that is
+ *     wrong.
+ *  3. **The path is collected for protection even when validation fails.** A
+ *     path the user pointed at a credential is a path the model has no business
+ *     reading, whether or not the kernel could use it.
+ *
+ * Startup never throws here. A misconfigured credential produces a warning and
+ * a `MODEL_AUTH_ERROR` on first use, which is a better failure than refusing to
+ * start a session in which the user might have wanted to fix the file.
+ */
+async function resolveProviderCredentials(opts: {
+  providers: Record<string, ProviderEndpointConfig>;
+  workspaceRoot: CanonicalPath;
+  referenceRoots: readonly CanonicalPath[];
+  home: string;
+  configDir: string;
+  warnings: string[];
+}): Promise<ResolvedCredentials> {
+  const byProvider = new Map<string, ResolvedCredential>();
+  const protectedPaths: CanonicalPath[] = [];
+
+  for (const [id, entry] of Object.entries(opts.providers)) {
+    const choice = chooseCredentialSource({
+      ...(entry.apiKeyFile ? { apiKeyFile: entry.apiKeyFile } : {}),
+      ...(entry.apiKeyEnv ? { apiKeyEnv: entry.apiKeyEnv } : {}),
+    });
+
+    for (const shadowed of choice.shadowed) {
+      opts.warnings.push(
+        `provider "${id}" configures both api_key_file and api_key_env; the file takes precedence ` +
+          `and ${shadowed.selector} is unused`,
+      );
+    }
+
+    if (choice.kind === 'file' && choice.selector) {
+      let info;
+      try {
+        info = await checkCredentialFile(choice.selector, {
+          cwd: opts.configDir,
+          home: opts.home,
+          workspaceRoot: opts.workspaceRoot,
+          referenceRoots: opts.referenceRoots,
+        });
+      } catch (e) {
+        const err = toKernelError(e);
+        opts.warnings.push(
+          `provider "${id}": ${err.message} Requests to it will fail with MODEL_AUTH_ERROR.`,
+        );
+
+        // Protect it anyway — see property 3 above. Canonicalised without
+        // touching the filesystem, since the file may not exist.
+        const lexical = await canonicalize(choice.selector, {
+          cwd: opts.configDir,
+          home: opts.home,
+          resolveSymlinks: false,
+        });
+        protectedPaths.push(lexical.path);
+        byProvider.set(id, { description: describeCredentialSource(choice, false) });
+        continue;
+      }
+
+      protectedPaths.push(info.path);
+      byProvider.set(id, {
+        source: { kind: 'file', path: info.path },
+        description: describeCredentialSource(choice, true),
+      });
+      continue;
+    }
+
+    if (choice.kind === 'env' && choice.selector) {
+      // The one place outside the broker that looks at the host environment,
+      // and only to decide whether the variable is *set* — the value is read
+      // inside the broker, on demand, under a lease.
+      if (process.env[choice.selector]) {
+        byProvider.set(id, {
+          source: { kind: 'host-env', variable: choice.selector },
+          description: describeCredentialSource(choice, true),
+        });
+      } else {
+        opts.warnings.push(
+          `provider "${id}" expects ${choice.selector}, which is not set; requests to it will fail with MODEL_AUTH_ERROR`,
+        );
+        byProvider.set(id, { description: describeCredentialSource(choice, false) });
+      }
+      continue;
+    }
+
+    byProvider.set(id, { description: describeCredentialSource(choice, false) });
+  }
+
+  return { byProvider, protectedPaths };
 }

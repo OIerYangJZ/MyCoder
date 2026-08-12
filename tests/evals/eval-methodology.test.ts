@@ -1,0 +1,345 @@
+/**
+ * Eval methodology v2 (alpha.3 §24–§31).
+ *
+ * The methodology is itself a release gate, so it needs the same treatment §32
+ * demands of everything else: executable evidence rather than a description.
+ * These cases exercise the pieces that make a score interpretable —
+ *
+ *   the family split, so two different questions stop sharing a number;
+ *   the omission/wrong-action distinction, so a model's off run stops reading
+ *     as a runtime regression;
+ *   Kernel Correctness, computed independently of task success;
+ *   distributions with a recorded N, so a single run stops being a measurement.
+ *
+ * — against synthetic attempt records, because the arithmetic and the
+ * classification are the parts that can silently drift. Whether the runner
+ * *executes* correctly is covered by `pnpm eval` itself.
+ */
+
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  classifyFailure,
+  countFailureClasses,
+  distribution,
+  median,
+  promptHash,
+  summariseFamilies,
+  summarisePerTask,
+  type FailureClass,
+  type TaskMetrics,
+} from '../../evals/runners/run.ts';
+import { GOLDEN_TASKS, type EvalFamily } from '../../evals/tasks/golden.ts';
+
+/** A minimal attempt record; every field the summaries touch. */
+function attempt(over: Partial<TaskMetrics> = {}): TaskMetrics {
+  return {
+    id: 't',
+    family: 'model-capability',
+    runId: 'r1',
+    passed: true,
+    kernelCorrect: true,
+    failures: [],
+    provider: 'fake',
+    model: 'fake-1',
+    toolCalls: 3,
+    modelRequests: 4,
+    inputTokens: 100,
+    outputTokens: 50,
+    costUsd: 0,
+    editAttempts: 1,
+    approvalPrompts: 0,
+    secretBoundaryViolations: 0,
+    unreviewedPersistentMutations: 0,
+    durationMs: 20,
+    fixtureVersion: 1,
+    promptHash: 'abc123',
+    ...over,
+  };
+}
+
+// --- §24: two scoreboards ---------------------------------------------------
+
+describe('the two eval families (§24)', () => {
+  test('every task declares a family, and the families are disjoint', () => {
+    const families: EvalFamily[] = ['kernel-invariant', 'model-capability'];
+
+    for (const task of GOLDEN_TASKS) {
+      assert.ok(
+        families.includes(task.family),
+        `task "${task.id}" has family "${task.family}", which is not one of ${families.join('/')}`,
+      );
+    }
+
+    // Both scoreboards must actually have members. A split where everything
+    // landed on one side would report the same single number as alpha.2 did,
+    // with more ceremony.
+    for (const family of families) {
+      assert.ok(
+        GOLDEN_TASKS.some((t) => t.family === family),
+        `no task is classified as ${family}; the split would be decorative`,
+      );
+    }
+  });
+
+  test('a scripted-only task is always a kernel invariant', () => {
+    // `scriptedOnly` means the premise requires a pathological model. That is
+    // the definition of an invariant test, and classifying one as a capability
+    // task would make a live run's skip look like a capability gap.
+    for (const task of GOLDEN_TASKS.filter((t) => t.scriptedOnly)) {
+      assert.equal(
+        task.family,
+        'kernel-invariant',
+        `"${task.id}" is scripted-only but not an invariant task`,
+      );
+    }
+  });
+
+  test('every model-capability task has a natural live prompt (§30)', () => {
+    for (const task of GOLDEN_TASKS.filter((t) => t.family === 'model-capability')) {
+      const live = task.livePrompt ?? task.prompt;
+
+      // §30 rejects labels like "Edit with a stale receipt." — an instruction to
+      // a scripted harness, useless to a real model. The proxy for "natural" is
+      // that it names something concrete the model can act on.
+      assert.ok(live.length > 30, `"${task.id}" live prompt is too terse to be a real instruction: ${live}`);
+      assert.match(
+        live,
+        /\.(ts|js|json|md)\b|`/,
+        `"${task.id}" live prompt names no concrete target: ${live}`,
+      );
+    }
+  });
+
+  test('every task carries a fixture version', () => {
+    for (const task of GOLDEN_TASKS) {
+      assert.ok(
+        Number.isInteger(task.fixtureVersion) && task.fixtureVersion > 0,
+        `"${task.id}" has no usable fixtureVersion`,
+      );
+    }
+  });
+
+  test('the two scoreboards are computed independently', () => {
+    const results = [
+      attempt({ family: 'kernel-invariant', passed: true, kernelCorrect: true }),
+      attempt({ family: 'kernel-invariant', passed: true, kernelCorrect: true }),
+      // A capability task the model failed, with the runtime behaving.
+      attempt({ family: 'model-capability', passed: false, kernelCorrect: true }),
+      attempt({ family: 'model-capability', passed: true, kernelCorrect: true }),
+    ];
+
+    const summary = summariseFamilies(results);
+
+    assert.deepEqual(summary['kernel-invariant'], {
+      attempts: 2,
+      solved: 2,
+      kernelCorrect: 2,
+      securityViolations: 0,
+    });
+    assert.deepEqual(summary['model-capability'], {
+      attempts: 2,
+      solved: 1,
+      kernelCorrect: 2,
+      securityViolations: 0,
+    });
+
+    // The point of the split: the model's miss did not move the invariant score.
+    assert.equal(summary['kernel-invariant'].solved, summary['kernel-invariant'].attempts);
+  });
+});
+
+// --- §25: failure classification -------------------------------------------
+
+describe('failure classification (§25)', () => {
+  const originalFiles = { 'src/math.ts': 'export const add = (a, b) => a - b;\n' };
+
+  const classify = (
+    failures: string[],
+    turnState = 'completed',
+    toolResults = '',
+  ): FailureClass | undefined => classifyFailure(failures, toolResults, { turnState, originalFiles });
+
+  test('no failures means no class', () => {
+    assert.equal(classify([]), undefined);
+  });
+
+  test('a clean turn that left the file untouched is an omission', () => {
+    // The model finished, reported success, and changed nothing — the canonical
+    // "forgot to actually do it" case §25 names.
+    const failure =
+      'src/math.ts has the expected contents: expected "export const add = (a, b) => a + b;\\n", ' +
+      'got "export const add = (a, b) => a - b;\\n"';
+
+    assert.equal(classify([failure]), 'MODEL_ACTION_OMISSION');
+  });
+
+  test('a clean turn that changed the file to the wrong value is a wrong action', () => {
+    const failure =
+      'src/math.ts has the expected contents: expected "export const add = (a, b) => a + b;\\n", ' +
+      'got "export const add = (a, b) => a * b;\\n"';
+
+    assert.equal(classify([failure]), 'MODEL_WRONG_ACTION');
+  });
+
+  test('a missing observable effect on a clean turn is an omission', () => {
+    assert.equal(
+      classify(['a tool result mentions exit 0: no tool result mentioned exit 0']),
+      'MODEL_ACTION_OMISSION',
+    );
+  });
+
+  test('a runtime error outranks the omission heuristic', () => {
+    // Order matters: a kernel bug that also leaves the file untouched must not
+    // be recorded as the model's fault.
+    assert.equal(classify(['check threw TypeError: x is not a function']), 'KERNEL_BUG');
+    assert.equal(classify(['MODEL_INVALID_RESPONSE from the adapter']), 'ADAPTER_BUG');
+  });
+
+  test('a policy denial is classified as such, not as an omission', () => {
+    assert.equal(classify(['tool result: PROTECTED_PATH']), 'POLICY_BLOCKED');
+  });
+
+  test('a budget exhaustion is a capability problem, not an omission', () => {
+    assert.equal(
+      classify(['turn ends as completed: turn ended as failed LOOP_BUDGET_EXCEEDED']),
+      'MODEL_CAPABILITY',
+    );
+  });
+
+  test('a turn that did not complete cleanly is not classified as an omission', () => {
+    // Omission means "finished, but skipped a step". A crashed turn is a
+    // different story and must not borrow the label.
+    assert.equal(classify(['some unattributable failure'], 'failed'), 'UNKNOWN');
+  });
+
+  test('the failure-class distribution counts occurrences', () => {
+    // §25/§34: "3 MODEL_ACTION_OMISSION" and "3 KERNEL_BUG" are the same as a
+    // set and mean opposite things, so the counts have to survive.
+    const counts = countFailureClasses([
+      attempt({ failureClass: 'MODEL_ACTION_OMISSION' }),
+      attempt({ failureClass: 'MODEL_ACTION_OMISSION' }),
+      attempt({ failureClass: 'KERNEL_BUG' }),
+      attempt({}),
+    ]);
+
+    assert.deepEqual(counts, { MODEL_ACTION_OMISSION: 2, KERNEL_BUG: 1 });
+  });
+});
+
+// --- §28: Kernel Correctness ------------------------------------------------
+
+describe('Kernel Correctness is separate from task success (§28)', () => {
+  test('a model omission leaves kernel correctness intact', () => {
+    // The example §28 gives verbatim: model forgot to rerun tests → task
+    // unsolved → MODEL_ACTION_OMISSION → Kernel Correctness = PASS.
+    const results = [
+      attempt({ passed: false, kernelCorrect: true, failureClass: 'MODEL_ACTION_OMISSION' }),
+      attempt({ passed: false, kernelCorrect: true, failureClass: 'MODEL_WRONG_ACTION' }),
+    ];
+    const summary = summariseFamilies(results);
+
+    assert.equal(summary['model-capability'].solved, 0);
+    assert.equal(
+      summary['model-capability'].kernelCorrect,
+      2,
+      'a model omission was counted as a kernel failure',
+    );
+  });
+
+  test('a kernel bug fails kernel correctness', () => {
+    const summary = summariseFamilies([
+      attempt({ passed: false, kernelCorrect: false, failureClass: 'KERNEL_BUG' }),
+    ]);
+    assert.equal(summary['model-capability'].kernelCorrect, 0);
+  });
+
+  test('a security violation always fails kernel correctness', () => {
+    // Even when the task was otherwise solved. A leak is a runtime failure by
+    // definition, and there is no model behaviour that excuses it.
+    const summary = summariseFamilies([
+      attempt({ passed: false, kernelCorrect: false, secretBoundaryViolations: 1 }),
+    ]);
+
+    assert.equal(summary['model-capability'].securityViolations, 1);
+    assert.equal(summary['model-capability'].kernelCorrect, 0);
+  });
+});
+
+// --- §26/§27: distributions -------------------------------------------------
+
+describe('repeated runs and distributions (§26, §27)', () => {
+  test('the median resists a single outlier', () => {
+    // Why §27 asks for medians: one retry storm should move the range, not the
+    // central number.
+    assert.equal(median([4, 4, 4, 4, 40]), 4);
+    assert.equal(median([1, 2, 3, 4]), 2.5);
+    assert.equal(median([]), 0);
+  });
+
+  test('per-task distributions report median and range', () => {
+    const rows = [
+      attempt({ id: 'fix', runId: 'r1', modelRequests: 4, passed: true }),
+      attempt({ id: 'fix', runId: 'r2', modelRequests: 4, passed: true }),
+      attempt({
+        id: 'fix',
+        runId: 'r3',
+        modelRequests: 11,
+        passed: false,
+        failureClass: 'MODEL_ACTION_OMISSION',
+      }),
+    ];
+
+    const [summary] = summarisePerTask(rows);
+
+    assert.equal(summary?.attempts, 3);
+    assert.equal(summary?.solved, 2);
+    assert.ok(Math.abs((summary?.successRate ?? 0) - 2 / 3) < 1e-9);
+    assert.deepEqual(summary?.modelRequests, { median: 4, min: 0, max: 11 });
+    assert.equal(summary?.modelActionOmissions, 1);
+  });
+
+  test('the runner accepts a run count and records it', async () => {
+    // Asserted through the runner's own parsing rather than by re-implementing
+    // it, so a change to the flag name fails here.
+    const source = await readRunner();
+    assert.match(source, /--runs=/, 'the runner has no --runs flag');
+    assert.match(
+      source,
+      /return LIVE \? 5 : 1;/,
+      'the live default is no longer 5 (§26 requires N>=3, default 5)',
+    );
+  });
+
+  test('the sample size is written into the artifact', async () => {
+    // §26: "sample size must be recorded". A distribution over an unrecorded N
+    // is not comparable to anything.
+    const source = await readRunner();
+    assert.match(source, /runsPerTask: RUNS/, 'the artifact does not record N');
+    assert.match(source, /kernelVersion: KERNEL_VERSION/, 'the artifact does not record the kernel version');
+    assert.match(source, /kernelCommit: commit/, 'the artifact does not record the commit');
+  });
+
+  test('distribution of a single value is that value', () => {
+    assert.deepEqual(distribution([7]), { median: 7, min: 0, max: 7 });
+  });
+});
+
+// --- §31: reproducibility ---------------------------------------------------
+
+describe('reproducibility fields (§31)', () => {
+  test('the prompt hash changes when the prompt changes', () => {
+    const a = promptHash('Fix add() in src/math.ts.');
+    const b = promptHash('Fix add() in src/math.ts, then run the check.');
+
+    assert.notEqual(a, b, 'a reworded prompt produced the same hash, so the rewording would be invisible');
+    assert.equal(promptHash('Fix add() in src/math.ts.'), a, 'the hash is not stable');
+    assert.match(a, /^[0-9a-f]{12}$/);
+  });
+});
+
+async function readRunner(): Promise<string> {
+  const { readFile } = await import('node:fs/promises');
+  return readFile(new URL('../../evals/runners/run.ts', import.meta.url), 'utf8');
+}

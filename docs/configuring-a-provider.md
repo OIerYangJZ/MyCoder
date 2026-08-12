@@ -101,13 +101,18 @@ profile  = "local-small"
 
 ### `[model.provider.<id>]`
 
-| Field           | Required | Notes                                                        |
-| --------------- | -------- | ------------------------------------------------------------ |
-| `protocol`      | yes      | one of the three above                                       |
-| `base_url`      | yes      | absolute `http(s)`; trailing slashes trimmed                 |
-| `api_key_env`   | no       | **variable name**; the schema has no field for a literal key |
-| `auth_scheme`   | no       | `Bearer` (default), `x-api-key`, `none`                      |
-| `extra_headers` | no       | table of string headers                                      |
+| Field           | Required | Notes                                                            |
+| --------------- | -------- | ---------------------------------------------------------------- |
+| `protocol`      | yes      | one of the three above                                           |
+| `base_url`      | yes      | absolute `http(s)`; trailing slashes trimmed                     |
+| `api_key_file`  | no       | **path to a 0600 file** holding the key. Wins over `api_key_env` |
+| `api_key_env`   | no       | **variable name**; the schema has no field for a literal key     |
+| `auth_scheme`   | no       | `Bearer` (default), `x-api-key`, `none`                          |
+| `extra_headers` | no       | table of string headers                                          |
+
+An `api_key` field does not exist. Writing one is warned about and ignored — a
+config file is the one artifact people paste into issues and check into dotfile
+repositories.
 
 ### `[model.profile.<name>]`
 
@@ -125,16 +130,60 @@ profile  = "local-small"
 `context_window` matters beyond bookkeeping: it drives when compaction fires.
 A wrong value makes the agent compact at the wrong point.
 
+## Persisting the credential (`api_key_file`)
+
+`api_key_env` works, but it means exporting the key in every terminal. To set it
+once:
+
+```bash
+mkdir -p ~/.config/mycoder/secrets
+printf '%s\n' 'sk-your-key-here' > ~/.config/mycoder/secrets/deepseek.key
+chmod 600 ~/.config/mycoder/secrets/deepseek.key
+```
+
+```toml
+[model.provider.deepseek]
+protocol     = "openai-chat"
+base_url     = "https://api.deepseek.com"
+api_key_file = "secrets/deepseek.key"    # relative to this config file
+```
+
+A relative path anchors to the **config directory**, not the workspace — which
+is also the rule that stops the natural-looking `secrets/deepseek.key` landing
+inside your repository.
+
+The file must be a regular file, not a symlink, owned by you, mode `0600` or
+stricter, and outside both the workspace and any reference tree. Anything else
+is refused with `CREDENTIAL_FILE_INSECURE` naming the specific problem and the
+remedy. The kernel never `chmod`s the file for you: a permission problem that
+silently repairs itself is one nobody looks at twice.
+
+**Configuring the path is what protects it.** The moment a credential file is
+configured, its canonical path is hard-denied to Read, Grep, Glob, Shell, Hooks,
+Skills and Subagents — a denial no profile, project rule or approval can lift.
+A credential store the agent itself can read would defeat the purpose. `/status`
+reports `credential source: file · credential configured: yes` and nothing more.
+
+If both are set, the file wins and the unused variable is reported. If the file
+is configured but insecure, the provider gets **no** credential — it does not
+quietly fall back to the environment, because then you would never learn the
+file was world-readable.
+
+What this is and is not: local credential persistence, not a hardware-backed
+vault. See `docs/threat-model.md` and ADR-0011.
+
 ## What happens automatically
 
-- **The credential is registered by reference.** `api_key_env` names a variable;
-  the SecretBroker reads it and hands the Model Runtime a short-lived lease.
+- **The credential is registered by reference.** `api_key_file` names a path and
+  `api_key_env` names a variable; either way the SecretBroker reads the value
+  and hands the Model Runtime a short-lived lease.
   Shell, Hooks, Skills and Subagents never see it, and it never enters the event
   log, telemetry or the debug log.
 - **The host joins the model egress allowlist** — but only for a provider _you_
   declared in _your_ config. A project-declared endpoint never does.
-- **A missing key is a startup warning**, naming the variable, rather than a
-  confusing `MODEL_AUTH_ERROR` on the first request.
+- **A missing or insecure key is a startup warning**, naming the variable or the
+  specific file problem, rather than a confusing `MODEL_AUTH_ERROR` on the first
+  request.
 
 ## Verifying before you spend anything
 

@@ -77,6 +77,7 @@ export function parseRemotesTable(table: TomlTable): { remotes: RemoteConfig[]; 
     const config: RemoteConfig = {
       ...defaultRemoteConfig(name, host, workspace),
       ...(str(entry.profile) ? { profile: str(entry.profile)! } : {}),
+      ...(str(entry.ssh_config_file) ? { sshConfigFile: str(entry.ssh_config_file)! } : {}),
       ...(str(entry.user) ? { user: str(entry.user)! } : {}),
       ...(num(entry.port) !== undefined ? { port: num(entry.port)! } : {}),
       ...(num(entry.connect_timeout_sec) !== undefined

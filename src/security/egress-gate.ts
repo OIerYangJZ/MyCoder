@@ -102,6 +102,8 @@ const NO_HOSTS: readonly string[] = [];
 export function defaultEgressPolicy(): EgressPolicy {
   return {
     model: {
+      // lint-allow no-provider-names-in-core: a default *allowlist* is data. Naming a host
+      // here narrows what may be reached; it does not teach the gate a vendor's behaviour.
       allowedHosts: ['api.anthropic.com', 'api.openai.com'],
       allowContent: true,
       maxRequestBytes: 32 * 1024 * 1024,
