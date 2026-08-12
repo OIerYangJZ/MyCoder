@@ -59,11 +59,10 @@ KERNEL_TRAJECTORY_REPEATS=100 pnpm test:trajectory
 | CI needs no real model API key | **PASS** | `static` job asserts no `*_API_KEY` / `*_TOKEN` / `AWS_*` is set              |
 | token read-only by default     | **PASS** | `permissions: contents: read`; `persist-credentials: false` on every checkout |
 
-**Caveat, stated rather than hidden:** the CI file has never been executed on
-GitHub — this repository is not a git repository, so there has been no run to
-observe. Every command it invokes has been run locally on macOS. **Node 22 has
-not been exercised at all** (only Node 25 is available here); that is the reason
-for the 22 + 24 matrix.
+**CI has now run.** Run `31580334685` on `OIerYangJZ/agent-kernel` is green on
+all twelve jobs, including `Unit + Integration / Node 22` — previously
+untested — and `Smoke / windows-latest`. Three runs were needed; what the
+first two found is in §4 (defects 8 and 9).
 
 ---
 
@@ -257,7 +256,28 @@ to discover them from a failing assumption.
 
 ---
 
-## 7. Gate for `v0.1.0-alpha.1`
+## 7. Defects CI found that local runs could not
+
+8. **`pnpm/action-setup@v6` refused to run without a pinned version**, so all
+   twelve jobs failed at setup. Fixed with `packageManager` in `package.json`,
+   which also pins the local pnpm.
+
+9. **The CLI was completely inert on Windows.** The entry-point guard compared
+   `import.meta.url` against `` `file://${process.argv[1]}` ``. On Windows
+   `process.argv[1]` is a backslash path, so the comparison is never true: the
+   module loaded, `main()` never ran, and the process exited 0 with no output
+   and no error. The same guard was in `scripts/lint.ts` and the eval runner.
+   Fixed with `pathToFileURL`.
+
+   This is the clearest argument for the Windows job existing. No amount of
+   local testing on macOS would have found it, and the failure mode — exit 0,
+   silence — is the kind a human would misread as "works".
+
+   It also improved the test: the assertion originally reported only
+   `actual: ''`. It now reports exit code and stderr, which is what made the
+   second CI round diagnosable.
+
+## 8. Gate for `v0.1.0-alpha.1`
 
 Plan §5 requires P0 + P1 green. They are, with the caveats in §2 and §6.
 
