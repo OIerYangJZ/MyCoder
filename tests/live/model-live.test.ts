@@ -27,12 +27,24 @@ import { resolveUsage } from '../../src/model/usage.ts';
 const PROVIDER = process.env.KERNEL_LIVE_PROVIDER ?? 'anthropic';
 const ALIAS = process.env.KERNEL_LIVE_MODEL ?? 'fast';
 
+// A provider whose reasoning is not validated must not have its tool-call test
+// blamed on the adapter; §13 says the same about parallel tools.
+
+/**
+ * Which environment variable holds the credential.
+ *
+ * Built-in providers are known; a configured provider (`[model.provider.x]` with
+ * `api_key_env`) supplies its own, passed as KERNEL_LIVE_KEY_ENV. That keeps the
+ * suite provider-agnostic rather than hard-coding the two vendors — which is the
+ * same architectural claim the milestone is making everywhere else.
+ */
 const CREDENTIAL_ENV: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
 };
 
-const credentialVar = CREDENTIAL_ENV[PROVIDER] ?? 'ANTHROPIC_API_KEY';
+const credentialVar =
+  process.env.KERNEL_LIVE_KEY_ENV ?? CREDENTIAL_ENV[PROVIDER] ?? `${PROVIDER.toUpperCase()}_API_KEY`;
 
 /**
  * Two conditions, both required.
@@ -51,6 +63,9 @@ const skip = enabled
   : !optedIn
     ? 'KERNEL_LIVE is not set — run `pnpm test:live:model` to opt in (this is not a pass)'
     : `no ${credentialVar} in the environment — live validation skipped (this is not a pass)`;
+
+/** Printed once so a skipped run says exactly what it wanted. */
+const liveTarget = `${PROVIDER}/${ALIAS} (credential: ${credentialVar})`;
 
 let kernel: Kernel | undefined;
 let base: string | undefined;
@@ -222,9 +237,11 @@ describe('live provider', { skip }, () => {
   test('an invalid credential maps to MODEL_AUTH_ERROR without echoing the key (§22)', async () => {
     const bad = await boot();
     try {
-      // Register a deliberately wrong credential for this kernel only.
-      bad.secrets.register('provider/anthropic', { kind: 'literal', value: 'sk-ant-invalid-FIXTURE' });
-      bad.secrets.register('provider/openai', { kind: 'literal', value: 'sk-invalid-FIXTURE' });
+      // Register a deliberately wrong credential for this kernel only, under
+      // whichever provider ref the active alias actually resolves to.
+      const resolved = bad.modelRegistry.resolve(ALIAS);
+      const ref = resolved?.provider.authSecretRef ?? `provider/${PROVIDER}`;
+      bad.secrets.register(ref, { kind: 'literal', value: 'INVALID-CREDENTIAL-FIXTURE' });
 
       const { turn } = await ask(bad, 'hello');
 
@@ -232,7 +249,11 @@ describe('live provider', { skip }, () => {
       assert.equal(turn.error?.retryable, false, 'a bad credential must not be retried');
 
       const serialized = JSON.stringify(turn.error);
-      assert.equal(serialized.includes('sk-ant-invalid'), false, 'the error echoed the credential');
+      assert.equal(
+        serialized.includes('INVALID-CREDENTIAL-FIXTURE'),
+        false,
+        'the error echoed the credential',
+      );
       assert.equal(/authorization|x-api-key/i.test(serialized), false, 'the error echoed an auth header');
     } finally {
       await bad.shutdown();
@@ -308,9 +329,10 @@ describe('live validation status', () => {
   test('reports whether it ran', (t) => {
     if (!enabled) {
       t.diagnostic(`SKIPPED: ${skip}`);
+      t.diagnostic(`target would have been ${liveTarget}`);
       t.diagnostic('alpha.2 cannot be tagged until this suite has actually run.');
     } else {
-      t.diagnostic(`live validation ran against ${PROVIDER}/${ALIAS}`);
+      t.diagnostic(`live validation ran against ${liveTarget}`);
     }
     assert.ok(true);
   });

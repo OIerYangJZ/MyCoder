@@ -113,7 +113,7 @@ export interface Kernel {
   logger: Logger;
   redactor: Redactor;
   secrets: InMemorySecretBroker;
-  egress: EgressGate;
+  egress: DefaultEgressGate;
   policy: PolicyEngine;
   backend: ExecutionBackend;
   modelRegistry: ModelRegistry;
@@ -170,6 +170,9 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     overrides,
   });
   const config = loaded.config;
+
+  // Provider ids the *user* declared. Only these may open an egress destination.
+  const userProviders = new Set(loaded.userProviderIds);
 
   const remotesResult = await loadRemotes(dirs.config);
   config.warnings.push(...remotesResult.warnings);
@@ -250,6 +253,27 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   // 8. Egress. Model hosts come from the provider endpoints; everything else
   //    stays closed unless configuration opens it.
   const egressPolicy = defaultEgressPolicy();
+
+  // A provider endpoint the user declared in their own config is, by that act,
+  // an intended destination — requiring them to repeat the host under [egress]
+  // would be friction with no added safety. Project-declared endpoints never
+  // reach here, so a repository cannot open an egress destination this way.
+  for (const id of userProviders) {
+    const entry = config.model.providers?.[id];
+    if (!entry) continue;
+    try {
+      const host = new URL(entry.baseUrl).hostname;
+      egressPolicy.model = {
+        ...egressPolicy.model,
+        allowedHosts: [...egressPolicy.model.allowedHosts, host],
+      };
+    } catch {
+      config.warnings.push(
+        `provider "${id}" has an unparsable base_url; it was not added to the egress allowlist`,
+      );
+    }
+  }
+
   for (const [kind, hosts] of Object.entries(config.egress.allowedHosts ?? {})) {
     const key = kind as keyof typeof egressPolicy;
     if (egressPolicy[key]) {
@@ -269,6 +293,59 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
 
   // 9. Models.
   const modelRegistry = new ModelRegistry();
+
+  // Config-declared behaviour profiles, before the aliases that reference them.
+  // A wrong context window is not cosmetic: it drives compaction, so a model
+  // stuck with a default profile compacts at the wrong point.
+  for (const [name, entry] of Object.entries(config.model.profiles ?? {})) {
+    modelRegistry.registerProfile(name, {
+      family: entry.family ?? name,
+      contextWindow: entry.contextWindow,
+      ...(entry.maxOutputTokens !== undefined ? { maxOutputTokens: entry.maxOutputTokens } : {}),
+      reservedOutputTokens: entry.reservedOutputTokens ?? Math.min(entry.maxOutputTokens ?? 8_000, 8_000),
+      supportsParallelTools: entry.supportsParallelTools ?? false,
+      supportsReasoning: entry.supportsReasoning ?? false,
+      preferredEditStrategy: entry.preferredEditStrategy ?? 'exact',
+      autonomy: entry.autonomy ?? 'normal',
+      toolReliability: entry.toolReliability ?? 'medium',
+      ...(entry.inputPerMTok !== undefined || entry.outputPerMTok !== undefined
+        ? {
+            pricing: {
+              ...(entry.inputPerMTok !== undefined ? { inputPerMTok: entry.inputPerMTok } : {}),
+              ...(entry.outputPerMTok !== undefined ? { outputPerMTok: entry.outputPerMTok } : {}),
+              ...(entry.cachedInputPerMTok !== undefined
+                ? { cachedInputPerMTok: entry.cachedInputPerMTok }
+                : {}),
+            },
+          }
+        : {}),
+    });
+  }
+
+  // Config-declared provider endpoints. `loadConfig` has already dropped any
+  // that a project file tried to define, so everything here came from the
+  // user's own config.
+  for (const [id, entry] of Object.entries(config.model.providers ?? {})) {
+    modelRegistry.registerEndpoint({
+      id,
+      protocol: entry.protocol,
+      baseUrl: entry.baseUrl,
+      authScheme: entry.authScheme ?? 'Bearer',
+      ...(entry.apiKeyEnv ? { authSecretRef: `provider/${id}` } : {}),
+      ...(entry.extraHeaders ? { extraHeaders: entry.extraHeaders } : {}),
+    });
+
+    // The credential is registered by *reference*: the broker reads the host
+    // environment variable, and nothing downstream ever sees the value.
+    if (entry.apiKeyEnv && process.env[entry.apiKeyEnv]) {
+      secrets.register(`provider/${id}`, { kind: 'host-env', variable: entry.apiKeyEnv });
+    } else if (entry.apiKeyEnv) {
+      config.warnings.push(
+        `provider "${id}" expects ${entry.apiKeyEnv}, which is not set; requests to it will fail with MODEL_AUTH_ERROR`,
+      );
+    }
+  }
+
   for (const [alias, entry] of Object.entries(config.model.aliases ?? {})) {
     modelRegistry.registerAlias({
       alias,

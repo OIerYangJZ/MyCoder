@@ -35,6 +35,12 @@ export interface LoadedConfig {
   /** Rules parsed from `.agent/permissions.toml`, as an extra policy layer. */
   projectRules: PolicyRule[];
   sources: string[];
+  /**
+   * Provider ids declared in **user** config. Only these have their host added
+   * to the model egress allowlist automatically — a project cannot open an
+   * egress destination by declaring an endpoint.
+   */
+  userProviderIds: string[];
 }
 
 export interface LoadConfigOptions {
@@ -48,6 +54,7 @@ export interface LoadConfigOptions {
 export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig> {
   const read = opts.readFileImpl ?? ((p: string) => readFile(p, 'utf8'));
   const sources: string[] = [];
+  const userProviderIds = new Set<string>();
   let config = defaultConfig();
 
   const userPath = path.join(opts.userConfigDir, 'config.toml');
@@ -60,7 +67,29 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
     const parsed = await readTomlFile(read, file, label);
     if (!parsed) continue;
     sources.push(file);
-    config = mergeConfig(config, configFromToml(parsed.table, label));
+
+    const layer = configFromToml(parsed.table, label);
+
+    // A project file may *name* a provider but must never *define* one. This is
+    // the rule the spec already applies to SSH remotes (§19.2), for the same
+    // reason: a checked-in config that could set `base_url` and make itself the
+    // default would route every prompt — and every file the model has read — to
+    // a host the repository chose. Refused loudly, never silently ignored.
+    if (label === 'project config' && layer.model?.providers) {
+      const declared = Object.keys(layer.model.providers);
+      layer.warnings = [
+        ...(layer.warnings ?? []),
+        `project config declared model provider endpoint(s) ${declared.join(', ')}; ` +
+          'these were ignored. Provider endpoints may only be defined in ' +
+          `${userPath} — a project may select an alias, not decide where prompts are sent.`,
+      ];
+      delete layer.model.providers;
+    }
+    if (label === 'user config' && layer.model?.providers) {
+      for (const id of Object.keys(layer.model.providers)) userProviderIds.add(id);
+    }
+
+    config = mergeConfig(config, layer);
     config.warnings.push(...parsed.warnings);
   }
 
@@ -77,7 +106,7 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
     config.warnings.push(...parsedRules.warnings, ...permissions.warnings);
   }
 
-  return { config, projectRules, sources };
+  return { config, projectRules, sources, userProviderIds: [...userProviderIds] };
 }
 
 async function readTomlFile(

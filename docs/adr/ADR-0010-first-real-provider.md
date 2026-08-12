@@ -1,6 +1,19 @@
 # ADR-0010 — Anthropic Messages is real provider #1
 
-**Status:** accepted · **Date:** 2026-08-12 · **Milestone:** `v0.1.0-alpha.2`
+**Status:** accepted, **amended 2026-08-12** · **Milestone:** `v0.1.0-alpha.2`
+
+> **Amendment.** Provider #1 for the _live_ validation is **DeepSeek via
+> `openai-chat`**, not Anthropic. The maintainer holds no Anthropic or OpenAI
+> credential, so validating either was not merely inconvenient — it was
+> impossible, and §51 makes a live run release-blocking. Adding configurable
+> provider endpoints was therefore _unblocking_ alpha.2, not the multi-provider
+> breadth §2.3 rules out: there is still exactly one provider under live test.
+>
+> The Anthropic analysis below stands and its offline fixture suite remains in
+> CI. Reasoning replay is now validated offline only; `openai-chat` normalises
+> DeepSeek's `reasoning_content` into the same `ReasoningPart`, so §14 is
+> exercised live while §15's signature replay is not. That gap is recorded in
+> `docs/alpha2-status.md`.
 
 ## Context
 
