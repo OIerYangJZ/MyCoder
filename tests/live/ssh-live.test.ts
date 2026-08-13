@@ -357,7 +357,19 @@ describe('SSH connection (§14)', () => {
       );
       const elapsed = Date.now() - started;
 
-      assert.ok(elapsed < 30_000, `a stalled handshake took ${elapsed}ms; nothing bounded it`);
+      // Bounded by the *configured* deadline, not merely by something. Measured:
+      // `connectTimeoutSec` genuinely covers the banner exchange and not just the
+      // TCP handshake — 4s gives 4017ms, 10s gives 10018ms. A loose `< 30_000`
+      // here would also pass if the 30s command timeout were silently doing the
+      // work, which would mean `connect_timeout_sec` was decorative.
+      assert.ok(
+        elapsed < 15_000,
+        `a stalled handshake took ${elapsed}ms against a 4s connect timeout; the configured deadline is not what bounded it`,
+      );
+      assert.ok(
+        elapsed >= 3_500,
+        `it returned in ${elapsed}ms, faster than the 4s deadline — check the fixture stalls`,
+      );
     } finally {
       // `server.close()` stops accepting but *waits* for live connections, and
       // the stalled socket never ends on its own — so it has to be destroyed
