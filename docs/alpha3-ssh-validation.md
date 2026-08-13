@@ -144,9 +144,10 @@ unreachable from a session.
 
 ## Defects this validation found
 
-Four defects, three in the kernel and one in this fixture. All were invisible to
-the previous fixture-based tests, and two of the kernel ones meant the backend
-did not work against real OpenSSH at all. This is the return on §11.1.
+Five defects: four in the kernel and one in this fixture. All were invisible to
+the previous fixture-based tests. Two meant the backend could not connect to real
+OpenSSH at all; the fifth means `--remote` cannot do anything useful even now,
+and is **unfixed**. This is the return on §11.1.
 
 ### 1. `-o SendEnv=` is a syntax error — no SSH connection could ever succeed
 
@@ -238,6 +239,59 @@ item in the table above. The prediction was wrong, which is the better outcome,
 but it was worth making: the guard and the three fixes were written _before_
 anything was pointed at a real machine, which is the only order in which a
 `rm -rf /*` gets caught by reading rather than by running.
+
+### 5. `--remote` cannot perform any file or process operation — FAIL, unfixed
+
+Found by driving a real model through the CLI onto the VM. This is the most
+consequential defect of the milestone and it is **not fixed**; it is recorded as
+`FAIL` in the evidence matrix rather than deferred quietly.
+
+The kernel computes one workspace root, from the _local_ working directory, and
+gives it to the policy engine, the permission profile, the tool runtime, the
+repository plane and the mutation detector. The SSH backend jails against a
+_different_ root — the remote `workspace` from `remotes.toml`. Measured:
+
+```text
+LOCAL  workspaceRoot         : /Users/yangjinsey/MyCoder/kernel
+REMOTE backend workspaceRoot : /home/yangjinsey/Desktop/MyCoder
+policy engine root           : /Users/yangjinsey/MyCoder/kernel   <- local
+```
+
+Those two path sets are disjoint, so **no path can satisfy both layers**. A
+relative `hello.py` resolves against the local root, passes the local policy
+check, and is then refused by `SshFileSystem.jail()`. An absolute remote path
+fails the other way round.
+
+Observed consequence, with DeepSeek driving:
+
+```text
+tool execution failed tool=Edit  code=PATH_OUTSIDE_WORKSPACE
+tool execution failed tool=Shell code=PATH_OUTSIDE_WORKSPACE
+... 16 model requests ...
+LOOP_BUDGET_EXCEEDED: Turn stopped: step limit reached.
+```
+
+The model retried sensibly and could not win, because nothing it could have
+sent would have worked. The loop budget did its job — the turn stopped rather
+than running forever — but the feature is unusable.
+
+**This contradicts spec §19.1**, whose diagram places fs operations, grep,
+shell/test and git in the _remote_ workspace, with only the kernel and the model
+local. The tool plane's root should therefore be
+`backend.environment.workspaceRoot` whenever a remote backend is active.
+
+Why every earlier test missed it: the §14–§21 matrix drives `SshExecutionBackend`
+**directly**, with remote paths it constructs itself, so the jail is satisfied
+and the policy engine is never consulted. Nothing exercised
+CLI → ToolRuntime → policy → SSH. That is precisely the "full kernel session over
+SSH" gap this document already listed as `NOT TESTED` under §20/§21 — the gap was
+real, and it was hiding a total functional break rather than a rough edge.
+
+**The fix is not a patch.** It needs two explicitly separated roots — a local
+project root for config, hooks, skills and the session store, and a workspace
+root for the tool plane — which changes the bootstrap ordering and the `Kernel`
+interface, so it needs an ADR under AGENTS.md rule 4. It is the natural first
+task of the next milestone.
 
 ---
 

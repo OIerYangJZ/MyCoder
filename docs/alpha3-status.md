@@ -12,9 +12,11 @@ milestone. Every claim below maps to a row in
 mechanically.
 
 > **The headline is not the pass rate.** It is that turning three checklist
-> areas into executable gates found **five defects that all previous testing had
-> missed** — two of which meant a shipped subsystem could not work at all, and
-> one of which was an unguarded `rm -rf /*` aimed at a user's remote machine. That
+> areas into executable gates found **six defects that all previous testing had
+> missed** — two of which meant a shipped subsystem could not connect at all, one
+> of which was an unguarded `rm -rf /*` aimed at a user's remote machine, and one
+> of which is a **spec violation that leaves `--remote` unusable and is not
+> fixed**. That
 > is the return alpha.3 was designed to produce, and it is described in §2 below
 > rather than buried.
 
@@ -150,6 +152,45 @@ defect; it did not.
 `"Rename oldName to newName everywhere."` — a label for a scripted sequence, not
 an instruction a model can act on. Caught by
 `test:every model-capability task has a natural live prompt (§30)`.
+
+### 2.6 `--remote` cannot perform any file or process operation — FAIL, unfixed
+
+Found last, by driving a real DeepSeek turn through the CLI onto the VM. The
+single most consequential defect of the milestone, and the one that is **still
+open**.
+
+The kernel derives one workspace root from the _local_ working directory and
+hands it to the policy engine, the permission profile, the tool runtime, the
+repository plane and the mutation detector. The SSH backend jails against a
+_different_ root — the remote `workspace` from `remotes.toml`:
+
+```text
+LOCAL  workspaceRoot         : /Users/yangjinsey/MyCoder/kernel
+REMOTE backend workspaceRoot : /home/yangjinsey/Desktop/MyCoder
+policy engine root           : /Users/yangjinsey/MyCoder/kernel   <- local
+```
+
+The two path sets are disjoint, so no path satisfies both layers. Every `Edit`
+and `Shell` came back `PATH_OUTSIDE_WORKSPACE`; the model retried sensibly for
+16 model requests and stopped at `LOOP_BUDGET_EXCEEDED`. The budget did its job.
+The feature does not work.
+
+This contradicts spec §19.1, which places fs operations, grep, shell/test and git
+in the _remote_ workspace with only the kernel and model local.
+
+Every earlier test missed it for one reason: the §14–§21 matrix drives
+`SshExecutionBackend` **directly**, with remote paths it constructs itself, so
+the jail is satisfied and the policy engine is never consulted. Nothing exercised
+CLI → ToolRuntime → policy → SSH. That is exactly the gap already listed as
+`NOT TESTED`, and it was concealing a total functional break rather than a rough
+edge — which is the strongest argument in this whole document for closing
+`NOT TESTED` rows rather than living with them.
+
+Recorded as the one `FAIL` in `docs/alpha3-evidence-matrix.md`. The fix needs two
+explicitly separated roots — a local project root for config, hooks, skills and
+the session store, and a workspace root for the tool plane — which changes
+bootstrap ordering and the `Kernel` interface, so it needs an ADR per AGENTS.md
+rule 4.
 
 ## 3. What changed
 
