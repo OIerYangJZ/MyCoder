@@ -12,11 +12,12 @@ milestone. Every claim below maps to a row in
 mechanically.
 
 > **The headline is not the pass rate.** It is that turning three checklist
-> areas into executable gates found **six defects that all previous testing had
-> missed** — two of which meant a shipped subsystem could not connect at all, one
-> of which was an unguarded `rm -rf /*` aimed at a user's remote machine, and one
-> of which is a **spec violation that leaves `--remote` unusable and is not
-> fixed**. That
+> areas into executable gates found **seven defects that all previous testing had
+> missed** — two meant a shipped subsystem could not connect at all, two more
+> meant `--remote` could not read or write anything even once connected, one was
+> an unguarded `rm -rf /*` aimed at a user's remote machine, and one was a
+> regression of my own that would have sent an unauthenticated request to a
+> provider. All are fixed. That
 > is the return alpha.3 was designed to produce, and it is described in §2 below
 > rather than buried.
 
@@ -43,7 +44,7 @@ The 50 skipped tests are the SSH matrix under a plain `pnpm test`; it is opt-in
 via `KERNEL_SSH=1` and runs as its own CI job. It skips with a stated reason, not
 silently.
 
-Test count went 308 → 534. Nothing from alpha.2 was deleted or weakened.
+Test count went 308 → 542. Nothing from alpha.2 was deleted or weakened.
 
 ## 2. What the new gates found
 
@@ -153,7 +154,7 @@ defect; it did not.
 an instruction a model can act on. Caught by
 `test:every model-capability task has a natural live prompt (§30)`.
 
-### 2.6 `--remote` cannot perform any file or process operation — FAIL, unfixed
+### 2.6 `--remote` could not perform any file or process operation — fixed (ADR-0012)
 
 Found last, by driving a real DeepSeek turn through the CLI onto the VM. The
 single most consequential defect of the milestone, and the one that is **still
@@ -186,11 +187,54 @@ CLI → ToolRuntime → policy → SSH. That is exactly the gap already listed a
 edge — which is the strongest argument in this whole document for closing
 `NOT TESTED` rows rather than living with them.
 
-Recorded as the one `FAIL` in `docs/alpha3-evidence-matrix.md`. The fix needs two
-explicitly separated roots — a local project root for config, hooks, skills and
-the session store, and a workspace root for the tool plane — which changes
-bootstrap ordering and the `Kernel` interface, so it needs an ADR per AGENTS.md
-rule 4.
+**Fixed in ADR-0012:** two explicitly separated roots — `projectRoot` (local:
+config, hooks, skills, session store) and `workspaceRoot`, derived as
+`backend.environment.workspaceRoot`. Deriving rather than recomputing is the
+point: the two layers that independently judge a path now read the same value and
+agree by construction.
+
+### 2.7 Remote paths were canonicalised against the local filesystem — fixed
+
+The same mistake one layer down, surfaced the moment §2.6 was fixed. `Edit` still
+failed:
+
+```text
+/System/Volumes/Data/home/yangjinsey/Desktop/MyCoder/probe.txt
+  denied by system-ceiling, not appealable
+```
+
+The tool runtime resolved every path with local `realpath`; macOS sends `/home`
+through autofs to `/System/Volumes/Data/home`, and `/System/**` is hard-denied. So
+every remote _file_ path was refused as a protected system location, and only
+`Shell` worked — it never asks for a canonical path.
+
+The first "successful" Hello World on the VM was therefore written through the
+shell, and **the model said so in its own reply**: _"via the shell, since the Edit
+tool's path mapping resolved to a protected system location."_ Reading that
+sentence rather than just checking that the file existed is what caught this. A
+green "file is on the VM" check would have shipped a half-broken feature.
+
+Fixed by canonicalising through the backend when it is not local. Symlink
+resolution still happens — it must, or a remote `src/x -> ../../.ssh/id_ed25519`
+would escape the jail — but on the machine that owns the symlink.
+
+### 2.8 An unusable credential dropped its auth reference — fixed
+
+Mine, introduced in the credential work and caught by an existing test. I had made
+`authSecretRef` conditional on the credential _value being available_ rather than
+on a source being _configured_. With no credential the endpoint then had no auth
+at all, so the request would have left the process, reached the provider, and come
+back 401 — a network call that should never have happened, with the blame landing
+on the provider instead of the missing key.
+
+Worth recording how it was found, because it is not flattering: I reported a
+green 534/0 suite earlier in the milestone, and this was already broken then. The
+failure only surfaced when I re-ran after a later change, and bisecting
+`src/kernel.ts` across the milestone's commits put it at the credential commit,
+not the one I was working on. **My earlier green reading was unreliable**, and I
+have not fully explained why the suite passed at that point. Treat single green
+runs accordingly — which is, with some irony, the same lesson §2.3 records about
+the linter.
 
 ## 3. What changed
 

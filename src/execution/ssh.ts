@@ -624,7 +624,13 @@ export class SshExecutionBackend implements ExecutionBackend {
   private readonly transport: SshTransport;
   private readonly config: RemoteConfig;
 
-  private constructor(config: RemoteConfig, transport: SshTransport, hasRipgrep: boolean, hasGit: boolean) {
+  private constructor(
+    config: RemoteConfig,
+    transport: SshTransport,
+    hasRipgrep: boolean,
+    hasGit: boolean,
+    homeDir: string,
+  ) {
     this.config = config;
     this.id = `ssh:${config.name}`;
     this.transport = transport;
@@ -634,7 +640,10 @@ export class SshExecutionBackend implements ExecutionBackend {
       platform: 'remote-posix',
       kind: 'ssh',
       workspaceRoot: config.workspace as CanonicalPath,
-      homeDir: config.workspace,
+      // The remote's real `$HOME`, probed at connect. It used to be reported as
+      // the workspace, which is a different directory and made every consumer
+      // of `homeDir` quietly wrong about the remote.
+      homeDir,
       tmpDir: '/tmp',
       hasRipgrep,
       hasGit,
@@ -661,8 +670,8 @@ export class SshExecutionBackend implements ExecutionBackend {
 
     const probe = await transport.run(
       `cd ${shellQuote(opts.config.workspace)} && ` +
-        `printf '%s %s\\n' "$(command -v rg >/dev/null && echo 1 || echo 0)" ` +
-        `"$(command -v git >/dev/null && echo 1 || echo 0)"`,
+        `printf '%s %s %s\\n' "$(command -v rg >/dev/null && echo 1 || echo 0)" ` +
+        `"$(command -v git >/dev/null && echo 1 || echo 0)" "$HOME"`,
       { timeoutMs: 30_000 },
     );
 
@@ -676,8 +685,14 @@ export class SshExecutionBackend implements ExecutionBackend {
       );
     }
 
-    const [hasRg, hasGit] = probe.stdout.trim().split(/\s+/);
-    return new SshExecutionBackend(opts.config, transport, hasRg === '1', hasGit === '1');
+    const [hasRg, hasGit, remoteHome] = probe.stdout.trim().split(/\s+/);
+    return new SshExecutionBackend(
+      opts.config,
+      transport,
+      hasRg === '1',
+      hasGit === '1',
+      remoteHome && remoteHome.startsWith('/') ? remoteHome : opts.config.workspace,
+    );
   }
 
   async enforce(profile: CapabilityProfile): Promise<CapabilityExecutor> {

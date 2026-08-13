@@ -240,11 +240,11 @@ but it was worth making: the guard and the three fixes were written _before_
 anything was pointed at a real machine, which is the only order in which a
 `rm -rf /*` gets caught by reading rather than by running.
 
-### 5. `--remote` cannot perform any file or process operation — FAIL, unfixed
+### 5. `--remote` could not perform any file or process operation — FIXED (ADR-0012)
 
-Found by driving a real model through the CLI onto the VM. This is the most
-consequential defect of the milestone and it is **not fixed**; it is recorded as
-`FAIL` in the evidence matrix rather than deferred quietly.
+Found by driving a real model through the CLI onto the VM — the most
+consequential defect of the milestone. **Fixed in ADR-0012**, and verified by
+DeepSeek writing and running a file on the VM through `Edit` and `Shell`.
 
 The kernel computes one workspace root, from the _local_ working directory, and
 gives it to the policy engine, the permission profile, the tool runtime, the
@@ -287,11 +287,46 @@ CLI → ToolRuntime → policy → SSH. That is precisely the "full kernel sessi
 SSH" gap this document already listed as `NOT TESTED` under §20/§21 — the gap was
 real, and it was hiding a total functional break rather than a rough edge.
 
-**The fix is not a patch.** It needs two explicitly separated roots — a local
-project root for config, hooks, skills and the session store, and a workspace
-root for the tool plane — which changes the bootstrap ordering and the `Kernel`
-interface, so it needs an ADR under AGENTS.md rule 4. It is the natural first
-task of the next milestone.
+**The fix.** Two explicitly separated roots — `projectRoot` (local: config,
+hooks, skills, session store) and `workspaceRoot` (the tool plane's, derived as
+`backend.environment.workspaceRoot`). Deriving rather than recomputing is the
+point: the two layers that independently judge a path now read the same value and
+agree by construction. Full rationale and the per-collaborator table in ADR-0012.
+
+`tests/integration/backend-roots.test.ts` asserts the invariant offline, with no
+SSH server, because agreement between two in-process objects is not a transport
+property.
+
+### 6. Remote paths were canonicalised against the _local_ filesystem — FIXED
+
+Surfaced immediately after fixing §5, and it is the same mistake one layer down.
+With the roots corrected, `Edit` still failed:
+
+```text
+/System/Volumes/Data/home/yangjinsey/Desktop/MyCoder/probe.txt
+  denied by system-ceiling, not appealable
+```
+
+The tool runtime resolved every path with local `realpath`. macOS resolves
+`/home` through autofs to `/System/Volumes/Data/home`, and `/System/**` is
+hard-denied — so _every_ remote file path became a protected system location.
+
+Only `Shell` worked, because it never asks for a canonical path. The first
+"successful" Hello World on the VM was written through the shell, and the model
+said so in its own reply: _"via the shell, since the Edit tool's path mapping
+resolved to a protected system location."_ Worth recording: the model reported the
+workaround accurately, and reading its message rather than just checking the file
+is what caught this.
+
+Fixed by canonicalising through the backend when it is not local — lexical
+resolution locally, then `backend.fs.realpath()` and `backend.fs.stat()` for
+symlinks and existence. Symlink resolution still happens, because a remote
+`src/x -> ../../.ssh/id_ed25519` must still be caught; it now happens on the
+machine that owns the symlink.
+
+Also fixed alongside: `SshExecutionBackend` reported `homeDir` as the _workspace_.
+It now probes the remote `$HOME` during connect, so every consumer of `homeDir`
+stops being quietly wrong about the remote.
 
 ---
 

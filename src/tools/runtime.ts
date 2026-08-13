@@ -447,9 +447,34 @@ export class ToolRuntime {
       toolCallId: call.id,
       workspaceRoot,
       environment: this.opts.backend.environment,
+      /**
+       * Canonicalise a tool path — against the filesystem the tools actually
+       * run on (ADR-0012).
+       *
+       * The local filesystem is the wrong oracle for a remote backend, and not
+       * subtly wrong. macOS resolves `/home` through autofs, so a perfectly
+       * ordinary remote path came back as
+       * `/System/Volumes/Data/home/…/probe.txt` — and `/System/**` is
+       * hard-denied, so *every* remote file operation was refused as a
+       * protected system location. Only `Shell` worked, because it never asks
+       * for a canonical path.
+       *
+       * So: local backend resolves locally; a remote backend resolves lexically
+       * here and then asks the *backend* to resolve symlinks and report
+       * existence. Symlink resolution still happens — it has to, or a remote
+       * `src/x.txt -> ../../.ssh/id_ed25519` would escape the jail — it just
+       * happens on the machine that owns the symlinks.
+       */
       canonicalize: async (input: string) => {
-        const resolved = await canonicalize(input, { cwd: workspaceRoot });
-        return { path: resolved.path, existed: resolved.existed };
+        if (this.opts.backend.kind === 'local') {
+          const resolved = await canonicalize(input, { cwd: workspaceRoot });
+          return { path: resolved.path, existed: resolved.existed };
+        }
+
+        const lexical = await canonicalize(input, { cwd: workspaceRoot, resolveSymlinks: false });
+        const real = (await this.opts.backend.fs.realpath(lexical.path)) ?? lexical.path;
+        const stat = await this.opts.backend.fs.stat(real);
+        return { path: real, existed: stat !== undefined };
       },
       display: (p: CanonicalPath) => displayPath(workspaceRoot, p),
       freshness: this.opts.freshness,

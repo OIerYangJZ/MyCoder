@@ -301,7 +301,9 @@ async function credentialWorkspace(opts: {
       '[model.provider.testprovider]\n' +
       'protocol = "openai-chat"\n' +
       'base_url = "https://api.test-provider.invalid"\n' +
-      'api_key_file = "{{base}}/secrets/deepseek.key"\n',
+      'api_key_file = "{{base}}/secrets/deepseek.key"\n' +
+      '\n[model.profile.testprofile]\ncontext_window = 32768\n' +
+      '\n[model.alias.testalias]\nprovider = "testprovider"\nmodel = "test-model"\nprofile = "testprofile"\n',
     ...(opts.script ? { script: opts.script } : {}),
     ...(opts.captureLog ? { captureLog: opts.captureLog, logLevel: 'trace' } : {}),
   });
@@ -471,6 +473,27 @@ describe('an insecure credential file is refused, not quietly used (§6)', () =>
     assert.ok(warning, `no warning about the insecure file: ${ws.kernel.config.warnings.join(' | ')}`);
     assert.match(warning, /0644/);
     assert.match(warning, /MODEL_AUTH_ERROR/);
+  });
+
+  test('the endpoint still declares its auth reference, so nothing is sent unauthenticated', (t) => {
+    if (!POSIX) return t.skip('no POSIX mode bits');
+
+    // The distinction that matters when a credential is configured but unusable.
+    // If the endpoint dropped its `authSecretRef`, the request would carry no
+    // auth at all: it would leave the process, reach the provider, and come back
+    // 401 — a network call that should never have happened, with the failure
+    // attributed to the provider rather than to the key file nobody can read.
+    //
+    // Declaring the reference makes the failure happen at the broker, before any
+    // bytes move, which is what the startup warning promises.
+    const endpoint = ws.kernel.modelRegistry.resolve('testalias')?.provider;
+    assert.ok(endpoint, 'the fixture alias should resolve');
+
+    assert.equal(
+      endpoint.authSecretRef,
+      'provider/testprovider',
+      'an unusable credential left the endpoint with no auth reference at all',
+    );
   });
 
   test('no secret is registered for the provider', async (t) => {
