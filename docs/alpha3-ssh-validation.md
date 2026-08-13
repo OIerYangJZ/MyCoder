@@ -144,10 +144,11 @@ unreachable from a session.
 
 ## Defects this validation found
 
-Five defects: four in the kernel and one in this fixture. All were invisible to
+Eight defects: seven in the kernel and one in this fixture. All were invisible to
 the previous fixture-based tests. Two meant the backend could not connect to real
-OpenSSH at all; the fifth means `--remote` cannot do anything useful even now,
-and is **unfixed**. This is the return on §11.1.
+OpenSSH at all, two more meant it could not read or write anything once
+connected, and two were checks that existed but could never fire. **All are
+fixed.** This is the return on §11.1.
 
 ### 1. `-o SendEnv=` is a syntax error — no SSH connection could ever succeed
 
@@ -425,19 +426,74 @@ selective — an ordinary value of similar shape passes through untouched.
 | no ssh agent reachable from the remote                                                                                          | PASS                    |
 | `ForwardAgent=no`, `SendEnv` cleared, on the command line                                                                       | PASS                    |
 
-### Resume and hooks (§20, §21)
+### Full kernel session, resume and hooks (§20, §21)
 
-| Case                                    | Status     |
-| --------------------------------------- | ---------- |
-| remote interrupted-session resume       | NOT TESTED |
-| real remote Hook execution              | NOT TESTED |
-| replay validity after remote operations | NOT TESTED |
+`tests/live/ssh-session.test.ts` drives the **whole kernel** over SSH —
+`createKernel` → `Session.runTurn` → `ToolRuntime` → policy → SSH — rather than
+the backend in isolation. 18 cases, green on both targets.
 
-These need a full kernel session driven over SSH rather than the backend in
-isolation. The backend-level pieces they depend on — workspace identity,
-freshness re-derivation, event-log replay — are covered locally by
-`pnpm test:replay`. Wiring a kernel session onto the SSH backend end-to-end is
-the natural next step and is deliberately not claimed here.
+| Case                                                         | Status |
+| ------------------------------------------------------------ | ------ |
+| a full turn: Read → Edit → Shell, verified **on the remote** | PASS   |
+| the two roots differ and both are correct                    | PASS   |
+| replay reaches the same terminal state as the live run       | PASS   |
+| the record names the ssh backend and the active remote       | PASS   |
+| remote interrupted-session resume                            | PASS   |
+| resume re-injects a freshness caveat                         | PASS   |
+| the remote changing while offline is not assumed away        | PASS   |
+| the session records a remote host identity                   | PASS   |
+| resuming a remote session locally is refused                 | PASS   |
+| real remote Hook execution                                   | PASS   |
+| the remote hook sees a scrubbed environment                  | PASS   |
+| remote hook output is redacted before reaching context       | PASS   |
+| remote hook runs are auditable                               | PASS   |
+
+Two of these deserve their method spelled out, because a weaker assertion would
+have passed without proving anything.
+
+**Hook locality** is proven by the hook's _side effect landing on the remote
+filesystem_, not by its stdout — stdout would not distinguish a hook that ran
+locally in a directory of the same name. On the real VM there is a second,
+sharper proof: the hook writes `uname -s`, and the marker reads `Linux` while the
+client is Darwin.
+
+**"The remote did not hold still"** is tested by editing the remote from outside
+while the kernel is shut down, then resuming and re-reading. A cached receipt
+would have served the pre-interruption bytes, and an Edit against them would be
+building on a file that no longer exists in that form. The assertion is that the
+re-read sees the _new_ content.
+
+---
+
+### 7. `remoteIdentity` was read but never written — FIXED
+
+`SessionMetadata.remoteIdentity` existed and `checkResumeIdentity` compared it,
+producing "The remote host identity changed since this session was created."
+Nothing ever set it, so the branch was unreachable and §20's "verify remote
+identity" was not implemented — the same shape as the five dead lint rules.
+
+`SshExecutionBackend` now probes a stable identifier at connect (hostname,
+`uname -sm`, and the machine-id where one exists, hashed) and reports it as
+`EnvironmentDescriptor.hostIdentity`. The kernel persists it into session
+metadata and passes it to the resume check.
+
+What it detects: the alias now points at a _different machine_ —
+re-provisioned, DNS moved, container replaced. What it does **not** do:
+authenticate the host. `StrictHostKeyChecking` does that, before this value is
+ever read.
+
+### 8. A non-canonical remote workspace refused every path — FIXED
+
+Surfaced by the loopback fixture, and it would hit any user whose configured
+`workspace` goes through a symlink — `/var/...` is `/private/var/...` on macOS,
+and `/home` is frequently a link on Linux.
+
+The jail compared against the path as written in `remotes.toml`, while the tool
+layer canonicalised through the remote (correctly, after defect 6). Two spellings
+of the same directory, so every path was refused as outside the workspace.
+
+`connect` now resolves the workspace on the remote with `pwd -P` and jails
+against that, so a symlinked `workspace` works instead of failing totally.
 
 ---
 

@@ -12,12 +12,12 @@ milestone. Every claim below maps to a row in
 mechanically.
 
 > **The headline is not the pass rate.** It is that turning three checklist
-> areas into executable gates found **seven defects that all previous testing had
+> areas into executable gates found **nine defects that all previous testing had
 > missed** — two meant a shipped subsystem could not connect at all, two more
-> meant `--remote` could not read or write anything even once connected, one was
-> an unguarded `rm -rf /*` aimed at a user's remote machine, and one was a
-> regression of my own that would have sent an unauthenticated request to a
-> provider. All are fixed. That
+> meant `--remote` could not read or write anything once connected, three were
+> checks that existed but could never fire, one was an unguarded `rm -rf /*` aimed
+> at a user's remote machine, and one was a regression of my own that would have
+> sent an unauthenticated request to a provider. All are fixed. That
 > is the return alpha.3 was designed to produce, and it is described in §2 below
 > rather than buried.
 
@@ -44,7 +44,7 @@ The 50 skipped tests are the SSH matrix under a plain `pnpm test`; it is opt-in
 via `KERNEL_SSH=1` and runs as its own CI job. It skips with a stated reason, not
 silently.
 
-Test count went 308 → 542. Nothing from alpha.2 was deleted or weakened.
+Test count went 308 → 560. Nothing from alpha.2 was deleted or weakened.
 
 ## 2. What the new gates found
 
@@ -236,6 +236,22 @@ have not fully explained why the suite passed at that point. Treat single green
 runs accordingly — which is, with some irony, the same lesson §2.3 records about
 the linter.
 
+### 2.9 Three checks existed but could never fire
+
+A pattern worth naming, because it appeared three separate times in this
+milestone and each instance looked healthy from the outside:
+
+| Check                        | Why it could not fire                                            | Found by                    |
+| ---------------------------- | ---------------------------------------------------------------- | --------------------------- |
+| five architecture lint rules | matched inside string literals, which the code projection blanks | writing the lint self-tests |
+| `remoteIdentity` on resume   | the metadata field was read but nothing ever wrote it            | driving a remote resume     |
+| the SSH `SendEnv` clear      | `SendEnv=` is a _syntax error_, so the option never applied      | connecting to real OpenSSH  |
+
+All three reported success. None was doing anything. A gate whose failure mode is
+silence needs something that deliberately trips it — which is the argument for
+must-fail fixtures, negative controls, and closing `NOT TESTED` rows rather than
+living with them.
+
 ## 3. What changed
 
 ### Pillar A — credential persistence
@@ -250,7 +266,7 @@ content hash reaches the event log), and for writes. A path that _failed_
 validation is protected anyway. ADR-0011 records the design; `docs/threat-model.md`
 records what `0600` does and does not buy, including the Windows gap.
 
-### Pillar B — real SSH validation
+### Pillar B — real SSH validation, and a working `--remote`
 
 `tests/live/ssh-harness.ts` starts a genuine `sshd` — real host key, real
 public-key auth, real protocol, real remote `sh` — and the same suite targets a

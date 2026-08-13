@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import { kernelError, KernelErrorException } from '../util/errors.ts';
+import { fingerprint } from '../util/ids.ts';
 import { normalizeUnicode, toPosix, type CanonicalPath } from '../util/paths.ts';
 import { createLogger, type Logger } from '../util/logger.ts';
 import { scrubEnv } from '../security/env-scrub.ts';
@@ -630,6 +631,7 @@ export class SshExecutionBackend implements ExecutionBackend {
     hasRipgrep: boolean,
     hasGit: boolean,
     homeDir: string,
+    hostIdentity: string,
   ) {
     this.config = config;
     this.id = `ssh:${config.name}`;
@@ -644,6 +646,7 @@ export class SshExecutionBackend implements ExecutionBackend {
       // the workspace, which is a different directory and made every consumer
       // of `homeDir` quietly wrong about the remote.
       homeDir,
+      hostIdentity,
       tmpDir: '/tmp',
       hasRipgrep,
       hasGit,
@@ -668,10 +671,25 @@ export class SshExecutionBackend implements ExecutionBackend {
     const transport = new SshTransport(opts.config, opts.redactor, logger);
     await transport.init();
 
+    // One round trip for everything the descriptor needs. Newline-separated
+    // rather than space-separated: `$HOME` and the hostname can contain spaces,
+    // and a positional split on whitespace mis-assigns every later field when
+    // they do.
     const probe = await transport.run(
       `cd ${shellQuote(opts.config.workspace)} && ` +
-        `printf '%s %s %s\\n' "$(command -v rg >/dev/null && echo 1 || echo 0)" ` +
-        `"$(command -v git >/dev/null && echo 1 || echo 0)" "$HOME"`,
+        `printf '%s\\n%s\\n%s\\n%s\\n' ` +
+        `"$(command -v rg >/dev/null && echo 1 || echo 0)" ` +
+        `"$(command -v git >/dev/null && echo 1 || echo 0)" ` +
+        `"$HOME" ` +
+        `"$(hostname 2>/dev/null)|$(uname -sm 2>/dev/null)|` +
+        `$(cat /etc/machine-id 2>/dev/null || cat /var/lib/dbus/machine-id 2>/dev/null || true)" ` +
+        // The workspace as the *remote* resolves it. A configured path may go
+        // through a symlink — `/var/...` is `/private/var/...` on macOS, and
+        // `/home` is frequently a link on Linux — and the jail compares against
+        // this value while the tool layer canonicalises through the remote. If
+        // the two spell the same directory differently, every path is refused as
+        // outside the workspace.
+        `"$(pwd -P)"`,
       { timeoutMs: 30_000 },
     );
 
@@ -685,13 +703,34 @@ export class SshExecutionBackend implements ExecutionBackend {
       );
     }
 
-    const [hasRg, hasGit, remoteHome] = probe.stdout.trim().split(/\s+/);
+    const [hasRg, hasGit, remoteHome, rawIdentity, resolvedWorkspace] = probe.stdout
+      .split('\n')
+      .map((l) => l.trim());
+
+    // Jail against the resolved path, so a symlinked or otherwise non-canonical
+    // `workspace` in remotes.toml works instead of refusing everything.
+    const effective: RemoteConfig =
+      resolvedWorkspace && resolvedWorkspace.startsWith('/') && resolvedWorkspace !== opts.config.workspace
+        ? { ...opts.config, workspace: resolvedWorkspace }
+        : opts.config;
+
+    if (effective.workspace !== opts.config.workspace) {
+      logger.debug('remote workspace resolved through a link', {
+        configured: opts.config.workspace,
+        resolved: effective.workspace,
+      });
+    }
+
     return new SshExecutionBackend(
-      opts.config,
+      effective,
       transport,
       hasRg === '1',
       hasGit === '1',
       remoteHome && remoteHome.startsWith('/') ? remoteHome : opts.config.workspace,
+      // Hashed rather than stored raw: it goes into the session metadata, and a
+      // hostname plus machine-id is more about the user's infrastructure than
+      // anything the event log needs to carry in the clear.
+      fingerprint(rawIdentity ?? opts.config.host),
     );
   }
 

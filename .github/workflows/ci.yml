@@ -170,9 +170,12 @@ jobs:
       # alpha.3 §11–§21, against a real OpenSSH server the fixture starts on
       # loopback — real host key, real auth, real remote shell. Not a VPS: same
       # uid, same filesystem, no network hop, and docs/alpha3-ssh-validation.md
-      # says so. What it buys is that the matrix runs on every commit, which is
-      # how the three defects in docs/alpha3-ssh-validation.md were found —
-      # two of which meant the backend could not connect to real OpenSSH at all.
+      # says so; the authoritative run was against a separate Linux VM.
+      #
+      # Two suites. `ssh-live` drives the backend directly; `ssh-session` drives
+      # the whole kernel over SSH, which is the composition that was recorded as
+      # NOT TESTED and turned out to hide two total functional breaks (ADR-0012).
+      # Between them they are how eight defects were found, six in the kernel.
       - name: Ensure an sshd binary is present
         run: sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server
 

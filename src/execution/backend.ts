@@ -87,6 +87,20 @@ export interface EnvironmentDescriptor {
   platform: string;
   kind: BackendKind;
   workspaceRoot: CanonicalPath;
+  /**
+   * A stable identifier for the machine this backend executes on.
+   *
+   * Recorded in session metadata so `checkResumeIdentity` can notice that a
+   * resumed remote session is pointing at a *different host* than the one it
+   * started on — the same alias re-provisioned, a DNS change, a moved container.
+   * Absent for the local backend, where `workspaceRoot` already implies the
+   * machine.
+   *
+   * It is a hash of hostname, `uname -sm` and the machine-id where one exists.
+   * That detects a replaced machine; it does **not** authenticate one — OpenSSH's
+   * `StrictHostKeyChecking` is what does that, before this value is ever read.
+   */
+  hostIdentity?: string;
   homeDir: string;
   tmpDir: string;
   /** Discovered once; Grep falls back to a built-in scanner when absent. */

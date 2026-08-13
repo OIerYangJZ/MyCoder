@@ -689,6 +689,11 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     workspaceRoot,
     workspaceIdentity: workspaceIdentity(workspaceRoot, facts.git.root),
     ...(activeRemote ? { remote: activeRemote } : {}),
+    // Recorded so a resume can notice the alias now points at a different
+    // machine (§20 "verify remote identity"). Until this was written, the
+    // metadata field existed and `checkResumeIdentity` read it, but nothing ever
+    // set it — so the check could not fire.
+    ...(backend.environment.hostIdentity ? { remoteIdentity: backend.environment.hostIdentity } : {}),
     model: modelAlias,
     permissionProfile: sessionProfile.name,
     backendKind: backend.kind,
@@ -710,6 +715,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
         workspaceRoot,
         workspaceIdentity: metadata.workspaceIdentity,
         ...(activeRemote ? { remote: activeRemote } : {}),
+        ...(backend.environment.hostIdentity ? { remoteIdentity: backend.environment.hostIdentity } : {}),
       });
       if (!check.ok) {
         throw new Error(`Cannot resume this session:\n  ${check.problems.join('\n  ')}`);

@@ -33,7 +33,7 @@
     "test:replay": "node --test --experimental-strip-types tests/integration/replay-gate.test.ts",
     "test:security": "node --test --experimental-strip-types \"tests/security/**/*.test.ts\"",
     "test:smoke": "node --test --experimental-strip-types \"tests/smoke/**/*.test.ts\"",
-    "test:ssh": "KERNEL_SSH=1 node --test --experimental-strip-types \"tests/live/ssh-live.test.ts\"",
+    "test:ssh": "KERNEL_SSH=1 node --test --experimental-strip-types \"tests/live/ssh-live.test.ts\" \"tests/live/ssh-session.test.ts\"",
     "test:trajectory": "node --test --experimental-strip-types tests/integration/agent-loop.test.ts",
     "test:unit": "node --test --experimental-strip-types \"tests/unit/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
