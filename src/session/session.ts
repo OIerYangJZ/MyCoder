@@ -33,7 +33,7 @@ import type { ModelRegistry, ResolvedModelProfile } from '../model/profiles.ts';
 import { addUsage, emptyUsage, estimateCost, resolveUsage, type UsageReport } from '../model/usage.ts';
 import { ModelRegistry as Registry } from '../model/profiles.ts';
 import { ContextEngine, type GoalState } from '../context/context-engine.ts';
-import { ContextProjector } from '../context/projector.ts';
+import { ContextProjector, type ContextOverlay } from '../context/projector.ts';
 import { compact, needsCompaction } from '../context/compaction.ts';
 import type { EditJournal } from '../edit/atomic-write.ts';
 import type { ToolRegistry } from '../tools/registry.ts';
@@ -49,6 +49,15 @@ import type {
 import { Turn } from './turn.ts';
 import type { SessionTerminalState, TurnOutcomeRecord } from './terminal-state.ts';
 import { renderHookOutput, type HookEvent, type HookRunner } from '../extensions/hooks.ts';
+import {
+  renderSkillInstructions,
+  type ActivatedSkill,
+  type SkillActivationScope,
+  type SkillActivationSource,
+} from '../extensions/skills.ts';
+import type { PolicyLayer } from '../policy/policy-engine.ts';
+import type { DelegationRecord } from './delegation.ts';
+import type { TurnOrigin } from './turn.ts';
 import {
   DEFAULT_LOOP_BUDGET,
   FailureTracker,
@@ -82,7 +91,46 @@ export interface SessionOptions {
   allowedTools?: readonly string[];
   /** Lifecycle hooks (spec §18.1). Absent means no project hooks are configured. */
   hooks?: HookRunner;
+  /**
+   * Set when this session *is* a delegated child scope (ADR-0013).
+   *
+   * Its only effects are provenance: every event this session appends carries the
+   * delegation id, and the turn it runs records the agent it belongs to. The
+   * capability narrowing happened before construction, in `DelegationService` —
+   * a child is not less privileged because of this field.
+   */
+  delegation?: ChildScopeInfo;
+  /**
+   * Skills already folded into the policy and catalogue at construction.
+   *
+   * Reported and recorded, never re-applied: an agent definition's skills are
+   * intersected by `DelegationService` before the child exists, and applying them
+   * twice would be harmless but would make the effective set impossible to reason
+   * about from one place.
+   */
+  activeSkills?: readonly ActivatedSkill[];
+  /** Instruction overlays present before any activation (agent, delegation brief). */
+  baseOverlays?: readonly ContextOverlay[];
+  /**
+   * Tool call ids a *previous* process issued, from a resumed event log.
+   *
+   * Without this the live half of the replay gate would only know about work done
+   * since the restart, while the log knows about all of it — so a resumed session
+   * could never satisfy the gate.
+   */
+  resumedToolCalls?: { issued: readonly string[]; answered: readonly string[] };
   onEvent?: (type: string, payload: unknown) => void;
+}
+
+/** Provenance that joins a child session back to the call that created it. */
+export interface ChildScopeInfo {
+  delegationId: string;
+  childRunId: string;
+  agent: string;
+  depth: number;
+  parentTurnId: TurnId;
+  parentStepId: StepId;
+  toolCallId: string;
 }
 
 export interface TurnOutcome {
@@ -110,7 +158,34 @@ export class Session {
   private abortController: AbortController | undefined;
   /** One entry per finished turn; the live half of the replay gate (§4.2). */
   private readonly turnOutcomes: TurnOutcomeRecord[] = [];
+  /**
+   * Tool calls issued and answered, accumulated as they happen.
+   *
+   * Deriving these from `context.history()` was a latent defect the delegation
+   * tests exposed: compaction *rewrites* the conversation, so a tool exchange in
+   * the summarised head vanished from the live half of the replay gate while the
+   * event log kept it. The gate then failed with a divergence that pointed at
+   * delegation and was really about compaction — and would have fired for any
+   * compacted tool call, delegated or not, if a test had ever put one there.
+   *
+   * Accumulating them mirrors the log by construction: both are append-only
+   * records of what happened, rather than views of what is still in the window.
+   */
+  private readonly issuedToolCalls = new Set<string>();
+  private readonly answeredToolCalls = new Set<string>();
   private compactionCount = 0;
+  private stepsTotal = 0;
+  /** Finished delegations, in order. The live half of the §28 replay gate. */
+  private readonly delegations: DelegationRecord[] = [];
+  /** Budget a child spent, not yet charged to the running turn's tracker. */
+  private pendingCharge = { modelRequests: 0, toolCalls: 0, costUsd: 0 };
+  /** Cost this session spent *directly*, excluding delegated work (§14). */
+  private directCostUsd = 0;
+  private delegatedCostUsd = 0;
+  /** Skill activations in force, and the ones staged for the next step (§22). */
+  private skillEntries: Array<{ activated: ActivatedSkill; scope: SkillActivationScope }> = [];
+  private pendingSkillEntries: Array<{ activated: ActivatedSkill; scope: SkillActivationScope }> = [];
+  private effectiveTools: readonly string[] | undefined;
   /** Cumulative usage with per-field provenance (§17). */
   private usageReport = emptyUsage();
   private usage = {
@@ -132,6 +207,13 @@ export class Session {
     this.logger = opts.logger;
     this.modelAlias = opts.modelAlias;
     this.loopCeiling = opts.loopBudgetCeiling ?? DEFAULT_LOOP_BUDGET;
+    this.effectiveTools = opts.allowedTools;
+    for (const id of opts.resumedToolCalls?.issued ?? []) this.issuedToolCalls.add(id);
+    for (const id of opts.resumedToolCalls?.answered ?? []) this.answeredToolCalls.add(id);
+    // Overlays are owned here rather than by the projector, because skill
+    // activation has to be able to recompute the whole list between steps and a
+    // second source of truth would drift from it.
+    this.refreshOverlays();
   }
 
   // --- control-plane surface (called by ControlPlane, never by the model) ---
@@ -190,6 +272,119 @@ export class Session {
     return { ...this.usage };
   }
 
+  /** Steps this session has taken across all its turns, for `/status`. */
+  get stepsUsed(): number {
+    return this.stepsTotal;
+  }
+
+  /**
+   * Cost split three ways (§14).
+   *
+   * alpha.4 only makes delegated cost *measurable*; nothing routes on it yet.
+   * Reporting the split rather than a total is what makes the later question —
+   * "does delegation pay for itself?" — answerable from recorded runs instead of
+   * from a new experiment.
+   */
+  get costBreakdown(): { directUsd: number; delegatedUsd: number; totalUsd: number } {
+    return {
+      directUsd: this.directCostUsd,
+      delegatedUsd: this.delegatedCostUsd,
+      totalUsd: this.directCostUsd + this.delegatedCostUsd,
+    };
+  }
+
+  /** Finished delegations, for `/status`, the eval schema and the replay gate. */
+  delegationRecords(): readonly DelegationRecord[] {
+    return this.delegations;
+  }
+
+  /** The catalogue in force, after every skill intersection. */
+  get effectiveAllowedTools(): readonly string[] {
+    return this.effectiveTools ?? this.opts.toolRegistry.names();
+  }
+
+  /** Skills in force, including any an agent definition pre-applied. */
+  activeSkills(): Array<{ name: string; scope: SkillActivationScope; preApplied: boolean }> {
+    return [
+      ...(this.opts.activeSkills ?? []).map((s) => ({
+        name: s.skill.name,
+        scope: 'run' as SkillActivationScope,
+        preApplied: true,
+      })),
+      ...[...this.skillEntries, ...this.pendingSkillEntries].map((e) => ({
+        name: e.activated.skill.name,
+        scope: e.scope,
+        preApplied: false,
+      })),
+    ];
+  }
+
+  /** The delegation scope this session runs in, if it is a child. */
+  get childScope(): ChildScopeInfo | undefined {
+    return this.opts.delegation;
+  }
+
+  /**
+   * Apply a skill activation (alpha.4 §22).
+   *
+   * Staged, not immediate. A step's context and tool catalogue are frozen for the
+   * duration of its model request (invariant 2), so an activation that arrived
+   * mid-step takes effect on the next one — the same rule `/model use` follows.
+   * The event is appended now, because what was *asked for* is part of the record
+   * even if the turn ends before it applies.
+   */
+  applySkillActivation(
+    activated: ActivatedSkill,
+    scope: SkillActivationScope,
+    source: SkillActivationSource,
+  ): { allowedTools: string[]; appliedFrom: 'now' | 'next-step' } {
+    const already = [...this.skillEntries, ...this.pendingSkillEntries].some(
+      (e) => e.activated.skill.name === activated.skill.name,
+    );
+    if (!already) this.pendingSkillEntries.push({ activated, scope });
+
+    const sampling = this.currentTurn?.state === 'sampling';
+    if (!sampling) this.applyPendingSkills();
+
+    void this.append('skill.activated', {
+      skill: activated.skill.name,
+      scope,
+      source,
+      allowedTools: this.projectedTools(),
+      ...(activated.layer ? { policyLayer: activated.layer.name } : {}),
+      ...(activated.maxSteps !== undefined ? { maxSteps: activated.maxSteps } : {}),
+      notes: activated.notes,
+    });
+
+    return { allowedTools: this.projectedTools(), appliedFrom: sampling ? 'next-step' : 'now' };
+  }
+
+  /**
+   * Record a finished delegation (§13, §14, §28).
+   *
+   * Three things happen here, and the order matters less than the fact that all
+   * three happen in one place: the child's usage is added to the root's, so the
+   * session's totals include delegated work; the same usage is queued as a charge
+   * against the running turn's budget, so a parent cannot buy unlimited work by
+   * delegating; and the record is kept for the terminal state, so replay has
+   * something to be compared against.
+   */
+  recordDelegation(record: DelegationRecord): void {
+    this.delegations.push(record);
+
+    this.usage.modelRequests += record.usage.modelRequests;
+    this.usage.toolCalls += record.usage.toolCalls;
+    this.pendingCharge.modelRequests += record.usage.modelRequests;
+    this.pendingCharge.toolCalls += record.usage.toolCalls;
+
+    const cost = record.usage.estimatedCostUsd;
+    if (cost !== undefined && cost > 0) {
+      this.usage.costUsd += cost;
+      this.delegatedCostUsd += cost;
+      this.pendingCharge.costUsd += cost;
+    }
+  }
+
   /** Cumulative usage with provenance, for the eval result schema (§31). */
   get usageReportSnapshot(): UsageReport {
     return this.usageReport;
@@ -203,17 +398,32 @@ export class Session {
    * `tests/integration/replay-gate.test.ts`.
    */
   terminalState(): SessionTerminalState {
-    const toolCalls = new Set<string>();
-    const answered = new Set<string>();
-
-    for (const message of this.context.history()) {
-      for (const part of message.parts) {
-        if (part.type === 'tool_call') toolCalls.add(part.id);
-        if (part.type === 'tool_result') answered.add(part.toolCallId);
-      }
-    }
+    const toolCalls = new Set<string>(this.issuedToolCalls);
+    const answered = new Set<string>(this.answeredToolCalls);
 
     const goal = this.context.goal;
+
+    // Delegated work belongs to the root's totals (§13, §14): the event log
+    // contains the child's `tool.call` and `model.request.started` events, so a
+    // replay that counted them while the live state did not would diverge — and
+    // the honest reading is that a root task's cost includes its children's.
+    // The per-delegation breakdown is kept beside the union so a divergence names
+    // the scope it happened in.
+    const delegations = this.delegations.map((record) => ({
+      delegationId: record.delegationId,
+      agent: record.agent,
+      depth: record.depth,
+      status: record.status,
+      childTurns: record.child.turns.map((t) => t.state),
+      childToolCalls: [...record.child.toolCalls].sort(),
+      childModelRequests: record.child.modelRequests,
+      childCompactions: record.child.compactions,
+    }));
+
+    for (const record of this.delegations) {
+      for (const id of record.child.toolCalls) toolCalls.add(id);
+      for (const id of record.child.answeredToolCalls) answered.add(id);
+    }
 
     return {
       turns: [...this.turnOutcomes],
@@ -225,7 +435,8 @@ export class Session {
       dirtyFiles: [...this.editJournal.dirtyPaths()].sort(),
       modelRequests: this.usage.modelRequests,
       toolCallCount: toolCalls.size,
-      compactions: this.compactionCount,
+      compactions: this.compactionCount + this.delegations.reduce((n, d) => n + d.child.compactions, 0),
+      delegations,
     };
   }
 
@@ -242,7 +453,7 @@ export class Session {
 
   // --- the agent loop -----------------------------------------------------
 
-  async runTurn(input: string, origin: 'user' | 'control' | 'loop' = 'user'): Promise<TurnOutcome> {
+  async runTurn(input: string, origin: TurnOrigin = 'user'): Promise<TurnOutcome> {
     const turn = new Turn({
       turnId: newTurnId(this.clock.now()),
       input,
@@ -254,14 +465,29 @@ export class Session {
     const signal = this.abortController.signal;
 
     const budget = new LoopBudgetTracker(this.loopCeiling, () => this.clock.now());
-    if (this.turnBudgetOverride) budget.applyCeiling(this.turnBudgetOverride, this.loopCeiling);
+    const override = this.budgetOverride();
+    if (override) budget.applyCeiling(override, this.loopCeiling);
 
     const failures = new FailureTracker(budget.current.maxRepeatedEquivalentFailures);
 
-    await this.append('turn.started', { input, origin } satisfies TurnStartedPayload, turn.turnId);
+    await this.append(
+      'turn.started',
+      {
+        input,
+        origin,
+        ...(this.opts.delegation ? { agent: this.opts.delegation.agent } : {}),
+      } satisfies TurnStartedPayload,
+      turn.turnId,
+    );
 
     if (origin === 'user') this.context.appendUser(input);
     else if (origin === 'control') this.context.appendControlResult(input);
+    // A delegated task is not the user speaking (§18). It enters the child's
+    // conversation as an injection naming the parent, so the child model can weigh
+    // it as an instruction from another agent — which is what it is.
+    else if (origin === 'delegation') {
+      this.context.appendInjection(`delegation:${this.opts.delegation?.agent ?? 'parent'}`, input);
+    }
 
     if (origin === 'user') await this.runHooks('UserPromptSubmit', turn.turnId, {});
 
@@ -305,6 +531,10 @@ export class Session {
     // TurnEnd fires for every terminal state, including failure and
     // cancellation — a hook that only runs on success is useless for cleanup.
     await this.runHooks('TurnEnd', turn.turnId, {});
+
+    // A turn-scoped skill stops applying here, whatever the outcome. Leaving one
+    // in force after a failed turn would silently narrow the next one.
+    await this.expireTurnScopedSkills();
 
     await this.persistMetadata();
     this.abortController = undefined;
@@ -358,6 +588,14 @@ export class Session {
       if (this.pendingModelAlias) {
         this.modelAlias = this.pendingModelAlias;
         this.pendingModelAlias = undefined;
+      }
+
+      // Same rule for a skill activated during the previous step: it narrows the
+      // catalogue and the policy from *this* step onward, never retroactively.
+      if (this.pendingSkillEntries.length > 0) {
+        this.applyPendingSkills();
+        const narrowed = this.budgetOverride();
+        if (narrowed) budget.applyCeiling(narrowed, this.loopCeiling);
       }
 
       const model = this.resolveModel();
@@ -428,7 +666,10 @@ export class Session {
       const usageReport = resolveUsage(modelTurn.usage, { responseText: modelTurn.text });
       const cost = estimateCost(usageReport, model.profile.pricing);
       this.usageReport = addUsage(this.usageReport, usageReport);
-      if (cost.provenance !== 'unknown') this.usage.costUsd += cost.usd;
+      if (cost.provenance !== 'unknown') {
+        this.usage.costUsd += cost.usd;
+        this.directCostUsd += cost.usd;
+      }
 
       await this.append(
         'model.request.completed',
@@ -474,6 +715,7 @@ export class Session {
       this.usage.toolCalls += modelTurn.toolCalls.length;
 
       for (const call of modelTurn.toolCalls) {
+        this.issuedToolCalls.add(call.id);
         await this.append(
           'tool.call',
           {
@@ -491,6 +733,7 @@ export class Session {
       this.context.appendToolResults(outcome.results);
 
       for (const result of outcome.results) {
+        this.answeredToolCalls.add(result.toolCallId);
         await this.append(
           'tool.result',
           {
@@ -513,7 +756,19 @@ export class Session {
         return;
       }
 
+      // Budget a child spent is charged to the parent's turn here, after the
+      // batch that dispatched it (§13). Without this a parent could buy unbounded
+      // work by delegating: the child's own ceiling was respected, but nothing
+      // subtracted it from the parent's.
+      if (this.pendingCharge.modelRequests > 0 || this.pendingCharge.toolCalls > 0) {
+        budget.modelRequests += this.pendingCharge.modelRequests;
+        budget.toolCalls += this.pendingCharge.toolCalls;
+        budget.costUsd += this.pendingCharge.costUsd;
+        this.pendingCharge = { modelRequests: 0, toolCalls: 0, costUsd: 0 };
+      }
+
       budget.steps += 1;
+      this.stepsTotal += 1;
       this.context.consumeOneShotFacts();
     }
   }
@@ -581,9 +836,7 @@ export class Session {
 
   private freezeStep(turn: Turn, model: ResolvedModelProfile, budget: LoopBudgetTracker): StepContext {
     const snapshot = this.opts.projector.project(this.context, this.context.repository.facts);
-    const tools = this.opts.toolRegistry.view(
-      this.opts.allowedTools ? { allowed: this.opts.allowedTools } : {},
-    );
+    const tools = this.opts.toolRegistry.view(this.effectiveTools ? { allowed: this.effectiveTools } : {});
 
     return freezeStepContext({
       sessionId: this.sessionId,
@@ -629,6 +882,44 @@ export class Session {
   }
 
   /**
+   * Compact on request from the control plane (`/compact`).
+   *
+   * Lives here rather than in the kernel's control host so that *every* path into
+   * compaction goes through `runCompaction` and therefore re-injects the same
+   * anchors — the goal, the dirty-file summary and the delegation record (§30).
+   * The duplicate implementation this replaces did not re-inject delegated work,
+   * so a user-triggered compaction could lose a child's result while an automatic
+   * one kept it.
+   */
+  async compactNow(): Promise<{ droppedMessages: number; tokensBefore: number; tokensAfter: number }> {
+    const snapshot = this.opts.projector.project(this.context, this.context.repository.facts);
+    const resolved = this.opts.modelRegistry.resolve(this.activeModelAlias);
+    const budgetTokens = resolved ? Math.floor(Registry.usableContextTokens(resolved.profile) * 0.6) : 8_000;
+
+    const result = this.runCompaction(snapshot.system, budgetTokens);
+
+    await this.append(
+      'compaction.boundary',
+      {
+        level: result.levelsApplied.at(-1) ?? 'L1',
+        droppedMessages: result.droppedMessages,
+        summaryLength: result.summaryLength,
+        tokensBefore: result.tokensBefore,
+        tokensAfter: result.tokensAfter,
+        preservedExchanges: result.preservedExchanges,
+        trigger: 'control',
+      },
+      this.currentTurn?.turnId,
+    );
+
+    return {
+      droppedMessages: result.droppedMessages,
+      tokensBefore: result.tokensBefore,
+      tokensAfter: result.tokensAfter,
+    };
+  }
+
+  /**
    * Compact unconditionally, after a provider-side overflow.
    *
    * This also appends a boundary event. Compaction that happens without one is
@@ -659,7 +950,11 @@ export class Session {
     const result = compact(this.context.history(), system, {
       budgetTokens,
       ...(this.context.goal ? { goal: this.context.goal } : {}),
-      reinject: [this.editJournal.summary()],
+      // Delegated work has to survive compaction (§30). A summarised conversation
+      // that forgot a child's result would either lose work or invite the parent
+      // to dispatch the same task again — and re-running a child that already
+      // edited files is the expensive kind of forgetting.
+      reinject: [this.editJournal.summary(), ...this.delegationAnchors()],
     });
     this.context.replaceHistory(result.messages, result.boundary);
     // Receipts predate the summary and their coverage claims no longer match
@@ -727,6 +1022,127 @@ export class Session {
     }
   }
 
+  // --- skill state ---------------------------------------------------------
+
+  /**
+   * Recompute the effective scope from the *baseline* every time (§23).
+   *
+   * Folding forward from scratch rather than mutating incrementally is what makes
+   * "a skill can only narrow" true by construction: whatever the sequence of
+   * activations and expiries, the result is the session's original catalogue and
+   * policy intersected with the activations currently in force. An incremental
+   * implementation would have to get every path right, and the paths that matter
+   * are the ones nobody exercises — an activation during a cancelled turn, two
+   * skills sharing a tool, a turn-scoped skill expiring while a run-scoped one
+   * stays.
+   */
+  private applyPendingSkills(): void {
+    if (this.pendingSkillEntries.length > 0) {
+      this.skillEntries = [...this.skillEntries, ...this.pendingSkillEntries];
+      this.pendingSkillEntries = [];
+    }
+    this.recomputeSkillScope();
+  }
+
+  private recomputeSkillScope(): void {
+    const baseline = this.opts.allowedTools ?? this.opts.toolRegistry.names();
+    let tools = [...baseline];
+    const layers: PolicyLayer[] = [];
+
+    for (const entry of this.skillEntries) {
+      const permitted = new Set(entry.activated.allowedTools);
+      tools = tools.filter((t) => permitted.has(t));
+      if (entry.activated.layer) layers.push(entry.activated.layer);
+    }
+
+    this.effectiveTools = tools;
+    this.opts.toolRuntime.setNarrowingLayers(layers);
+    this.refreshOverlays();
+  }
+
+  /** Tools that will be in force once staged activations apply. */
+  private projectedTools(): string[] {
+    const baseline = this.opts.allowedTools ?? this.opts.toolRegistry.names();
+    let tools = [...baseline];
+    for (const entry of [...this.skillEntries, ...this.pendingSkillEntries]) {
+      const permitted = new Set(entry.activated.allowedTools);
+      tools = tools.filter((t) => permitted.has(t));
+    }
+    return tools;
+  }
+
+  /** Base overlays plus one per active skill, each labelled with its source. */
+  private refreshOverlays(): void {
+    const overlays: ContextOverlay[] = [...(this.opts.baseOverlays ?? [])];
+    for (const entry of this.skillEntries) {
+      overlays.push({
+        source: `skill:${entry.activated.skill.name}`,
+        text: renderSkillInstructions(entry.activated),
+      });
+    }
+    this.opts.projector.setOverlays(overlays);
+  }
+
+  private async expireTurnScopedSkills(): Promise<void> {
+    const expiring = this.skillEntries.filter((e) => e.scope === 'turn');
+    if (expiring.length === 0) return;
+    this.skillEntries = this.skillEntries.filter((e) => e.scope !== 'turn');
+    this.recomputeSkillScope();
+    for (const entry of expiring) {
+      await this.append('skill.deactivated', {
+        skill: entry.activated.skill.name,
+        scope: entry.scope,
+        reason: 'turn ended',
+      });
+    }
+  }
+
+  /**
+   * The narrowest budget in force: `/loop` narrowing and any active skill's.
+   *
+   * Merged into one partial and applied once, because `applyCeiling` replaces the
+   * whole budget — two separate calls would silently drop the first one's fields.
+   */
+  private budgetOverride(): Partial<LoopBudget> | undefined {
+    const skillLimits = [...this.skillEntries, ...this.pendingSkillEntries]
+      .map((e) => e.activated.maxSteps)
+      .filter((n): n is number => typeof n === 'number');
+
+    if (!this.turnBudgetOverride && skillLimits.length === 0) return undefined;
+
+    const merged: Partial<LoopBudget> = { ...this.turnBudgetOverride };
+    if (skillLimits.length > 0) {
+      const narrowest = Math.min(...skillLimits);
+      merged.maxSteps = Math.min(narrowest, merged.maxSteps ?? narrowest);
+    }
+    return merged;
+  }
+
+  // --- delegation ----------------------------------------------------------
+
+  /**
+   * What compaction must not lose about delegated work (§30).
+   *
+   * Statuses and one-line summaries, not the child's full report: the report is
+   * already in the tool result, and the tail-preservation rules decide whether
+   * that survives. What this guarantees is that the *fact* of the delegation, its
+   * outcome and the files it touched are still present after the head is
+   * summarised away.
+   */
+  private delegationAnchors(): string[] {
+    if (this.delegations.length === 0) return [];
+    const lines = ['Delegated work in this session:'];
+    for (const record of this.delegations) {
+      lines.push(
+        `  - ${record.agent} (${record.status}): ${record.usage.modelRequests} model request(s), ` +
+          `${record.usage.toolCalls} tool call(s)` +
+          (record.child.dirtyFiles.length > 0 ? `, modified ${record.child.dirtyFiles.join(', ')}` : ''),
+      );
+    }
+    lines.push('  Do not re-dispatch a delegation that already completed; its effects are in the workspace.');
+    return [lines.join('\n')];
+  }
+
   /** Answer every dangling tool call, so the conversation stays well formed. */
   private async closeOpenToolCalls(turnId: TurnId, reason: string): Promise<void> {
     const open = this.context.openToolCalls();
@@ -736,6 +1152,7 @@ export class Session {
     this.context.appendToolResults(results);
 
     for (const result of results) {
+      this.answeredToolCalls.add(result.toolCallId);
       await this.append('tool.synthetic_result', { toolCallId: result.toolCallId, reason }, turnId);
     }
   }
@@ -757,6 +1174,10 @@ export class Session {
       payload,
       ...(turnId ? { turnId } : {}),
       ...(stepId ? { stepId } : {}),
+      // Every event a child session writes is tagged, which is what lets replay
+      // rebuild the parent's transcript without folding the child's tool calls
+      // into it (see `KernelEvent.delegationId`).
+      ...(this.opts.delegation ? { delegationId: this.opts.delegation.delegationId } : {}),
     });
   }
 

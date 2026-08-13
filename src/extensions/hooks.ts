@@ -189,6 +189,23 @@ export class HookRunner {
     this.opts = opts;
   }
 
+  /**
+   * The same hooks, judged by a narrower policy (alpha.4 §27).
+   *
+   * A delegated child runs the project's hooks — there is deliberately no second
+   * hook implementation — but a hook firing inside a read-only child must not be
+   * able to do what the child cannot. Rather than teach `run()` about delegation,
+   * the child gets a runner built from the same definitions and its own engine,
+   * so containment comes from the engine it was handed and not from a flag it
+   * could be constructed without.
+   *
+   * `enabled` is deliberately not shared: an approval the user gave for a hook in
+   * the root scope is not an approval for the same command inside a child.
+   */
+  withPolicy(policy: PolicyEngine): HookRunner {
+    return new HookRunner(this.hooks, { ...this.opts, policy });
+  }
+
   forEvent(ctx: HookContext): HookDefinition[] {
     return this.hooks.filter((h) => {
       if (h.event !== ctx.event) return false;

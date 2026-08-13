@@ -27,6 +27,9 @@ import type { CapabilityExecutor, EnvironmentDescriptor } from '../execution/bac
 import type { SecretBroker } from '../security/secret-broker.ts';
 import type { Redactor } from '../security/redactor.ts';
 import type { FreshnessLedger } from '../context/freshness.ts';
+import type { ActivateSkillFn } from '../extensions/skills.ts';
+import type { DelegateFn, DelegationScope } from '../session/delegation.ts';
+import type { LoopBudgetSnapshot } from '../session/step.ts';
 
 /** How eagerly a tool's schema is sent to the model (spec §9.3). */
 export type ToolDisclosure = 'eager' | 'deferred' | 'discoverable';
@@ -48,6 +51,27 @@ export interface ToolResolveContext {
   logger: Logger;
   now(): number;
   signal: AbortSignal;
+  /**
+   * Where this call sits in the delegation tree (ADR-0013).
+   *
+   * Present for every call, root included, so a tool never has to guess: depth 0
+   * is the root session. A tool that dispatches children reads `maxDepth` from
+   * here rather than from configuration it could disagree with.
+   */
+  delegation: DelegationScope;
+  /**
+   * The turn's budget and what it has spent so far.
+   *
+   * Needed by any tool that *spends* budget on the model's behalf — currently
+   * only `Delegate`, which must not be able to manufacture allowance for a child
+   * (alpha.4 §13). Passing the snapshot rather than the live tracker keeps the
+   * tool unable to mutate it.
+   */
+  loopBudget: LoopBudgetSnapshot;
+  /** Dispatch a bounded child scope. Absent when no agents are configured. */
+  delegate?: DelegateFn;
+  /** Activate a discovered skill. Absent when no skills are configured. */
+  activateSkill?: ActivateSkillFn;
 }
 
 export type RiskLevel = 'low' | 'medium' | 'high';

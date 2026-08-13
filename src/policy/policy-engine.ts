@@ -304,6 +304,17 @@ export class PolicyEngine {
       case 'secret.use':
       case 'vcs.mutate':
         return undefined;
+
+      case 'agent.invoke':
+        // No system hard ceiling. Delegation cannot grant capability — the child
+        // receives an intersection — so the ceilings that matter for it are the
+        // depth limit and the budget, and both are quantitative rather than
+        // path-shaped. They are enforced where the numbers live: the depth in the
+        // Delegate tool against the runtime's delegation scope, the budget in
+        // `DelegationService` against the parent's remaining allowance. Putting a
+        // count here would mean the policy engine held mutable per-turn state,
+        // which is precisely what makes a decision engine untestable.
+        return undefined;
     }
   }
 }
@@ -455,6 +466,8 @@ function errorCodeFor(access: AccessRequest, outsideWorkspace: boolean): ErrorCo
       return 'NETWORK_DENIED';
     case 'secret.use':
       return 'SECRET_ACCESS_DENIED';
+    case 'agent.invoke':
+      return 'DELEGATION_DENIED';
     default:
       return 'TOOL_DENIED';
   }

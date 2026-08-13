@@ -66,8 +66,20 @@ export function renderApproval(request: ApprovalRequest): string {
   const risk = request.subject.risk;
 
   lines.push(`Approval required${risk === 'high' ? '  (high risk)' : ''}`);
-  lines.push(`  tool     : ${request.toolName}`);
-  lines.push(`  action   : ${request.subject.title}`);
+
+  // A child's action is attributed to the child (alpha.4 §40). Showing a
+  // delegated `npm install` as though the root agent had asked for it would put
+  // the user's trust in the wrong place — and "which agent wants this" is often
+  // the whole basis for the decision.
+  if (request.delegation) {
+    lines.push(`  agent    : ${request.delegation.agent}  (subagent, depth ${request.delegation.depth})`);
+    lines.push(`  delegation: ${request.delegation.delegationId}`);
+    lines.push(`  tool     : ${request.toolName}`);
+    lines.push(`  child action: ${request.subject.title}`);
+  } else {
+    lines.push(`  tool     : ${request.toolName}`);
+    lines.push(`  action   : ${request.subject.title}`);
+  }
 
   for (const detail of request.subject.details) {
     lines.push(`  ${detail}`);
