@@ -75,6 +75,7 @@ import { FileSessionStore, type SessionMetadata, type SessionStore } from './ses
 import { Session } from './session/session.ts';
 import { DEFAULT_LOOP_BUDGET, FailureTracker, type LoopBudget } from './session/step.ts';
 import { replaySession, workspaceIdentity, checkResumeIdentity } from './session/resume.ts';
+import { replayTerminalState, type SessionTerminalState } from './session/terminal-state.ts';
 import { DelegationService, ROOT_SCOPE, type DelegateFn } from './session/delegation.ts';
 
 import { loadConfig, projectRulesProfile } from './config/config.ts';
@@ -517,7 +518,8 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   const store = opts.store ?? new FileSessionStore({ rootDir: sessionsDir(dirs), redactor, clock });
 
   const sessionId = (opts.resumeSessionId as SessionId | undefined) ?? newSessionId(clock.now());
-  const resumedToolCalls: { issued: string[]; answered: string[] } = { issued: [], answered: [] };
+  let resumedState: SessionTerminalState | undefined;
+  let resumedUsage: SessionMetadata['usage'] | undefined;
 
   // 12b. Extensions: hooks must exist before the tool runtime and the session,
   // because both invoke lifecycle points (spec §18.1).
@@ -799,15 +801,14 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       context.addFact({ id: 'resume-freshness', priority: 'critical', text: replayed.freshnessNote });
       config.warnings.push(...check.warnings, ...replayed.warnings);
 
-      // The tool exchanges the previous process recorded. Carried into the new
-      // session so the live half of the replay gate covers the whole log rather
-      // than only the work done since the restart.
-      for (const message of replayed.messages) {
-        for (const part of message.parts) {
-          if (part.type === 'tool_call') resumedToolCalls.issued.push(part.id);
-          if (part.type === 'tool_result') resumedToolCalls.answered.push(part.toolCallId);
-        }
-      }
+      // What the previous process recorded, reconstructed from the log itself
+      // rather than from the replayed *messages* — the messages deliberately omit
+      // a child's tool calls (they were never the parent's), and the terminal
+      // state deliberately includes them (§13: root usage includes child usage).
+      resumedState = await replayTerminalState(store, sessionId);
+      // Token and cost totals live only in the metadata snapshot; see
+      // `SessionOptions.resumedUsage`.
+      resumedUsage = replayed.metadata.usage;
     }
   } else {
     await store.createSession(metadata);
@@ -844,9 +845,8 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     permissionProfile: sessionProfile.name,
     loopBudgetCeiling: loopBudget,
     hooks,
-    ...(resumedToolCalls.issued.length > 0 || resumedToolCalls.answered.length > 0
-      ? { resumedToolCalls }
-      : {}),
+    ...(resumedState ? { resumedState } : {}),
+    ...(resumedUsage ? { resumedUsage } : {}),
   });
 
   // 15. Delegated execution (ADR-0013).

@@ -47,7 +47,7 @@ import type {
   TurnStartedPayload,
 } from './events.ts';
 import { Turn } from './turn.ts';
-import type { SessionTerminalState, TurnOutcomeRecord } from './terminal-state.ts';
+import type { DelegationOutcomeRecord, SessionTerminalState, TurnOutcomeRecord } from './terminal-state.ts';
 import { renderHookOutput, type HookEvent, type HookRunner } from '../extensions/hooks.ts';
 import {
   renderSkillInstructions,
@@ -112,13 +112,31 @@ export interface SessionOptions {
   /** Instruction overlays present before any activation (agent, delegation brief). */
   baseOverlays?: readonly ContextOverlay[];
   /**
-   * Tool call ids a *previous* process issued, from a resumed event log.
+   * Facts a *previous* process recorded, reconstructed from the event log.
    *
    * Without this the live half of the replay gate would only know about work done
-   * since the restart, while the log knows about all of it — so a resumed session
-   * could never satisfy the gate.
+   * since the restart while the log knows about all of it, so a resumed session
+   * could never satisfy the gate — and "the log is a faithful record" is exactly
+   * the property resume depends on.
+   *
+   * Worth being precise about what this does and does not prove. The seed comes
+   * from `replayTerminalState`, so for *pre-restart* facts the two halves share a
+   * source and the comparison is not independent. What stays independent is
+   * everything the new process does, and the pre-restart half was already compared
+   * independently before the shutdown. The soak suite checks both halves in that
+   * order for exactly this reason.
    */
-  resumedToolCalls?: { issued: readonly string[]; answered: readonly string[] };
+  resumedState?: SessionTerminalState;
+  /**
+   * Cumulative usage the previous process persisted (`session.json`).
+   *
+   * The event log can rebuild *counts* — how many requests, which tool calls —
+   * but token totals and cost are only aggregated in the metadata snapshot, and
+   * recomputing them from per-request events would be a second, drifting
+   * implementation. So counts come from the log and money comes from the
+   * snapshot, and the soak asserts the two agree where they overlap.
+   */
+  resumedUsage?: SessionMetadata['usage'];
   onEvent?: (type: string, payload: unknown) => void;
 }
 
@@ -173,6 +191,10 @@ export class Session {
    */
   private readonly issuedToolCalls = new Set<string>();
   private readonly answeredToolCalls = new Set<string>();
+  /** Facts carried over from a resumed log; see `SessionOptions.resumedState`. */
+  private readonly seededDelegations: DelegationOutcomeRecord[] = [];
+  private readonly seededDirtyFiles: string[] = [];
+  private seededCompactions = 0;
   private compactionCount = 0;
   private stepsTotal = 0;
   /** Finished delegations, in order. The live half of the §28 replay gate. */
@@ -188,7 +210,7 @@ export class Session {
   private effectiveTools: readonly string[] | undefined;
   /** Cumulative usage with per-field provenance (§17). */
   private usageReport = emptyUsage();
-  private usage = {
+  private usage: SessionMetadata['usage'] = {
     inputTokens: 0,
     outputTokens: 0,
     cachedInputTokens: 0,
@@ -208,8 +230,23 @@ export class Session {
     this.modelAlias = opts.modelAlias;
     this.loopCeiling = opts.loopBudgetCeiling ?? DEFAULT_LOOP_BUDGET;
     this.effectiveTools = opts.allowedTools;
-    for (const id of opts.resumedToolCalls?.issued ?? []) this.issuedToolCalls.add(id);
-    for (const id of opts.resumedToolCalls?.answered ?? []) this.answeredToolCalls.add(id);
+
+    const resumed = opts.resumedState;
+    if (resumed) {
+      for (const id of resumed.toolCalls) this.issuedToolCalls.add(id);
+      for (const id of resumed.answeredToolCalls) this.answeredToolCalls.add(id);
+      this.turnOutcomes.push(...resumed.turns);
+      this.seededDelegations.push(...resumed.delegations);
+      this.seededDirtyFiles.push(...resumed.dirtyFiles);
+      this.seededCompactions = resumed.compactions;
+    }
+
+    if (opts.resumedUsage) {
+      this.usage = { ...opts.resumedUsage };
+    } else if (resumed) {
+      this.usage.modelRequests = resumed.modelRequests;
+      this.usage.toolCalls = resumed.toolCallCount;
+    }
     // Overlays are owned here rather than by the projector, because skill
     // activation has to be able to recompute the whole list between steps and a
     // second source of truth would drift from it.
@@ -409,7 +446,7 @@ export class Session {
     // the honest reading is that a root task's cost includes its children's.
     // The per-delegation breakdown is kept beside the union so a divergence names
     // the scope it happened in.
-    const delegations = this.delegations.map((record) => ({
+    const delegations: DelegationOutcomeRecord[] = this.delegations.map((record) => ({
       delegationId: record.delegationId,
       agent: record.agent,
       depth: record.depth,
@@ -432,11 +469,14 @@ export class Session {
         : {}),
       toolCalls: [...toolCalls].sort(),
       answeredToolCalls: [...answered].sort(),
-      dirtyFiles: [...this.editJournal.dirtyPaths()].sort(),
+      dirtyFiles: [...new Set([...this.seededDirtyFiles, ...this.editJournal.dirtyPaths()])].sort(),
       modelRequests: this.usage.modelRequests,
       toolCallCount: toolCalls.size,
-      compactions: this.compactionCount + this.delegations.reduce((n, d) => n + d.child.compactions, 0),
-      delegations,
+      compactions:
+        this.seededCompactions +
+        this.compactionCount +
+        this.delegations.reduce((n, d) => n + d.child.compactions, 0),
+      delegations: [...this.seededDelegations, ...delegations],
     };
   }
 
@@ -879,6 +919,15 @@ export class Session {
       },
       turn.turnId,
     );
+
+    // Back to `preparing` before the step is frozen. `compacting → sampling` is
+    // not a legal move (§5.2), and taking it threw INTERNAL_ERROR *and failed the
+    // turn* — so until this line existed, any turn whose context outgrew the
+    // window mid-flight died at the moment compaction was supposed to save it.
+    // The same shape as the alpha.2 overflow defect: a state machine that is
+    // enforced will punish a missing transition, and the punishment looks like an
+    // unrelated internal error.
+    turn.transition('preparing', this.clock.now(), 'compaction complete');
   }
 
   /**
