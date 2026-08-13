@@ -84,9 +84,18 @@ export type FailureClass =
   | 'MODEL_CAPABILITY'
   | 'MODEL_TOOL_SCHEMA'
   | 'MODEL_EDIT_STRATEGY'
+  // alpha.4 §35. The delegation classes exist because "the task failed" hides
+  // three different problems that need three different responses: the model
+  // delegated something unsuitable, the model delegated when it should have done
+  // the work, or the delegation runtime misbehaved. Only the third is ours.
+  | 'MODEL_BAD_DELEGATION'
+  | 'MODEL_UNNECESSARY_DELEGATION'
+  | 'DELEGATION_RUNTIME_BUG'
+  | 'SKILL_RUNTIME_BUG'
   | 'ADAPTER_BUG'
   | 'KERNEL_BUG'
   | 'POLICY_BLOCKED'
+  | 'BUDGET_BLOCKED'
   | 'ENVIRONMENT_ERROR'
   | 'TEST_FIXTURE_ERROR'
   | 'UNKNOWN';
@@ -101,6 +110,10 @@ const KERNEL_FAULTS: ReadonlySet<FailureClass> = new Set<FailureClass>([
   'KERNEL_BUG',
   'ADAPTER_BUG',
   'TEST_FIXTURE_ERROR',
+  // A delegation or skill runtime bug is a kernel fault by definition: the model
+  // asked for something the plan says must work.
+  'DELEGATION_RUNTIME_BUG',
+  'SKILL_RUNTIME_BUG',
 ]);
 
 /** The alpha.3 §29 attempt schema, written verbatim to evals/results/. */
@@ -146,6 +159,17 @@ export interface EvalResult {
   securityViolations: number;
   finalDiffHash?: string;
 
+  /** Delegation metrics (alpha.4 §36). Absent fields mean "no delegation". */
+  delegations?: number;
+  childSuccesses?: number;
+  childModelRequests?: number;
+  childToolCalls?: number;
+  delegationLatencyMs?: number;
+  delegatedCostUsd?: number;
+  parentDirectCostUsd?: number;
+  capabilityDenials?: number;
+  delegationFailureStatuses?: string[];
+
   /** §31: what would be needed to reproduce or to compare across models. */
   fixtureVersion: number;
   promptHash: string;
@@ -180,6 +204,18 @@ export interface TaskMetrics {
   durationMs: number;
   fixtureVersion: number;
   promptHash: string;
+  /** §33: which delegation scoreboard, when the task belongs to one. */
+  delegationSuite?: string;
+  /** §36. */
+  delegations: number;
+  childSuccesses: number;
+  childModelRequests: number;
+  childToolCalls: number;
+  delegationLatencyMs: number;
+  delegatedCostUsd: number;
+  parentDirectCostUsd: number;
+  capabilityDenials: number;
+  delegationFailureStatuses: string[];
 }
 
 /**
@@ -235,18 +271,57 @@ class Capture implements EgressTransport {
 export function classifyFailure(
   failures: readonly string[],
   toolResults: string,
-  evidence: { turnState?: string; originalFiles: Record<string, string> },
+  evidence: {
+    turnState?: string;
+    originalFiles: Record<string, string>;
+    /** Delegation outcomes, for the §35 delegation classes. */
+    delegations?: ReadonlyArray<{ status: string; modelRequests: number; toolCalls: number }>;
+    /** True when the task's own checks say the delegation should not have happened. */
+    delegationSuite?: string;
+  },
 ): FailureClass | undefined {
   if (failures.length === 0) return undefined;
   const all = `${failures.join(' ')} ${toolResults}`;
 
+  // --- delegation and skill classes first (§35) --------------------------
+  //
+  // Ordered ahead of the generic ones because a delegation failure surfaces
+  // *through* a generic symptom — a denied write, a budget stop — and attributing
+  // it to the symptom loses the only fact that decides whose bug it is.
+  if (/DELEGATION_DEPTH_EXCEEDED/.test(all)) return 'MODEL_BAD_DELEGATION';
+  if (/no delegation was dispatched|the child executed no tool|the child made no model request/.test(all)) {
+    return 'DELEGATION_RUNTIME_BUG';
+  }
+  if (/a child report was injected as user text|a read-only child modified/.test(all)) {
+    return 'DELEGATION_RUNTIME_BUG';
+  }
+  if (/skill/i.test(all) && /widen|not narrowed|still available/i.test(all)) return 'SKILL_RUNTIME_BUG';
+
+  const delegations = evidence.delegations ?? [];
+  if (delegations.length > 0) {
+    // A child that burned requests and returned nothing useful is a bad
+    // delegation; one that ran when the task was a single edit is an unnecessary
+    // one. Both are the model's judgement, not the runtime's.
+    if (delegations.some((d) => d.status === 'denied' || d.status === 'budget_exceeded')) {
+      return 'MODEL_BAD_DELEGATION';
+    }
+    if (
+      evidence.delegationSuite === undefined &&
+      delegations.every((d) => d.toolCalls === 0) &&
+      /has the expected contents/.test(all)
+    ) {
+      return 'MODEL_UNNECESSARY_DELEGATION';
+    }
+  }
+
+  if (/LOOP_BUDGET_EXCEEDED/.test(all)) return 'BUDGET_BLOCKED';
   if (/PROTECTED_PATH|TOOL_DENIED|NETWORK_DENIED|hard_deny/.test(all)) return 'POLICY_BLOCKED';
   if (/TOOL_INVALID_ARGS|did not match its schema/.test(all)) return 'MODEL_TOOL_SCHEMA';
   if (/STALE_FILE|NON_UNIQUE_MATCH|INSUFFICIENT_READ_COVERAGE/.test(all)) return 'MODEL_EDIT_STRATEGY';
   if (/MODEL_INVALID_RESPONSE|__unparsed/.test(all)) return 'ADAPTER_BUG';
   if (/INTERNAL_ERROR|ReferenceError|TypeError/.test(all)) return 'KERNEL_BUG';
   if (/ENOENT|EACCES|not available on this execution backend/.test(all)) return 'ENVIRONMENT_ERROR';
-  if (/REPEATED_FAILURE|LOOP_BUDGET_EXCEEDED/.test(all)) return 'MODEL_CAPABILITY';
+  if (/REPEATED_FAILURE/.test(all)) return 'MODEL_CAPABILITY';
 
   // Omission vs wrong action (§25).
   //
@@ -357,6 +432,69 @@ export function summarisePerTask(results: readonly TaskMetrics[]) {
   }));
 }
 
+/**
+ * The two delegation scoreboards (§33), plus the §36 metrics.
+ *
+ * Reported separately and never summed, for the reason `DelegationSuite`
+ * documents: one measures the runtime, the other measures the model. A task that
+ * belongs to neither suite still contributes its delegation *metrics* — a model
+ * that delegated during an ordinary task is exactly the behaviour §36 asks to
+ * measure — but not to either scoreboard.
+ */
+export function summariseDelegation(results: readonly TaskMetrics[]): {
+  suites: Record<string, { attempts: number; solved: number; kernelCorrect: number }>;
+  metrics: {
+    delegationsPerTask: number;
+    childSuccessRate: number | undefined;
+    childModelRequests: Distribution;
+    childToolCalls: Distribution;
+    delegationLatencyMs: Distribution;
+    delegatedCostUsd: number;
+    parentDirectCostUsd: number;
+    totalCostUsd: number;
+    capabilityDenials: number;
+    failureStatuses: Record<string, number>;
+  };
+} {
+  const suites: Record<string, { attempts: number; solved: number; kernelCorrect: number }> = {};
+  for (const row of results) {
+    if (!row.delegationSuite) continue;
+    const bucket = (suites[row.delegationSuite] ??= { attempts: 0, solved: 0, kernelCorrect: 0 });
+    bucket.attempts += 1;
+    if (row.passed) bucket.solved += 1;
+    if (row.kernelCorrect) bucket.kernelCorrect += 1;
+  }
+
+  const withDelegation = results.filter((r) => r.delegations > 0);
+  const children = results.reduce((n, r) => n + r.delegations, 0);
+  const successes = results.reduce((n, r) => n + r.childSuccesses, 0);
+
+  const failureStatuses: Record<string, number> = {};
+  for (const row of results) {
+    for (const status of row.delegationFailureStatuses) {
+      failureStatuses[status] = (failureStatuses[status] ?? 0) + 1;
+    }
+  }
+
+  return {
+    suites,
+    metrics: {
+      delegationsPerTask: results.length === 0 ? 0 : children / results.length,
+      // Undefined rather than 1.0 when nothing was delegated: a rate over zero
+      // attempts is not 100%, it is unmeasured.
+      childSuccessRate: children === 0 ? undefined : successes / children,
+      childModelRequests: distribution(withDelegation.map((r) => r.childModelRequests)),
+      childToolCalls: distribution(withDelegation.map((r) => r.childToolCalls)),
+      delegationLatencyMs: distribution(withDelegation.map((r) => r.delegationLatencyMs)),
+      delegatedCostUsd: results.reduce((n, r) => n + r.delegatedCostUsd, 0),
+      parentDirectCostUsd: results.reduce((n, r) => n + r.parentDirectCostUsd, 0),
+      totalCostUsd: results.reduce((n, r) => n + r.costUsd, 0),
+      capabilityDenials: results.reduce((n, r) => n + r.capabilityDenials, 0),
+      failureStatuses,
+    },
+  };
+}
+
 export function countFailureClasses(results: readonly TaskMetrics[]): Record<string, number> {
   const out: Record<string, number> = {};
   for (const r of results) {
@@ -432,7 +570,9 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
   // no longer supplying.
   if (!LIVE) {
     const model = new FakeModel({
-      responder: (_request, index) => task.script(receipt)[index],
+      // A delegation task needs the *request* to decide, because parent and child
+      // share one runtime and a flat index cannot tell them apart.
+      responder: (request, index) => task.responder?.(request, index, receipt) ?? task.script(receipt)[index],
     });
     (kernel.modelRuntime as unknown as { routes: Map<string, unknown> }).routes.set('fake', model);
   } else {
@@ -492,6 +632,12 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
 
     const usage = kernel.session.usageSnapshot;
 
+    // §36: delegation metrics, read from the session's own records rather than
+    // parsed back out of the log.
+    const records = kernel.session.delegationRecords();
+    const cost = kernel.session.costBreakdown;
+    const capabilityDenials = (log.match(/"type":"policy.decision"/g) ?? []).length;
+
     const resolved = kernel.modelRegistry.resolve(kernel.session.activeModelAlias);
     const report = kernel.session.usageReportSnapshot;
 
@@ -499,6 +645,12 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     const failureClass = classifyFailure(failures, results, {
       ...(kernel.session.turn?.state ? { turnState: kernel.session.turn.state } : {}),
       originalFiles: task.files,
+      delegations: records.map((r) => ({
+        status: r.status,
+        modelRequests: r.usage.modelRequests,
+        toolCalls: r.usage.toolCalls,
+      })),
+      ...(task.delegationSuite ? { delegationSuite: task.delegationSuite } : {}),
     });
 
     return {
@@ -532,6 +684,16 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
       secretBoundaryViolations,
       unreviewedPersistentMutations,
       durationMs: Date.now() - started,
+      ...(task.delegationSuite ? { delegationSuite: task.delegationSuite } : {}),
+      delegations: records.length,
+      childSuccesses: records.filter((r) => r.status === 'completed').length,
+      childModelRequests: records.reduce((n, r) => n + r.usage.modelRequests, 0),
+      childToolCalls: records.reduce((n, r) => n + r.usage.toolCalls, 0),
+      delegationLatencyMs: records.reduce((n, r) => n + r.usage.wallTimeMs, 0),
+      delegatedCostUsd: cost.delegatedUsd,
+      parentDirectCostUsd: cost.directUsd,
+      capabilityDenials,
+      delegationFailureStatuses: records.filter((r) => r.status !== 'completed').map((r) => r.status),
     };
   } finally {
     await kernel.shutdown();
@@ -627,6 +789,8 @@ async function main(argv: readonly string[]): Promise<number> {
     families: summariseFamilies(results),
     /** §27: per-task distributions across the repeats. */
     perTask: summarisePerTask(results),
+    /** alpha.4 §33 scoreboards and §36 metrics. */
+    delegation: summariseDelegation(results),
     failureClasses: countFailureClasses(results),
     results: results.map((r): EvalResult => ({
       taskId: r.id,
@@ -657,6 +821,21 @@ async function main(argv: readonly string[]): Promise<number> {
       ...(r.costProvenance ? { costProvenance: r.costProvenance } : {}),
       wallTimeMs: r.durationMs,
       securityViolations: r.secretBoundaryViolations,
+      ...(r.delegations > 0
+        ? {
+            delegations: r.delegations,
+            childSuccesses: r.childSuccesses,
+            childModelRequests: r.childModelRequests,
+            childToolCalls: r.childToolCalls,
+            delegationLatencyMs: r.delegationLatencyMs,
+            delegatedCostUsd: r.delegatedCostUsd,
+            parentDirectCostUsd: r.parentDirectCostUsd,
+            capabilityDenials: r.capabilityDenials,
+            ...(r.delegationFailureStatuses.length > 0
+              ? { delegationFailureStatuses: r.delegationFailureStatuses }
+              : {}),
+          }
+        : {}),
     })),
   };
 
@@ -699,6 +878,42 @@ async function main(argv: readonly string[]): Promise<number> {
             `omissions ${t.modelActionOmissions}  wrong ${t.modelWrongActions}\n`,
         );
       }
+    }
+
+    // alpha.4 §33/§36: the delegation scoreboards, printed apart from each other
+    // and apart from the two families above.
+    const del = artifact.delegation;
+    if (Object.keys(del.suites).length > 0 || del.metrics.delegationsPerTask > 0) {
+      process.stdout.write(`\n── Delegation ${'─'.repeat(46)}\n`);
+      for (const [suite, score] of Object.entries(del.suites)) {
+        process.stdout.write(
+          `${suite.padEnd(30)} ${score.solved}/${score.attempts} solved, ` +
+            `${score.kernelCorrect}/${score.attempts} kernel correct\n`,
+        );
+      }
+      const m = del.metrics;
+      process.stdout.write(
+        `delegations / task             ${m.delegationsPerTask.toFixed(2)}\n` +
+          `child success rate             ${
+            m.childSuccessRate === undefined
+              ? 'unmeasured (none dispatched)'
+              : `${Math.round(m.childSuccessRate * 100)}%`
+          }\n` +
+          `child model requests           ${m.childModelRequests.median} [${m.childModelRequests.min}-${m.childModelRequests.max}]\n` +
+          `child tool calls               ${m.childToolCalls.median} [${m.childToolCalls.min}-${m.childToolCalls.max}]\n` +
+          `delegation latency (ms)        ${m.delegationLatencyMs.median} [${m.delegationLatencyMs.min}-${m.delegationLatencyMs.max}]\n` +
+          `cost: parent / delegated       ${
+            m.totalCostUsd > 0
+              ? `$${m.parentDirectCostUsd.toFixed(4)} / $${m.delegatedCostUsd.toFixed(4)}`
+              : 'unknown (no [pricing] configured)'
+          }\n` +
+          `capability denials             ${m.capabilityDenials}\n` +
+          (Object.keys(m.failureStatuses).length > 0
+            ? `child failure statuses         ${Object.entries(m.failureStatuses)
+                .map(([k, v]) => `${k}×${v}`)
+                .join(', ')}\n`
+            : ''),
+      );
     }
 
     process.stdout.write(

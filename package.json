@@ -35,7 +35,7 @@
     "test:security": "node --test --experimental-strip-types \"tests/security/**/*.test.ts\"",
     "test:smoke": "node --test --experimental-strip-types \"tests/smoke/**/*.test.ts\"",
     "test:soak": "node --test --experimental-strip-types tests/integration/delegation-soak.test.ts",
-    "test:ssh": "KERNEL_SSH=1 node --test --experimental-strip-types \"tests/live/ssh-live.test.ts\" \"tests/live/ssh-session.test.ts\"",
+    "test:ssh": "KERNEL_SSH=1 node --test --experimental-strip-types \"tests/live/ssh-live.test.ts\" \"tests/live/ssh-session.test.ts\" \"tests/live/ssh-delegation.test.ts\"",
     "test:trajectory": "node --test --experimental-strip-types tests/integration/agent-loop.test.ts",
     "test:unit": "node --test --experimental-strip-types \"tests/unit/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"

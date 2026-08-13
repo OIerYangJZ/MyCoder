@@ -55,6 +55,17 @@ function attempt(over: Partial<TaskMetrics> = {}): TaskMetrics {
     durationMs: 20,
     fixtureVersion: 1,
     promptHash: 'abc123',
+    // alpha.4 §36. Zeroed rather than optional so a summary that forgets to read
+    // one of them is a type error rather than a silently missing column.
+    delegations: 0,
+    childSuccesses: 0,
+    childModelRequests: 0,
+    childToolCalls: 0,
+    delegationLatencyMs: 0,
+    delegatedCostUsd: 0,
+    parentDirectCostUsd: 0,
+    capabilityDenials: 0,
+    delegationFailureStatuses: [],
     ...over,
   };
 }
