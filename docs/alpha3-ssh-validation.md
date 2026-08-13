@@ -5,42 +5,65 @@
 
 ## What was validated, and against what
 
-|                      |                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------- |
-| Target               | **Loopback OpenSSH `sshd` on `127.0.0.1`**, started and torn down by the test fixture |
-| Remote OS            | Darwin 25.5.0                                                                         |
-| `sshd`               | OpenSSH_10.2p1, LibreSSL 3.3.6                                                        |
-| `ssh` client         | OpenSSH_10.2p1, LibreSSL 3.3.6                                                        |
-| Kernel commit        | `816a3da` + the SSH fixes recorded below                                              |
-| Backend              | `SshExecutionBackend`, `sandboxStrength: policy-enforced`                             |
-| Workspace root class | temp directory, disposable, recreated per run                                         |
-| Result               | **50 / 50**                                                                           |
+**Two targets. Both real OpenSSH; one is a real remote machine.**
 
-### The caveat, stated plainly
+|                                     | Target A — real remote VM                       | Target B — loopback                      |
+| ----------------------------------- | ----------------------------------------------- | ---------------------------------------- |
+| Host                                | **separate aarch64 Linux VM over the network**  | `127.0.0.1`, sshd started by the fixture |
+| Remote OS                           | Ubuntu, `Linux 7.0.0-29-generic aarch64`        | Darwin 25.5.0                            |
+| `sshd`                              | OpenSSH_10.2p1 Ubuntu-2ubuntu3.5, OpenSSL 3.5.5 | OpenSSH_10.2p1, LibreSSL 3.3.6           |
+| `ssh` client                        | OpenSSH_10.2p1, LibreSSL 3.3.6 (macOS)          | same                                     |
+| Separate machine / uid / filesystem | **yes**                                         | no                                       |
+| Network hop                         | **yes**                                         | no                                       |
+| Workspace                           | `/home/<user>/workspaces/kernel-ssh-fixture`    | temp directory                           |
+| Result                              | **49 pass, 0 fail, 1 skipped**                  | **50 pass, 0 fail**                      |
+| Wall time                           | 43.5 s                                          | 161.8 s                                  |
 
-This is a **real OpenSSH server** — real host key, real public-key
-authentication, real protocol, real remote `sh`, real `ControlMaster`. It is
-**not a VPS**:
+Backend in both cases: `SshExecutionBackend`, `sandboxStrength: policy-enforced`.
 
-- no network hop;
-- no second machine;
-- no separate user account — the remote process runs as the **same uid** on the
-  **same filesystem**.
+The one skip on Target A is `a host-key mismatch is a distinct, non-retryable
+error`, which is loopback-only by design — reproducing it needs the fixture to
+control the host key, and tampering with a real host's key is not something a
+test suite should do to someone's machine. It is covered on Target B.
 
-So everything below is evidence that _the backend contract survives real
-OpenSSH behaviour_, which is the question §11.1 asks. It is **not** evidence of
-cross-host isolation, of behaviour under real network latency or packet loss, or
-of anything that depends on the remote being a different security principal.
-Those rows are `NOT TESTED` in `docs/alpha3-evidence-matrix.md`, and
-`v0.1.0-alpha.3` must not claim them.
+### Why both, and what each one is for
 
-The value of running on loopback is that the whole matrix runs on every
-developer machine and in ordinary CI, so an SSH regression is caught the day it
-lands rather than the next time someone rents a server.
+Target A answers the question §11.1 actually asks: _does the backend contract
+survive real OpenSSH, across a network, against a different machine?_ It is the
+authoritative run.
 
-### Running it against a real VPS
+Target B exists because it needs no infrastructure. It runs on any developer
+machine and in ordinary CI, so an SSH regression is caught the day it lands
+rather than the next time someone has a VM to hand. Two of the three kernel
+defects below were found on Target B before a VM was available.
 
-The same suite, unchanged, targets a real host:
+### What Target A adds that loopback could not
+
+- a genuine network hop, so `ConnectTimeout`, `ControlPersist` and the
+  cancellation path are exercised against real latency;
+- a **different OS and CPU architecture** (Ubuntu/aarch64 remote, macOS client),
+  which is what makes the `stat` GNU-vs-BSD fallback and the shell snippets
+  meaningful rather than assumed;
+- a separate uid and filesystem, so "the remote environment is built from
+  nothing" is a claim about a real account rather than about the same one.
+
+The **timeout fix is confirmed on real latency**: a command with a 2000 ms
+timeout settled in **2105 ms**. Before the `ControlMaster` fix below, the same
+shape took 20017 ms.
+
+### What Target A still does not prove
+
+- **Cross-host OS isolation.** The remote is a different machine, but the
+  workspace jail is still a path check — see "Known uncertainty" below. A remote
+  shell can read outside it.
+- **Hostile-network behaviour.** No packet loss, no MITM, no flaky link. The
+  host-key mismatch case that would exercise the MITM shape is the one skipped
+  here.
+
+### Running it against a real host
+
+This is the runbook that produced Target A. The suite is unchanged between
+targets — only the environment differs:
 
 ```bash
 # 1. In ~/.ssh/config, as a non-root user on a disposable machine:
@@ -97,6 +120,19 @@ disables the suite instead.
 earlier version guessed it from the first two segments, which is right for
 `/home/user/...` and wrong for `/opt/...` — and being wrong meant writing the
 canary into a system directory.
+
+**Teardown was verified on the real host after the Target A run**, because these
+are claims about someone else's machine and the code making them had never
+executed before. Checked directly over `ssh`, not inferred:
+
+| Claim                                         | Observed                                    |
+| --------------------------------------------- | ------------------------------------------- |
+| workspace contents removed, dotfiles included | 0 entries remaining                         |
+| the `.git` the git test created is gone       | absent — this was the actual bug            |
+| canary at `$HOME/.agent-test-secret` removed  | absent                                      |
+| the tracked file beside the workspace removed | absent                                      |
+| the workspace directory itself kept           | present                                     |
+| nothing else touched                          | a neighbouring directory was left untouched |
 
 The machine should still be disposable — §12.
 
@@ -194,17 +230,22 @@ system prefixes, the home directory and any `..` — plus asking the remote for
 `tests/live/ssh-workspace-guard.test.ts` covers it offline, 25 cases, each
 rejection paired with an acceptance.
 
-**The rest of that function is still unexecuted.** The guard is tested; the
-`$HOME` probe, the teardown command and the litter registry have not run once.
-Expect the first real-VPS attempt to surface something.
+**Since executed, and correct.** When this was written the function had never
+run, and the note here predicted the first real-host attempt would surface
+something. It did not: Target A exercised the `$HOME` probe, the teardown command
+and the litter registry, and all three behaved as intended — verified item by
+item in the table above. The prediction was wrong, which is the better outcome,
+but it was worth making: the guard and the three fixes were written _before_
+anything was pointed at a real machine, which is the only order in which a
+`rm -rf /*` gets caught by reading rather than by running.
 
 ---
 
 ## Matrix
 
 Statuses are the four from §34. `PASS` means a named test in
-`tests/live/ssh-live.test.ts` asserts it; the full mapping is in
-`docs/alpha3-evidence-matrix.md` §2.
+`tests/live/ssh-live.test.ts` asserts it, **on Target A (the real remote VM)**
+unless noted; the full mapping is in `docs/alpha3-evidence-matrix.md` §2.
 
 ### Connection (§14)
 

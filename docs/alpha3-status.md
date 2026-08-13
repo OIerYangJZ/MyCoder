@@ -1,8 +1,8 @@
 # `v0.1.0-alpha.3` — Operational Readiness status
 
 **Baseline:** `v0.1.0-alpha.2` (`4a9f86e`) · **Provider #1 (live-validated):**
-DeepSeek over `openai-chat` · **SSH validated against:** a real OpenSSH server
-on loopback, **not a VPS**
+DeepSeek over `openai-chat` · **SSH validated against:** a **separate aarch64
+Linux VM over the network**, and again on loopback
 
 Status vocabulary is the four values from §34. **PASS** means a named,
 executable piece of evidence asserts it. **NOT TESTED** means it is not asserted
@@ -22,19 +22,20 @@ mechanically.
 
 ## 1. What was actually executed
 
-| Gate                                     | Result                                                              |
-| ---------------------------------------- | ------------------------------------------------------------------- |
-| `pnpm typecheck`                         | clean                                                               |
-| `pnpm lint`                              | 9 rules, 0 violations                                               |
-| `pnpm lint:selftest`                     | 87/87 (70 linter fixtures + 17 evidence-gate)                       |
-| `pnpm format:check`                      | clean                                                               |
-| `pnpm test`                              | **534 tests, 484 pass, 0 fail, 50 skipped**                         |
-| `pnpm test:ssh` (real OpenSSH, loopback) | **50/50**                                                           |
-| `pnpm test:evals`                        | 23/23                                                               |
-| `pnpm evidence`                          | 145 requirements — 135 PASS, 0 FAIL, 9 NOT TESTED, 1 NOT APPLICABLE |
-| `pnpm eval` (scripted)                   | 12/12; 0 secret boundary violations                                 |
-| `pnpm test:replay`                       | pass                                                                |
-| determinism ×100                         | pass                                                                |
+| Gate                                 | Result                                                              |
+| ------------------------------------ | ------------------------------------------------------------------- |
+| `pnpm typecheck`                     | clean                                                               |
+| `pnpm lint`                          | 9 rules, 0 violations                                               |
+| `pnpm lint:selftest`                 | 87/87 (70 linter fixtures + 17 evidence-gate)                       |
+| `pnpm format:check`                  | clean                                                               |
+| `pnpm test`                          | **534 tests, 484 pass, 0 fail, 50 skipped**                         |
+| `pnpm test:ssh` — **real remote VM** | **49 pass, 0 fail, 1 loopback-only skip**                           |
+| `pnpm test:ssh` — loopback           | **50 pass, 0 fail**                                                 |
+| `pnpm test:evals`                    | 23/23                                                               |
+| `pnpm evidence`                      | 150 requirements — 141 PASS, 0 FAIL, 8 NOT TESTED, 1 NOT APPLICABLE |
+| `pnpm eval` (scripted)               | 12/12; 0 secret boundary violations                                 |
+| `pnpm test:replay`                   | pass                                                                |
+| determinism ×100                     | pass                                                                |
 
 The 50 skipped tests are the SSH matrix under a plain `pnpm test`; it is opt-in
 via `KERNEL_SSH=1` and runs as its own CI job. It skips with a stated reason, not
@@ -133,9 +134,15 @@ out-of-workspace litter. 25 cases in
 acceptance so the guard cannot be tightened into one that silently disables the
 suite.
 
-This is the clearest instance of the milestone's own thesis: the guard is now
-tested, but **the rest of `realRemote()` still has zero execution evidence** and
-is marked `NOT TESTED` accordingly.
+This is the clearest instance of the milestone's own thesis — and the order
+mattered. The guard and all three fixes were written _before_ anything was
+pointed at a real machine, which is the only order in which an `rm -rf /*` gets
+caught by reading rather than by running.
+
+When the VM run followed, `realRemote()` behaved correctly on its first
+execution, and teardown was then verified item by item over `ssh` rather than
+assumed. My note at the time predicted the first attempt would surface another
+defect; it did not.
 
 ### 2.5 A prompt fixture did not meet §30
 
@@ -194,13 +201,14 @@ reference to a doc that did not exist yet.
 
 ## 4. What is explicitly NOT claimed
 
-- **Not validated against a real VPS.** Every SSH row came from loopback: same
-  uid, same filesystem, no network hop. `docs/alpha3-ssh-validation.md` says so
-  at the top, and the VPS-only rows are `NOT TESTED` with a runbook.
-- **The `realRemote()` fixture path has never executed.** It is now guarded and
-  the guard is tested, but the `$HOME` probe, the teardown command and the litter
-  registry behind it have not run once. Given §2.4, assume there is more wrong in
-  there and run the first VPS attempt expecting to fix something.
+- **No hostile-network evidence.** Target A was a healthy link — no packet loss,
+  no MITM, no flaky connection. The host-key-mismatch case that exercises the
+  MITM shape is loopback-only, because tampering with a real host's key is not
+  something a test suite should do to someone's machine.
+- **Only session _bootstrap_ is proven over SSH, not a full turn.** `mycoder
+--remote linux-vm` connects, reports the ssh backend and the remote workspace,
+  and starts a session. Driving remote tools through a complete turn — and with
+  it remote resume, remote hooks and replay-after-remote — is still `NOT TESTED`.
 - **No live model run this milestone.** The eval methodology is implemented and
   verified offline; live repeated-run results are `NOT TESTED` and need a
   credential and a budget. alpha.2's live evidence still stands for alpha.2.
