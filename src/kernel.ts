@@ -75,13 +75,23 @@ import { FileSessionStore, type SessionMetadata, type SessionStore } from './ses
 import { Session } from './session/session.ts';
 import { DEFAULT_LOOP_BUDGET, FailureTracker, type LoopBudget } from './session/step.ts';
 import { replaySession, workspaceIdentity, checkResumeIdentity } from './session/resume.ts';
+import { replayTerminalState, type SessionTerminalState } from './session/terminal-state.ts';
+import { DelegationService, ROOT_SCOPE, type DelegateFn } from './session/delegation.ts';
 
 import { loadConfig, projectRulesProfile } from './config/config.ts';
 import { loadRemotes } from './config/remotes.ts';
 import type { KernelConfig, ProviderEndpointConfig } from './config/schema.ts';
 
-import { discoverSkills, type SkillDefinition } from './extensions/skills.ts';
+import {
+  discoverSkills,
+  resolveSkillActivation,
+  type SkillActivationOutcome,
+  type SkillActivationScope,
+  type SkillDefinition,
+} from './extensions/skills.ts';
 import { discoverAgents, type AgentDefinition } from './extensions/agents.ts';
+import { createDelegateTool } from './tools/builtin/delegate.ts';
+import { createSkillTool } from './tools/builtin/skill.ts';
 import { HookRunner, loadHooks, type HookDefinition } from './extensions/hooks.ts';
 
 import { ControlPlane, type ControlHost } from './control/control-plane.ts';
@@ -151,6 +161,8 @@ export interface Kernel {
   hooks: HookRunner;
   skills: SkillDefinition[];
   agents: AgentDefinition[];
+  /** Absent when the project defines no agents, in which case `Delegate` is not registered. */
+  delegation?: DelegationService;
   remotes: RemoteConfig[];
   fakeModel?: FakeModel;
   shutdown(): Promise<void>;
@@ -506,6 +518,8 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   const store = opts.store ?? new FileSessionStore({ rootDir: sessionsDir(dirs), redactor, clock });
 
   const sessionId = (opts.resumeSessionId as SessionId | undefined) ?? newSessionId(clock.now());
+  let resumedState: SessionTerminalState | undefined;
+  let resumedUsage: SessionMetadata['usage'] | undefined;
 
   // 12b. Extensions: hooks must exist before the tool runtime and the session,
   // because both invoke lifecycle points (spec §18.1).
@@ -521,6 +535,63 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     logger: logger.child('hooks'),
     now: () => clock.now(),
   });
+
+  // 12c. Skills and agents are project files too, read from the *local* tree.
+  //
+  // Discovered before the tool runtime because the `Skill` and `Delegate` tools
+  // are only registered when there is something to activate or delegate to: a
+  // project with no agents gets the same six-tool catalogue it had in alpha.3,
+  // which keeps the model's prompt honest and every alpha.3 trajectory unchanged.
+  const skills = await discoverSkills({ workspaceRoot: projectRoot, userConfigDir: dirs.config });
+  const agents = await discoverAgents(projectRoot, dirs.config);
+
+  // Assigned after the session exists; the closures below only run during a turn.
+  let delegationService: DelegationService | undefined;
+
+  /**
+   * Dispatch a child on behalf of the `Delegate` tool.
+   *
+   * The parent's *effective* policy and catalogue are read from the runtime and
+   * the session at call time rather than captured here, because a skill activated
+   * mid-session narrows both — and a child derived from a stale snapshot would be
+   * derived from capability its parent no longer has.
+   */
+  const delegate: DelegateFn = async (request, site) => {
+    if (!delegationService) {
+      throw new Error('delegation was requested in a session with no agents configured');
+    }
+    return delegationService.run(request, {
+      ...site,
+      parentPolicy: toolRuntime.policy,
+      parentAllowedTools: session.effectiveAllowedTools,
+      parentModelAlias: session.activeModelAlias,
+    });
+  };
+
+  const activateSkillInSession = async (
+    name: string,
+    scope: SkillActivationScope,
+    source: 'control' | 'model' | 'agent',
+  ): Promise<SkillActivationOutcome> => {
+    const resolved = resolveSkillActivation(name, {
+      skills,
+      registeredTools: toolRegistry.names(),
+      currentAllowedTools: session.effectiveAllowedTools,
+      profileContext,
+      sessionMaxSteps: session.budgetCeiling.maxSteps,
+    });
+    if (!resolved.ok) return { ok: false, message: resolved.message };
+
+    const applied = session.applySkillActivation(resolved.activated, scope, source);
+    return {
+      ok: true,
+      message:
+        `Skill "${name}" is active for this ${scope}. It applies from the ` +
+        `${applied.appliedFrom === 'now' ? 'next' : 'following'} step, and can only narrow what is permitted.`,
+      allowedTools: applied.allowedTools,
+      notes: resolved.activated.notes,
+    };
+  };
 
   // 13. Tool runtime.
   const prompter: ApprovalPrompter =
@@ -546,6 +617,12 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     now: () => clock.now(),
     toolTimeoutMs: config.shell.timeoutMs ?? 120_000,
     writeArtifact: (name, content) => store.writeArtifact(sessionId, name, content),
+
+    // The root session is depth 0 (ADR-0013). Both callbacks are late-bound to
+    // the session below.
+    delegationScope: ROOT_SCOPE,
+    delegate,
+    activateSkill: activateSkillInSession,
 
     // PreToolUse / PostToolUse / PermissionRequest. Routed through the session
     // so hook output lands in the conversation with its provenance attached.
@@ -723,6 +800,15 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       context.replaceHistory(replayed.messages, 0);
       context.addFact({ id: 'resume-freshness', priority: 'critical', text: replayed.freshnessNote });
       config.warnings.push(...check.warnings, ...replayed.warnings);
+
+      // What the previous process recorded, reconstructed from the log itself
+      // rather than from the replayed *messages* — the messages deliberately omit
+      // a child's tool calls (they were never the parent's), and the terminal
+      // state deliberately includes them (§13: root usage includes child usage).
+      resumedState = await replayTerminalState(store, sessionId);
+      // Token and cost totals live only in the metadata snapshot; see
+      // `SessionOptions.resumedUsage`.
+      resumedUsage = replayed.metadata.usage;
     }
   } else {
     await store.createSession(metadata);
@@ -759,11 +845,59 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     permissionProfile: sessionProfile.name,
     loopBudgetCeiling: loopBudget,
     hooks,
+    ...(resumedState ? { resumedState } : {}),
+    ...(resumedUsage ? { resumedUsage } : {}),
   });
 
-  // Skills and agents are project files too.
-  const skills = await discoverSkills({ workspaceRoot: projectRoot, userConfigDir: dirs.config });
-  const agents = await discoverAgents(projectRoot, dirs.config);
+  // 15. Delegated execution (ADR-0013).
+  //
+  // Registered only when the project defines agents. A `Delegate` tool with no
+  // agent to dispatch to would be a schema the model is invited to guess at, and
+  // every refusal would cost a step to discover.
+  if (agents.length > 0) {
+    delegationService = new DelegationService({
+      sessionId,
+      agents,
+      skills,
+      registry: toolRegistry,
+      backend,
+      secrets,
+      redactor,
+      prompter,
+      hooks,
+      store,
+      modelRuntime,
+      modelRegistry,
+      repository,
+      editJournal,
+      workspaceRoot,
+      agentTmpDir,
+      profileContext,
+      logger: logger.child('delegation'),
+      clock,
+      kernelVersion: KERNEL_VERSION,
+      environment: {
+        sandboxDescription: `${sandbox.label} — ${sandbox.caveat}`,
+        networkEnforcement: networkEnforcementLevel(backend.environment.sandboxStrength),
+        backendDescription: backend.environment.description,
+      },
+      maxDepth: config.loop.maxDelegationDepth ?? ROOT_SCOPE.maxDepth,
+      maxRepeatedFailures: config.loop.maxRepeatedFailures ?? 3,
+      toolTimeoutMs: config.shell.timeoutMs ?? 120_000,
+      rootCeiling: loopBudget,
+      // The parent accounts for its children: usage, cost and the terminal state
+      // the replay gate compares (§13, §14, §28).
+      onRecord: (record) => session.recordDelegation(record),
+    });
+
+    toolRegistry.register(createDelegateTool({ agents: agents.map((a) => a.name) }));
+  }
+
+  if (skills.length > 0) {
+    toolRegistry.register(
+      createSkillTool({ skills: skills.map((s) => ({ name: s.name, description: s.description })) }),
+    );
+  }
 
   // 16. Control plane.
   const host: ControlHost = {
@@ -777,6 +911,12 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     ...(activeRemote ? { activeRemote } : {}),
     skills: skills.map((s) => ({ name: s.name, description: s.description })),
     agents: agents.map((a) => ({ name: a.name, description: a.description })),
+    activateSkill: (name, scope) => activateSkillInSession(name, scope, 'control'),
+    activeSkills: () => session.activeSkills(),
+    delegations: () => ({
+      active: delegationService?.activeDelegations() ?? [],
+      finished: session.delegationRecords(),
+    }),
     hooks: hookLoad.hooks.map((h: HookDefinition) => ({ event: h.event, command: h.command })),
     credentialSources: [...credentials.byProvider].map(([provider, c]) => ({
       provider,
@@ -802,36 +942,10 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       };
     },
 
-    async compactNow() {
-      const snapshot = projector.project(context, repository.facts);
-      const resolved = modelRegistry.resolve(session.activeModelAlias);
-      const budgetTokens = resolved
-        ? Math.floor(ModelRegistry.usableContextTokens(resolved.profile) * 0.6)
-        : 8_000;
-      const result = compact(context.history(), snapshot.system, {
-        budgetTokens,
-        ...(context.goal ? { goal: context.goal } : {}),
-        reinject: [editJournal.summary()],
-      });
-      context.replaceHistory(result.messages, result.boundary);
-      for (const receipt of freshness.list()) freshness.invalidatePath(receipt.path);
-      await store.append(sessionId, {
-        type: 'compaction.boundary',
-        payload: {
-          level: result.levelsApplied.at(-1) ?? 'L1',
-          droppedMessages: result.droppedMessages,
-          summaryLength: result.summaryLength,
-          tokensBefore: result.tokensBefore,
-          tokensAfter: result.tokensAfter,
-          preservedExchanges: result.preservedExchanges,
-        },
-      });
-      return {
-        droppedMessages: result.droppedMessages,
-        tokensBefore: result.tokensBefore,
-        tokensAfter: result.tokensAfter,
-      };
-    },
+    // Delegated straight through: compaction has to re-inject the same anchors
+    // however it was triggered, and the second implementation that used to live
+    // here did not know about delegations (§30).
+    compactNow: () => session.compactNow(),
 
     contextUsage() {
       const snapshot = projector.project(context, repository.facts);
@@ -876,6 +990,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     hooks,
     skills,
     agents,
+    ...(delegationService ? { delegation: delegationService } : {}),
     remotes,
     ...(opts.fakeModel ? { fakeModel: opts.fakeModel } : { fakeModel }),
 

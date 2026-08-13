@@ -31,6 +31,9 @@ import type { Redactor } from '../security/redactor.ts';
 import type { FreshnessLedger } from '../context/freshness.ts';
 import { FailureTracker } from '../session/step.ts';
 import type { StepContext } from '../session/step.ts';
+import { ROOT_SCOPE, type DelegateFn, type DelegationScope } from '../session/delegation.ts';
+import type { ActivateSkillFn } from '../extensions/skills.ts';
+import type { PolicyLayer } from '../policy/policy-engine.ts';
 import type { ToolRegistry } from './registry.ts';
 import type { ApprovalSubject, ToolExecution, ToolResolveContext, ToolResult } from './contract.ts';
 
@@ -42,6 +45,16 @@ export interface ApprovalRequest {
   pending: readonly PolicyDecision[];
   /** Unified diff when the tool is an Edit. */
   diff?: string;
+  /**
+   * Set when the action is a *child's* (alpha.4 §40).
+   *
+   * The user is being asked to approve something a subagent wants to do, which is
+   * a different decision from approving the same action from the root agent: the
+   * agent it came from is part of what makes it reasonable or not. Showing it
+   * without attribution would present a delegated `npm install` as if the user's
+   * own session had asked for it.
+   */
+  delegation?: { agent: string; delegationId: string; depth: number };
 }
 
 export type ApprovalOutcome =
@@ -112,6 +125,12 @@ export interface ToolRuntimeOptions {
   onRecord?: (record: ToolExecutionRecord) => void;
   onPolicyDecision?: (decision: PolicyDecision, toolCallId: string) => void;
   onApproval?: (subjectKey: string, granted: boolean, scope: 'once' | 'session', summary: string) => void;
+  /** Where calls executed by this runtime sit in the delegation tree. */
+  delegationScope?: DelegationScope;
+  /** Dispatch a bounded child scope, for the `Delegate` tool. */
+  delegate?: DelegateFn;
+  /** Activate a skill in the owning session, for the `Skill` tool. */
+  activateSkill?: ActivateSkillFn;
 }
 
 export interface BatchOutcome {
@@ -122,9 +141,52 @@ export interface BatchOutcome {
 
 export class ToolRuntime {
   private readonly opts: ToolRuntimeOptions;
+  /**
+   * The engine this runtime was constructed with. Never replaced.
+   *
+   * Skill activation narrows the effective policy between steps, and the obvious
+   * way to implement that — a setter taking an engine — would make widening a
+   * one-line mistake away: pass any engine and the runtime adopts it. So the
+   * runtime keeps the base and only ever *derives* from it (`setNarrowingLayers`),
+   * which makes "a skill cannot widen permissions" structural instead of a rule
+   * someone has to remember.
+   */
+  private readonly basePolicy: PolicyEngine;
+  private activePolicy: PolicyEngine;
+  private narrowingLayers: readonly PolicyLayer[] = [];
 
   constructor(opts: ToolRuntimeOptions) {
     this.opts = opts;
+    this.basePolicy = opts.policy;
+    this.activePolicy = opts.policy;
+  }
+
+  /** The engine in force right now: the base, narrowed by any active layers. */
+  get policy(): PolicyEngine {
+    return this.activePolicy;
+  }
+
+  /** Layer names in force, for `/permissions` and the step's audit record. */
+  activeLayers(): readonly string[] {
+    return this.narrowingLayers.map((l) => l.name);
+  }
+
+  /**
+   * Replace the set of narrowing layers (skills, in alpha.4).
+   *
+   * Idempotent and absolute: the caller passes the layers that should be in
+   * force, not a delta, so deactivating a turn-scoped skill is the same operation
+   * as activating one. The result is always `basePolicy.narrow(...)`, so it is
+   * provably ≤ the engine this runtime started with.
+   */
+  setNarrowingLayers(layers: readonly PolicyLayer[]): void {
+    this.narrowingLayers = [...layers];
+    this.activePolicy = this.narrowingLayers.reduce((engine, layer) => engine.narrow(layer), this.basePolicy);
+  }
+
+  /** The delegation scope calls run in. Root sessions are depth 0. */
+  get delegationScope(): DelegationScope {
+    return this.opts.delegationScope ?? ROOT_SCOPE;
   }
 
   /**
@@ -314,7 +376,7 @@ export class ToolRuntime {
     }
 
     // ---- policy ---------------------------------------------------------
-    const decisions = this.opts.policy.decideBatch(execution.accesses);
+    const decisions = this.activePolicy.decideBatch(execution.accesses);
     for (const decision of decisions) this.opts.onPolicyDecision?.(decision, call.id);
 
     // Report the unappealable reason first when there is one: telling the model
@@ -343,6 +405,7 @@ export class ToolRuntime {
     // ---- approval -------------------------------------------------------
     const asking = decisions.filter((d) => d.action === 'ask');
     if (asking.length > 0) {
+      const scope = this.delegationScope;
       const request: ApprovalRequest = {
         subject: execution.approvalSubject,
         toolName: call.name,
@@ -350,6 +413,9 @@ export class ToolRuntime {
         pending: asking,
       };
       if (execution.display.diff) request.diff = execution.display.diff;
+      if (scope.depth > 0 && scope.delegationId && scope.agent) {
+        request.delegation = { agent: scope.agent, delegationId: scope.delegationId, depth: scope.depth };
+      }
 
       await this.opts.runHooks?.('PermissionRequest', { toolName: call.name });
 
@@ -357,7 +423,7 @@ export class ToolRuntime {
       const summary = execution.approvalSubject.title;
 
       if (outcome.scope === 'session') {
-        this.opts.policy.approvals.record(
+        this.activePolicy.approvals.record(
           execution.approvalSubject.key,
           outcome.decision === 'allow',
           summary,
@@ -483,6 +549,10 @@ export class ToolRuntime {
       logger: this.opts.logger,
       now: this.opts.now,
       signal,
+      delegation: this.delegationScope,
+      loopBudget: step.loopBudget,
+      ...(this.opts.delegate ? { delegate: this.opts.delegate } : {}),
+      ...(this.opts.activateSkill ? { activateSkill: this.opts.activateSkill } : {}),
     };
   }
 }

@@ -32,6 +32,9 @@ export const ERROR_CODES = [
   'REMOTE_HOST_KEY_ERROR',
   'LOOP_BUDGET_EXCEEDED',
   'REPEATED_FAILURE',
+  'DELEGATION_DENIED',
+  'DELEGATION_DEPTH_EXCEEDED',
+  'DELEGATION_FAILED',
   'CANCELLED',
   'INTERNAL_ERROR',
 ] as const;
@@ -90,6 +93,14 @@ const DEFAULT_BLAME: Record<ErrorCode, Blame> = {
   REMOTE_HOST_KEY_ERROR: 'environment',
   LOOP_BUDGET_EXCEEDED: 'kernel',
   REPEATED_FAILURE: 'model',
+  // A refused delegation is the configuration speaking, the same as TOOL_DENIED.
+  DELEGATION_DENIED: 'user',
+  // Depth is a kernel ceiling, and the model asked for something past it.
+  DELEGATION_DEPTH_EXCEEDED: 'model',
+  // The child ran and did not finish its task. Blame sits with the child's own
+  // failure, which travels in `DelegationResult.error`; this code is the wrapper
+  // the parent sees, so it blames the tool layer rather than guessing.
+  DELEGATION_FAILED: 'tool',
   CANCELLED: 'user',
   INTERNAL_ERROR: 'kernel',
 };

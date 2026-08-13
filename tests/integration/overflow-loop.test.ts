@@ -97,3 +97,48 @@ describe('a provider that always reports overflow cannot spin forever', () => {
     assert.equal(outcome.code, 'LOOP_BUDGET_EXCEEDED', `turn failed with ${outcome.code}`);
   });
 });
+
+describe('a turn whose context outgrows the window compacts and keeps going', () => {
+  test('automatic mid-turn compaction does not fail the turn', async () => {
+    // Found by the alpha.4 soak: `maybeCompact` moved the turn into `compacting`
+    // and the loop then went straight to `sampling`, which the state machine
+    // forbids — so the turn failed with INTERNAL_ERROR at exactly the point
+    // compaction was meant to rescue it. Nothing caught it because every existing
+    // compaction test either used `/compact` (outside a turn) or the provider
+    // overflow path (which restarts the loop), and none read enough inside one
+    // turn to cross the budget.
+    const big = 'z'.repeat(120_000);
+    let step = 0;
+
+    const ws = await createTestWorkspace({
+      files: { 'src/big.ts': `export const big = "${big}";\n`, 'src/a.ts': 'export const a = 1;\n' },
+      responder: () => {
+        step += 1;
+        if (step === 1)
+          return { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'src/big.ts' } }] };
+        if (step === 2) return { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'src/a.ts' } }] };
+        return { kind: 'final', text: 'still here' };
+      },
+    });
+
+    try {
+      const outcome = await ws.kernel.session.runTurn('read the big file, then the small one');
+
+      assert.equal(outcome.turn.state, 'completed', `turn failed: ${outcome.error?.message ?? ''}`);
+      assert.equal(outcome.finalText, 'still here');
+
+      const log = await ws.eventLogText();
+      assert.match(log, /"type":"compaction.boundary"/, 'no compaction happened, so this proves nothing');
+      assert.ok(!log.includes('INTERNAL_ERROR'), 'the turn recorded an internal error');
+
+      // The transition sequence went through `preparing`, not straight to sampling.
+      const states = outcome.turn.transitions.map((t) => `${t.from}->${t.to}`);
+      assert.ok(
+        states.includes('compacting->preparing'),
+        `expected compacting->preparing, saw ${states.join(' ')}`,
+      );
+    } finally {
+      await ws.cleanup();
+    }
+  });
+});

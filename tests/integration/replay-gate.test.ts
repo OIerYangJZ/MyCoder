@@ -255,6 +255,47 @@ describe('replay gate', () => {
     }
   });
 
+  test('a tool call that compaction summarised away is still in the live state', async () => {
+    // The defect this pins was found by the alpha.4 delegation suite and had
+    // nothing to do with delegation. The live half of the gate used to be derived
+    // from `context.history()`, which compaction *rewrites* — so a tool exchange
+    // in the summarised head disappeared from the live side while the event log
+    // kept it, and the gate reported a divergence. It had gone unnoticed because
+    // the only compaction case here appended plain user text, never a tool call.
+    const ws = await createTestWorkspace({
+      files: { 'a.ts': 'x\n' },
+      script: [
+        { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'a.ts' } }] },
+        { kind: 'final', text: 'read it' },
+        { kind: 'final', text: 'two' },
+        { kind: 'final', text: 'three' },
+        { kind: 'final', text: 'four' },
+      ],
+    });
+    try {
+      await ws.kernel.session.runTurn('read a.ts');
+      await ws.kernel.session.runTurn('two');
+      await ws.kernel.session.runTurn('three');
+      await ws.kernel.session.runTurn('four');
+
+      // Enough bulk in the head that the first exchange is summarised away.
+      for (let i = 0; i < 40; i += 1) ws.kernel.context.appendUser('x'.repeat(2000));
+
+      const before = ws.kernel.session.terminalState().toolCalls;
+      assert.equal(before.length, 1, 'the fixture did not make a tool call');
+
+      const result = await ws.kernel.session.compactNow();
+      assert.ok(result.droppedMessages > 0, 'compaction dropped nothing, so this test asserts nothing');
+
+      const after = ws.kernel.session.terminalState().toolCalls;
+      assert.deepEqual(after, before, 'compaction erased a tool call from the live terminal state');
+
+      await assertGate(ws.kernel, 'compaction over a tool exchange');
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
   test('several turns replay in order', async () => {
     const ws = await createTestWorkspace({
       files: { 'a.ts': 'x\n' },
@@ -357,6 +398,7 @@ describe('replay gate detects a divergence', () => {
       modelRequests: 1,
       toolCallCount: 1,
       compactions: 0,
+      delegations: [],
     };
 
     const same = compareTerminalState(base, { ...base });
@@ -379,6 +421,7 @@ describe('replay gate detects a divergence', () => {
       modelRequests: 1,
       toolCallCount: 2,
       compactions: 0,
+      delegations: [],
     };
     assert.deepEqual(unansweredToolCalls(state), ['b']);
   });

@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import { createKernel, type Kernel } from '../../src/kernel.ts';
-import { FakeModel, type FakeStep } from '../../src/model/adapters/fake.ts';
+import { FakeModel, type FakeResponder, type FakeStep } from '../../src/model/adapters/fake.ts';
 import { ScriptedPrompter } from '../../src/cli/prompter.ts';
 import type { ApprovalOutcome } from '../../src/tools/runtime.ts';
 import type { EgressRequest, EgressResponse, EgressTransport } from '../../src/security/egress-gate.ts';
@@ -51,6 +51,16 @@ export interface TestWorkspaceOptions {
   /** Symlinks to create, as `linkPath -> target`. */
   symlinks?: Record<string, string>;
   script?: FakeStep[];
+  /**
+   * Decide each response from the request itself.
+   *
+   * Required once a test involves delegation: parent and child sample the *same*
+   * runtime, so a flat script would have to encode the interleaving of two
+   * conversations and would break the moment either changed length. A responder
+   * can branch on what it is being asked — which is also how it can assert that
+   * the child's request really is the child's.
+   */
+  responder?: FakeResponder;
   approvals?: ApprovalOutcome[];
   /** Register the canary value with the secret broker, as a user would. */
   registerCanary?: boolean;
@@ -75,6 +85,11 @@ export interface TestWorkspaceOptions {
   logLevel?: 'silent' | 'trace';
   /** Collects the debug log instead of dropping it. */
   captureLog?: string[];
+  /** Slows the fake stream, so a cancellation has something to interrupt. */
+  chunkDelayMs?: number;
+  /** Extra CLI-level overrides, for tests that need a resumed session. */
+  resumeSessionId?: string;
+  store?: import('../../src/session/store.ts').SessionStore;
 }
 
 export interface TestWorkspace {
@@ -131,7 +146,11 @@ export async function createTestWorkspace(opts: TestWorkspaceOptions = {}): Prom
     );
   }
 
-  const fakeModel = new FakeModel({ script: opts.script ?? [] });
+  const fakeModel = new FakeModel({
+    script: opts.script ?? [],
+    ...(opts.responder ? { responder: opts.responder } : {}),
+    ...(opts.chunkDelayMs !== undefined ? { chunkDelayMs: opts.chunkDelayMs } : {}),
+  });
   const transport = new CapturingTransport();
   const prompter = new ScriptedPrompter(opts.approvals ?? []);
 
@@ -144,6 +163,8 @@ export async function createTestWorkspace(opts: TestWorkspaceOptions = {}): Prom
     prompter,
     logLevel: opts.logLevel ?? 'silent',
     ...(opts.captureLog ? { logSink: (line: string) => opts.captureLog!.push(line) } : {}),
+    ...(opts.store ? { store: opts.store } : {}),
+    ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
   });
 
   if (opts.registerCanary !== false) {
@@ -181,6 +202,75 @@ export async function createTestWorkspace(opts: TestWorkspaceOptions = {}): Prom
       await rm(base, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * An agent definition file, for a workspace that will delegate.
+ *
+ * Written as project content — `.mycoder/agents/<name>.md` — rather than injected
+ * through an option, because discovery is part of what the delegation tests are
+ * checking: an agent the kernel did not find is an agent that cannot be
+ * dispatched.
+ */
+export function agentFile(input: {
+  name: string;
+  description?: string;
+  profile?: string;
+  tools?: string[];
+  model?: string;
+  maxSteps?: number;
+  maxToolCalls?: number;
+  skills?: string[];
+  instructions?: string;
+}): string {
+  const front = [
+    '---',
+    `name: ${input.name}`,
+    `description: ${input.description ?? `test agent ${input.name}`}`,
+    ...(input.profile ? [`permission_profile: ${input.profile}`] : []),
+    ...(input.tools ? [`tools: [${input.tools.join(', ')}]`] : []),
+    ...(input.model ? [`model: ${input.model}`] : []),
+    ...(input.maxSteps !== undefined ? [`max_steps: ${input.maxSteps}`] : []),
+    ...(input.maxToolCalls !== undefined ? [`max_tool_calls: ${input.maxToolCalls}`] : []),
+    ...(input.skills ? [`skills: [${input.skills.join(', ')}]`] : []),
+    '---',
+    '',
+  ];
+  return `${front.join('\n')}${input.instructions ?? `You are the ${input.name} test agent.`}\n`;
+}
+
+/** A `SKILL.md`, likewise written as real project content. */
+export function skillFile(input: {
+  name: string;
+  description?: string;
+  profile?: string;
+  tools?: string[];
+  maxSteps?: number;
+  instructions?: string;
+  extraFrontmatter?: string[];
+}): string {
+  const front = [
+    '---',
+    `name: ${input.name}`,
+    `description: ${input.description ?? `test skill ${input.name}`}`,
+    ...(input.profile ? [`permission_profile: ${input.profile}`] : []),
+    ...(input.tools ? [`tools: [${input.tools.join(', ')}]`] : []),
+    ...(input.maxSteps !== undefined ? [`max_steps: ${input.maxSteps}`] : []),
+    ...(input.extraFrontmatter ?? []),
+    '---',
+    '',
+  ];
+  return `${front.join('\n')}${input.instructions ?? `Follow the ${input.name} procedure.`}\n`;
+}
+
+/** A Delegate step for the fake model. */
+export function delegateStep(agent: string, task: string, extra: Record<string, unknown> = {}): FakeStep {
+  return { kind: 'tools', calls: [{ name: 'Delegate', arguments: { agent, task, ...extra } }] };
+}
+
+/** True when this model request is the one a given subagent made. */
+export function isChildRequest(request: { system: string }, agent: string): boolean {
+  return request.system.includes(`the subagent "${agent}"`);
 }
 
 /** Convenience: a Read step for the fake model. */

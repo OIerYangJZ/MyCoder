@@ -135,6 +135,34 @@ export async function parseSkillFile(
   return definition;
 }
 
+/** How long an activation lasts (alpha.4 §22). */
+export type SkillActivationScope = 'run' | 'turn';
+
+/** Where an activation came from. A model request is bounded, never a grant. */
+export type SkillActivationSource = 'control' | 'model' | 'agent';
+
+export interface SkillActivationOutcome {
+  ok: boolean;
+  /** Human/model-readable account of what the activation actually did. */
+  message: string;
+  /** Effective catalogue after the intersection, when the activation succeeded. */
+  allowedTools?: string[];
+  notes?: string[];
+}
+
+/**
+ * Activate a skill in the session that owns this runtime.
+ *
+ * Passed as a callback rather than a `Session` reference so a tool cannot reach
+ * anything else on the session: the only thing it can do is ask for a narrowing,
+ * which the session applies between steps.
+ */
+export type ActivateSkillFn = (
+  name: string,
+  scope: SkillActivationScope,
+  source: SkillActivationSource,
+) => Promise<SkillActivationOutcome>;
+
 export interface ActivatedSkill {
   skill: SkillDefinition;
   /** Tools available while this skill is active. */
@@ -202,6 +230,47 @@ export function activateSkill(
   }
 
   return activated;
+}
+
+/**
+ * Resolve a skill by name against what the session currently has (alpha.4 §22).
+ *
+ * The one place that turns an untrusted *name* into an `ActivatedSkill`, shared by
+ * the control plane, the `Skill` tool and the delegation service. Sharing it is
+ * the point: three callers computing "which tools does this leave me" three times
+ * is three chances for one of them to compute it as a union.
+ */
+export function resolveSkillActivation(
+  name: string,
+  ctx: {
+    skills: readonly SkillDefinition[];
+    registeredTools: readonly string[];
+    currentAllowedTools?: readonly string[];
+    profileContext: ProfileContext;
+    sessionMaxSteps: number;
+  },
+): { ok: true; activated: ActivatedSkill } | { ok: false; message: string } {
+  const definition = ctx.skills.find((s) => s.name === name);
+  if (!definition) {
+    return {
+      ok: false,
+      message:
+        `There is no skill named "${name}".` +
+        (ctx.skills.length > 0
+          ? ` Available: ${ctx.skills.map((s) => s.name).join(', ')}.`
+          : ' This project defines no skills.'),
+    };
+  }
+
+  return {
+    ok: true,
+    activated: activateSkill(definition, {
+      registeredTools: ctx.registeredTools,
+      ...(ctx.currentAllowedTools ? { currentAllowedTools: ctx.currentAllowedTools } : {}),
+      profileContext: ctx.profileContext,
+      sessionMaxSteps: ctx.sessionMaxSteps,
+    }),
+  };
 }
 
 /** Apply an activated skill's layer to an engine. Narrowing is structural. */

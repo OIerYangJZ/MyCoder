@@ -61,17 +61,27 @@ export interface TurnTransition {
   reason?: string;
 }
 
+/**
+ * Who started the turn.
+ *
+ * `delegation` is a child scope executing a task a parent agent handed it. It is
+ * a distinct origin rather than a `user` turn because the input is not the user
+ * speaking (alpha.4 §18), and because replay has to be able to tell the two apart
+ * when reconstructing a session that delegated.
+ */
+export type TurnOrigin = 'user' | 'control' | 'loop' | 'delegation';
+
 export interface TurnOptions {
   turnId: TurnId;
   input: string;
-  origin: 'user' | 'control' | 'loop';
+  origin: TurnOrigin;
   startedAt: number;
 }
 
 export class Turn {
   readonly turnId: TurnId;
   readonly input: string;
-  readonly origin: 'user' | 'control' | 'loop';
+  readonly origin: TurnOrigin;
   readonly startedAt: number;
   readonly transitions: TurnTransition[] = [];
 

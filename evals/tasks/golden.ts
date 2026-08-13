@@ -14,6 +14,7 @@
 import type { FakeStep } from '../../src/model/adapters/fake.ts';
 import type { Kernel } from '../../src/kernel.ts';
 import type { ApprovalOutcome } from '../../src/tools/runtime.ts';
+import type { ModelRequest } from '../../src/model/ir.ts';
 
 export interface GoldenTaskContext {
   kernel: Kernel;
@@ -51,6 +52,19 @@ export interface GoldenTaskCheck {
  */
 export type EvalFamily = 'kernel-invariant' | 'model-capability';
 
+/**
+ * Which delegation suite a task belongs to (alpha.4 §33).
+ *
+ * The plan is explicit that these two must not be mixed, and the reason is that
+ * they measure different things. Explicit conformance asks "when the model is
+ * told to delegate, does the runtime do the right thing?" — a runtime question,
+ * and a failure is ours. Natural delegation asks "does the model choose to
+ * delegate when it would help?" — a model-and-harness question, and a failure is
+ * a measurement, not a regression. Averaging them produces a number that answers
+ * neither, which is the mistake alpha.2 made with its single score.
+ */
+export type DelegationSuite = 'explicit-delegation' | 'natural-delegation';
+
 export interface GoldenTask {
   id: string;
   description: string;
@@ -68,6 +82,18 @@ export interface GoldenTask {
   symlinks?: Record<string, string>;
   /** Scripted model behaviour. `receipt(path)` resolves at run time. */
   script(receipt: (suffix: string) => string): FakeStep[];
+  /**
+   * Request-aware scripting, for tasks that involve delegation.
+   *
+   * A flat script indexes by call number, which stops working the moment a second
+   * conversation shares the runtime: parent step 3 and child step 1 are different
+   * conversations at the same index. A responder can branch on the request it was
+   * given, which is also the only way to script "what the child does" separately
+   * from "what the parent does".
+   */
+  responder?(request: ModelRequest, index: number, receipt: (suffix: string) => string): FakeStep | undefined;
+  /** Set for a delegation task; scored on its own scoreboard (§33). */
+  delegationSuite?: DelegationSuite;
   prompt: string;
   /**
    * Prompt used when a **real** model drives the task (§29).
@@ -154,6 +180,37 @@ const shell = (argv: string[], extra: Record<string, unknown> = {}): FakeStep =>
 });
 
 const done = (text: string): FakeStep => ({ kind: 'final', text });
+
+const delegate = (agent: string, task: string, extra: Record<string, unknown> = {}): FakeStep => ({
+  kind: 'tools',
+  calls: [{ name: 'Delegate', arguments: { agent, task, ...extra } }],
+});
+
+/** A read-only reviewer, written as the project file the kernel discovers. */
+const REVIEWER_AGENT = [
+  '---',
+  'name: reviewer',
+  'description: Reads code and reports problems. Never edits.',
+  'permission_profile: read-only',
+  'tools: [Read, Grep, Glob]',
+  '---',
+  '',
+  'Read what you are asked about and report concretely: what is wrong, where, and why it matters.',
+  'You cannot modify anything, so do not try.',
+  '',
+].join('\n');
+
+/** An agent with no tool restriction, so its catalogue includes Delegate. */
+const DEPUTY_AGENT = [
+  '---',
+  'name: deputy',
+  'description: Inherits the parent catalogue.',
+  'permission_profile: read-only',
+  '---',
+  '',
+  'You may not delegate further.',
+  '',
+].join('\n');
 
 export const GOLDEN_TASKS: GoldenTask[] = [
   {
@@ -434,5 +491,230 @@ export const GOLDEN_TASKS: GoldenTask[] = [
       done('Done reading.'),
     ],
     checks: [turnState('completed'), noToolCallLeftOpen],
+  },
+  // --- delegation (alpha.4 §33, §34) ---------------------------------------
+  //
+  // Four tasks: two on the explicit-conformance scoreboard, which asks whether the
+  // *runtime* behaves when a delegation is demanded, and two on the natural
+  // scoreboard, which asks whether a model chooses to delegate when it would help
+  // and does something sensible with the answer. `livePrompt` matters more here
+  // than anywhere else: "use a subagent now" measures instruction-following, not
+  // capability (§34).
+
+  {
+    id: 'delegate-read-only-review',
+    family: 'kernel-invariant',
+    delegationSuite: 'explicit-delegation',
+    fixtureVersion: 1,
+    description: 'A parent delegates a review to a read-only child and relays its report.',
+    files: {
+      '.mycoder/agents/reviewer.md': REVIEWER_AGENT,
+      'src/auth.ts':
+        'export function login(user: string, password: string) {\n' +
+        '  console.log("login attempt", user, password);\n' +
+        '  return user === "admin";\n' +
+        '}\n',
+    },
+    prompt: 'Delegate a review of src/auth.ts to the reviewer subagent.',
+    livePrompt:
+      'Use the Delegate tool to have the `reviewer` subagent review src/auth.ts, then tell me what it ' +
+      'reported. Do not review the file yourself.',
+    script: () => [],
+    responder: (request) => {
+      if (request.system.includes('the subagent "reviewer"')) {
+        const sawRead = request.messages.some((m) =>
+          m.parts.some((p) => p.type === 'tool_result' && p.content.includes('receiptId')),
+        );
+        return sawRead
+          ? done('login() logs the password in plain text, and compares it against nothing.')
+          : read('src/auth.ts');
+      }
+      const sawResult = request.messages.some((m) => m.parts.some((p) => p.type === 'tool_result'));
+      return sawResult
+        ? done('The reviewer found that login() logs the password.')
+        : delegate('reviewer', 'Review src/auth.ts and report any security problem you find.');
+    },
+    checks: [
+      turnState('completed'),
+      check('a delegation completed', (ctx) => {
+        const records = ctx.kernel.session.delegationRecords();
+        if (records.length === 0) return 'no delegation was dispatched';
+        return records.some((r) => r.status === 'completed')
+          ? undefined
+          : `statuses were ${records.map((r) => r.status).join(', ')}`;
+      }),
+      check('the child actually sampled a model and ran a tool', (ctx) => {
+        const record = ctx.kernel.session.delegationRecords().find((r) => r.status === 'completed');
+        if (!record) return 'no completed delegation';
+        if (record.usage.modelRequests === 0) return 'the child made no model request';
+        return record.child.toolCalls.length > 0 ? undefined : 'the child executed no tool';
+      }),
+      check('the child changed nothing', async (ctx) => {
+        const content = await ctx.read('src/auth.ts');
+        return content.includes('console.log') ? undefined : 'a read-only child modified the file';
+      }),
+      check("the child's report is not a user message", (ctx) => {
+        const impostor = ctx.kernel.context
+          .history()
+          .some(
+            (m) =>
+              m.origin.kind === 'user' &&
+              m.parts.some((p) => p.type === 'text' && p.text.includes('[subagent:')),
+          );
+        return impostor ? 'a child report was injected as user text' : undefined;
+      }),
+      noToolCallLeftOpen,
+      noCanaryAnywhere,
+    ],
+  },
+
+  {
+    id: 'delegate-depth-refused',
+    family: 'kernel-invariant',
+    delegationSuite: 'explicit-delegation',
+    fixtureVersion: 1,
+    description: 'A child that tries to delegate again is refused, and the parent carries on.',
+    files: {
+      '.mycoder/agents/deputy.md': DEPUTY_AGENT,
+      'src/a.ts': 'export const a = 1;\n',
+    },
+    prompt: 'Delegate to the deputy, which will try to delegate again.',
+    scriptedOnly:
+      'the premise is a child that misbehaves; a competent model would not attempt a nested delegation',
+    script: () => [],
+    responder: (request) => {
+      if (request.system.includes('the subagent "deputy"')) {
+        const tried = request.messages.some((m) => m.parts.some((p) => p.type === 'tool_result'));
+        return tried
+          ? done('I could not delegate further, so I stopped.')
+          : delegate('deputy', 'You do it instead.');
+      }
+      const sawResult = request.messages.some((m) => m.parts.some((p) => p.type === 'tool_result'));
+      return sawResult
+        ? done('The deputy could not delegate onward.')
+        : delegate('deputy', 'Look at src/a.ts.');
+    },
+    checks: [
+      turnState('completed'),
+      check('the nested delegation was denied with the depth code', async (ctx) => {
+        const log = await ctx.eventLog();
+        if (!log.includes('"type":"delegation.denied"')) return 'no delegation was denied';
+        return log.includes('DELEGATION_DEPTH_EXCEEDED')
+          ? undefined
+          : 'the denial did not name DELEGATION_DEPTH_EXCEEDED';
+      }),
+      check('exactly one child ran', async (ctx) => {
+        const log = await ctx.eventLog();
+        const started = (log.match(/"type":"delegation.started"/g) ?? []).length;
+        return started === 1 ? undefined : `${started} children started`;
+      }),
+      noToolCallLeftOpen,
+    ],
+  },
+
+  {
+    id: 'natural-delegation-multi-file-diagnosis',
+    family: 'model-capability',
+    delegationSuite: 'natural-delegation',
+    fixtureVersion: 1,
+    description: 'A diagnosis a model may reasonably delegate. It is not told to.',
+    files: {
+      '.mycoder/agents/reviewer.md': REVIEWER_AGENT,
+      'src/parse.ts':
+        'export function parseAge(input: string): number {\n  return Number.parseInt(input);\n}\n',
+      'src/report.ts':
+        "import { parseAge } from './parse.ts';\n" +
+        'export function report(input: string): string {\n' +
+        '  const age = parseAge(input);\n' +
+        '  return `age is ${age.toFixed(0)}`;\n' +
+        '}\n',
+      'src/index.ts': "import { report } from './report.ts';\nexport const main = () => report('  42abc');\n",
+    },
+    prompt: 'Find out why report() returns "age is NaN" for some inputs.',
+    livePrompt:
+      'report() sometimes returns "age is NaN". Work out why, across src/parse.ts, src/report.ts and ' +
+      'src/index.ts, and tell me the root cause. You have subagents available if you want them; use your ' +
+      'judgement about whether one helps here.',
+    script: () => [],
+    responder: (request) => {
+      // Scripted, the "natural" choice is made for us: the point of the scripted
+      // run is that the *runtime* handles either choice, so this one delegates.
+      if (request.system.includes('the subagent "reviewer"')) {
+        const sawRead = request.messages.some((m) => m.parts.some((p) => p.type === 'tool_result'));
+        return sawRead
+          ? done('parseAge uses parseInt without a radix and does not reject trailing text.')
+          : read('src/parse.ts');
+      }
+      const sawResult = request.messages.some((m) => m.parts.some((p) => p.type === 'tool_result'));
+      return sawResult
+        ? done('Root cause: parseAge accepts trailing text, so NaN reaches toFixed.')
+        : delegate('reviewer', 'Read src/parse.ts and explain how parseAge can produce NaN.');
+    },
+    checks: [
+      turnState('completed'),
+      check('the answer names the parsing function', (ctx) => {
+        const text = ctx.kernel.session.turn?.finalText ?? '';
+        return /parse/i.test(text)
+          ? undefined
+          : `the final answer did not mention parsing: ${text.slice(0, 120)}`;
+      }),
+      check('nothing was modified during a diagnosis', async (ctx) => {
+        const dirty = ctx.kernel.session.editJournal.dirtyPaths();
+        return dirty.length === 0 ? undefined : `it edited ${dirty.join(', ')}`;
+      }),
+      noToolCallLeftOpen,
+      noCanaryAnywhere,
+    ],
+  },
+
+  {
+    id: 'natural-delegation-then-fix',
+    family: 'model-capability',
+    delegationSuite: 'natural-delegation',
+    fixtureVersion: 1,
+    description: 'A fix the parent must make itself, after any review it chooses to delegate.',
+    files: {
+      '.mycoder/agents/reviewer.md': REVIEWER_AGENT,
+      'src/clamp.ts':
+        'export function clamp(value: number, min: number, max: number) {\n' +
+        '  if (value < min) return max;\n' +
+        '  if (value > max) return min;\n' +
+        '  return value;\n' +
+        '}\n',
+    },
+    prompt: 'clamp() returns the wrong bound. Fix it.',
+    livePrompt:
+      'clamp() in src/clamp.ts returns the wrong bound at each end. Fix it so a value below the minimum ' +
+      'returns the minimum and a value above the maximum returns the maximum. You may delegate a review ' +
+      'first if you think it helps, but the edit is yours to make.',
+    script: (receipt) => [
+      read('src/clamp.ts'),
+      edit(
+        'src/clamp.ts',
+        'if (value < min) return max;',
+        'if (value < min) return min;',
+        receipt('clamp.ts'),
+      ),
+      read('src/clamp.ts'),
+      edit(
+        'src/clamp.ts',
+        'if (value > max) return min;',
+        'if (value > max) return max;',
+        receipt('clamp.ts'),
+      ),
+      done('Fixed both bounds.'),
+    ],
+    checks: [
+      turnState('completed'),
+      fileEquals(
+        'src/clamp.ts',
+        'export function clamp(value: number, min: number, max: number) {\n' +
+          '  if (value < min) return min;\n' +
+          '  if (value > max) return max;\n' +
+          '  return value;\n' +
+          '}\n',
+      ),
+      noToolCallLeftOpen,
+    ],
   },
 ];

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { PolicyEngine, SessionApprovalStore } from '../../src/policy/policy-engine.ts';
 import { ProtectedPaths } from '../../src/policy/protected-paths.ts';
 import { readOnlyProfile, workspaceDevProfile, reviewProfile } from '../../src/policy/profiles.ts';
-import { subjectKeyOf, capabilityOf } from '../../src/policy/access.ts';
+import { subjectKeyOf, capabilityOf, ALL_CAPABILITIES } from '../../src/policy/access.ts';
 import type { AccessRequest } from '../../src/policy/access.ts';
 import type { CanonicalPath } from '../../src/util/paths.ts';
 import { defaultConfig, mergeConfig, applySystemCeiling, configFromToml } from '../../src/config/schema.ts';
@@ -569,5 +569,34 @@ describe('egress gate', () => {
     const serialised = JSON.stringify(records);
     assert.equal(serialised.includes('private source code'), false);
     assert.match(serialised, /"bodyHash"/, 'a hash is recorded instead');
+  });
+});
+
+describe('the config parser and the capability list cannot drift apart', () => {
+  test('every capability the policy layer knows is accepted in permissions.toml', () => {
+    // The defect this pins: `config.ts` carried a hand-written copy of the
+    // capability list, and it fell behind when `agent.invoke` was added — so a
+    // project rule naming the new capability was dropped with a warning, and the
+    // policy §11 says a project must be able to express was inexpressible.
+    for (const capability of ALL_CAPABILITIES) {
+      const parsed = parsePermissionRules(
+        parseToml(`[[rule]]\naction = "deny"\ncapability = "${capability}"\npattern = "x"\n`),
+        '/ws' as CanonicalPath,
+      );
+      assert.deepEqual(parsed.warnings, [], `capability "${capability}" was rejected by the config parser`);
+      assert.equal(parsed.rules.length, 1, `capability "${capability}" produced no rule`);
+      assert.equal(parsed.rules[0]!.capability, capability);
+    }
+  });
+
+  test('a genuinely unknown capability is still reported', () => {
+    // NEGATIVE CONTROL: the check above would pass just as well if the parser
+    // accepted everything.
+    const parsed = parsePermissionRules(
+      parseToml('[[rule]]\naction = "deny"\ncapability = "not.a.capability"\n'),
+      '/ws' as CanonicalPath,
+    );
+    assert.equal(parsed.rules.length, 0);
+    assert.match(parsed.warnings.join(' '), /unknown capability/);
   });
 });

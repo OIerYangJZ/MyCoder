@@ -21,7 +21,7 @@ import { posix } from 'node:path';
 import { PROJECT_DIR, projectDirCandidates } from '../app.ts';
 import { parseToml, TomlParseError, type TomlTable, type TomlValue } from '../util/toml.ts';
 import { toPosix, type CanonicalPath } from '../util/paths.ts';
-import type { Capability } from '../policy/access.ts';
+import { ALL_CAPABILITIES, type Capability } from '../policy/access.ts';
 import type { PermissionProfile, PolicyAction, PolicyRule } from '../policy/profiles.ts';
 import {
   applySystemCeiling,
@@ -160,18 +160,19 @@ async function readTomlFile(
 }
 
 const VALID_ACTIONS: readonly PolicyAction[] = ['hard_deny', 'deny', 'ask', 'allow'];
-const VALID_CAPABILITIES: readonly string[] = [
-  'file.read',
-  'file.read_to_model',
-  'file.write',
-  'process.exec',
-  'network.connect',
-  'secret.use',
-  'env.read',
-  'vcs.mutate',
-  'remote.connect',
-  '*',
-];
+/**
+ * Derived from `ALL_CAPABILITIES`, never re-listed.
+ *
+ * This used to be a hand-written copy, and the copy fell behind the moment
+ * alpha.4 added `agent.invoke`: a project rule naming the new capability was
+ * dropped with an "unknown capability" warning, so `permissions.toml` could not
+ * express the one policy §11 asks it to. The warning meant it was not silent, but
+ * a warning nobody reads is a defect with better manners.
+ *
+ * Deriving it means the next capability cannot leave the config parser behind, and
+ * `tests/unit/policy.test.ts` asserts the two agree.
+ */
+const VALID_CAPABILITIES: readonly string[] = [...ALL_CAPABILITIES, '*'];
 
 /**
  * Parse `[[rule]]` entries (Appendix C).

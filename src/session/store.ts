@@ -66,6 +66,8 @@ export interface AppendableEvent {
   payload: unknown;
   turnId?: string;
   stepId?: string;
+  /** Set by a delegated child session, so its events stay attributable. */
+  delegationId?: string;
 }
 
 export interface SessionStore {
@@ -162,6 +164,7 @@ export class FileSessionStore implements SessionStore {
     };
     if (event.turnId) record.turnId = event.turnId as KernelEvent['turnId'];
     if (event.stepId) record.stepId = event.stepId as KernelEvent['stepId'];
+    if (event.delegationId) record.delegationId = event.delegationId;
 
     // Redact the serialised form, not the object: this catches a secret hiding
     // in a nested field nobody remembered to sanitise.
@@ -305,6 +308,7 @@ export class MemorySessionStore implements SessionStore {
     };
     if (event.turnId) record.turnId = event.turnId as KernelEvent['turnId'];
     if (event.stepId) record.stepId = event.stepId as KernelEvent['stepId'];
+    if (event.delegationId) record.delegationId = event.delegationId;
 
     const redacted = JSON.parse(this.redactor.redact(JSON.stringify(record))) as KernelEvent;
     log.push(redacted);

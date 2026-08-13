@@ -181,6 +181,50 @@ jobs:
 
       - run: pnpm test:ssh
 
+  delegation:
+    name: Delegated Execution
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.4 §43. Its own job because "a subagent really runs on the real
+      # runtime" is the milestone's central claim, and a failure in it should be
+      # legible from the run list rather than buried in a combined test log. The
+      # suite includes the delegated security harness (§37, §38), whose canary must
+      # stay out of seven sinks including the child's own prompt.
+      - run: pnpm test:delegation
+
+  soak:
+    name: Delegated Soak x50
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.4 §31 asks for N=50. `pnpm test` runs the same scenario at N=3 so an
+      # ordinary run stays fast; this job pins the requirement rather than relying
+      # on the file's default, exactly as the determinism job does.
+      - run: pnpm test:soak
+        env:
+          KERNEL_SOAK_REPEATS: 50
+
   eval-methodology:
     name: Eval Methodology
     runs-on: ubuntu-latest

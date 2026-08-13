@@ -62,8 +62,17 @@ export type KernelEventType =
   | 'budget.exceeded'
   // extensions
   | 'skill.loaded'
+  | 'skill.activated'
+  | 'skill.deactivated'
   | 'agent.started'
   | 'agent.finished'
+  // delegation (alpha.4 §9)
+  | 'delegation.requested'
+  | 'delegation.started'
+  | 'delegation.completed'
+  | 'delegation.failed'
+  | 'delegation.cancelled'
+  | 'delegation.denied'
   | 'hook.executed'
   // catch-all
   | 'error';
@@ -76,6 +85,19 @@ export interface KernelEvent<P = unknown> {
   sessionId: SessionId;
   turnId?: TurnId;
   stepId?: StepId;
+  /**
+   * Set on every event produced *inside* a delegated child scope (alpha.4 §9).
+   *
+   * One event log per root session, with the child's work tagged rather than
+   * split into a second file. Two things depend on that choice. Replay can
+   * reconstruct the whole tree from one ordered stream, which is what makes
+   * "live == replay" checkable across a delegation boundary at all. And the
+   * parent's own conversation stays reconstructible, because the replayer knows
+   * which `tool.call` events were the child's and must not be folded into the
+   * parent's message list — without this field a child's tool calls appeared as
+   * the parent's, which is both a wrong transcript and a wrong terminal state.
+   */
+  delegationId?: string;
   type: KernelEventType;
   payload: P;
 }
@@ -98,7 +120,9 @@ export interface SessionStartedPayload {
 export interface TurnStartedPayload {
   /** Redacted user input. Stored so a resumed session can show what was asked. */
   input: string;
-  origin: 'user' | 'control' | 'loop';
+  origin: 'user' | 'control' | 'loop' | 'delegation';
+  /** Set for a delegated child turn, so replay can attribute it. */
+  agent?: string;
 }
 
 export interface TurnStateChangedPayload {
@@ -258,6 +282,88 @@ export interface BudgetExceededPayload {
   observed: number;
 }
 
+/**
+ * Delegation lifecycle payloads (alpha.4 §8, §9).
+ *
+ * `delegation.requested` records what was *asked for*, before any narrowing;
+ * `delegation.started` records what was actually granted. Keeping them apart is
+ * what makes the intersection auditable after the fact: the pair says "the model
+ * asked for 12 steps and a workspace-dev child, and got 4 steps and read-only",
+ * which a single merged event could not express.
+ */
+export interface DelegationRequestedPayload {
+  delegationId: string;
+  agent: string;
+  depth: number;
+  /** The delegating tool call, so parent and child are joinable. */
+  toolCallId?: string;
+  /** Redacted, truncated task text. */
+  task: string;
+  taskHash: string;
+  requested: {
+    maxSteps?: number;
+    maxToolCalls?: number;
+    maxModelRequests?: number;
+    maxWallTimeMs?: number;
+    maxCostUsd?: number;
+  };
+  contextRefs?: string[];
+}
+
+export interface DelegationStartedPayload {
+  delegationId: string;
+  childRunId: string;
+  agent: string;
+  depth: number;
+  /** Alias the child resolved to, after model policy. */
+  model: string;
+  /** The effective tool catalogue, already intersected with the parent's. */
+  allowedTools: string[];
+  /** Policy layer names, broadest to narrowest. */
+  policyLayers: string[];
+  /** Skills the agent definition activated. */
+  skills: string[];
+  granted: {
+    maxSteps: number;
+    maxToolCalls: number;
+    maxModelRequests: number;
+    maxWallTimeMs: number;
+    maxCostUsd?: number;
+  };
+  /** Notes about anything the definition asked for and did not get. */
+  notes: string[];
+}
+
+export interface DelegationFinishedPayload {
+  delegationId: string;
+  childRunId: string;
+  agent: string;
+  depth: number;
+  status: 'completed' | 'failed' | 'cancelled' | 'budget_exceeded' | 'denied';
+  /** Length only for the summary; the text travels in the tool result. */
+  summaryLength: number;
+  usage: {
+    modelRequests: number;
+    toolCalls: number;
+    wallTimeMs: number;
+    estimatedCostUsd?: number;
+  };
+  errorCode?: string;
+}
+
+export interface SkillActivatedPayload {
+  skill: string;
+  scope: 'run' | 'turn';
+  /** Where the activation came from; never the model asserting a permission. */
+  source: 'control' | 'model' | 'agent';
+  /** Effective catalogue after intersection. */
+  allowedTools: string[];
+  /** Present when the skill named a permission profile. */
+  policyLayer?: string;
+  maxSteps?: number;
+  notes: string[];
+}
+
 /** Turn-level view of an event, used when rebuilding conversation state. */
 export function isTurnScoped(event: KernelEvent): boolean {
   return event.turnId !== undefined;
@@ -266,6 +372,13 @@ export function isTurnScoped(event: KernelEvent): boolean {
 /** Events replay must process to rebuild conversation state. */
 export const REPLAY_EVENT_TYPES: ReadonlySet<KernelEventType> = new Set<KernelEventType>([
   'session.started',
+  'delegation.requested',
+  'delegation.started',
+  'delegation.completed',
+  'delegation.failed',
+  'delegation.cancelled',
+  'delegation.denied',
+  'skill.activated',
   'turn.started',
   'turn.completed',
   'turn.failed',

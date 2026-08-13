@@ -22,6 +22,8 @@ import type { KernelConfig } from '../config/schema.ts';
 import type { EnvironmentDescriptor } from '../execution/backend.ts';
 import type { RemoteConfig } from '../execution/ssh.ts';
 import { listProfileNames } from '../policy/profiles.ts';
+import type { SkillActivationOutcome, SkillActivationScope } from '../extensions/skills.ts';
+import type { DelegationRecord } from '../session/delegation.ts';
 
 export interface ControlResult {
   ok: boolean;
@@ -53,6 +55,28 @@ export interface ControlHost {
   activeRemote?: string;
   skills: ReadonlyArray<{ name: string; description: string }>;
   agents: ReadonlyArray<{ name: string; description: string }>;
+  /**
+   * Activate a skill from the control plane (alpha.4 §22).
+   *
+   * A control-plane activation is the *user* asking, which is why it exists
+   * alongside the model-facing `Skill` tool: the two share one resolver, so
+   * neither can grant what the other would refuse.
+   */
+  activateSkill(name: string, scope: SkillActivationScope): Promise<SkillActivationOutcome>;
+  activeSkills(): Array<{ name: string; scope: SkillActivationScope; preApplied: boolean }>;
+  /** Live and finished delegated scopes, for `/status` (§41). */
+  delegations(): {
+    active: Array<{
+      delegationId: string;
+      agent: string;
+      depth: number;
+      model: string;
+      activity: string;
+      elapsedMs: number;
+      budgetRemaining: { steps: number; toolCalls: number; modelRequests: number };
+    }>;
+    finished: readonly DelegationRecord[];
+  };
   hooks: ReadonlyArray<{ event: string; command: string[] }>;
   /**
    * Per-provider credential *source* lines (alpha.3 §8).
@@ -420,6 +444,9 @@ const handleStatus: ControlHandler = (_args, host) => {
   const sandbox = describeSandbox(host.environment.sandboxStrength);
   const dirty = session.editJournal.dirtyPaths();
   const u = session.usageSnapshot;
+  const { active, finished } = host.delegations();
+  const cost = session.costBreakdown;
+  const skills = host.activeSkills();
 
   const pct = usage.budgetTokens > 0 ? Math.round((usage.estimatedTokens / usage.budgetTokens) * 100) : 0;
 
@@ -441,6 +468,29 @@ const handleStatus: ControlHandler = (_args, host) => {
         `${u.modelRequests} requests, ${u.toolCalls} tool calls` +
         (u.costUsd > 0 ? `, $${u.costUsd.toFixed(4)}` : ''),
       `dirty files  : ${dirty.length === 0 ? 'none' : `${dirty.length} (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? ', …' : ''})`}`,
+      `skills       : ${skills.length === 0 ? 'none active' : skills.map((s) => `${s.name} (${s.preApplied ? 'agent' : s.scope})`).join(', ')}`,
+      // §41: enough to know what a child is doing, and nothing about how it was
+      // prompted. No instructions, no credentials, no task text.
+      `delegation   : ${
+        active.length === 0
+          ? finished.length === 0
+            ? 'none'
+            : `${finished.length} finished`
+          : active
+              .map(
+                (a) =>
+                  `${a.agent} (${a.delegationId}, depth ${a.depth}, ${a.model}) — ${a.activity}; ` +
+                  `${a.budgetRemaining.steps}/${a.budgetRemaining.toolCalls}/${a.budgetRemaining.modelRequests} ` +
+                  `steps/tools/requests left, ${Math.round(a.elapsedMs / 1000)}s elapsed`,
+              )
+              .join('\n               ')
+      }`,
+      ...(cost.totalUsd > 0
+        ? [
+            `cost         : $${cost.totalUsd.toFixed(4)} total — $${cost.directUsd.toFixed(4)} direct, ` +
+              `$${cost.delegatedUsd.toFixed(4)} delegated`,
+          ]
+        : []),
       `telemetry    : ${host.config.telemetry.enabled ? 'metadata only' : 'off'}; trace upload off; content upload permanently off`,
       ...(host.credentialSources.length > 0
         ? ['credentials  :', ...host.credentialSources.map((c) => `  ${c.provider}: ${c.description}`)]
@@ -541,27 +591,99 @@ const handleRemote: ControlHandler = async (args, host) => {
   };
 };
 
-const handleSkills: ControlHandler = (_args, host) => ({
-  ok: true,
-  command: 'skills',
-  message:
-    host.skills.length === 0
-      ? `No skills discovered. Add them under ${PROJECT_DIR}/skills/<name>/SKILL.md.`
-      : 'Skills:\n' +
-        host.skills.map((s) => `  ${s.name.padEnd(24)} ${s.description}`).join('\n') +
-        "\n\nA skill can only narrow this session's capabilities, never widen them.",
-});
+const handleSkills: ControlHandler = async (args, host) => {
+  const sub = args[0] ?? 'list';
 
-const handleAgents: ControlHandler = (_args, host) => ({
-  ok: true,
-  command: 'agents',
-  message:
-    host.agents.length === 0
-      ? `No agents discovered. Add them under ${PROJECT_DIR}/agents/<name>.md.`
-      : 'Agents:\n' +
-        host.agents.map((a) => `  ${a.name.padEnd(24)} ${a.description}`).join('\n') +
-        "\n\nA subagent's capabilities are always a subset of this session's.",
-});
+  if (sub === 'use') {
+    const name = args[1];
+    if (!name) {
+      return { ok: false, command: 'skills', message: 'Usage: /skills use <name> [--turn|--run]' };
+    }
+    // Run scope is the default for a user activation: someone who typed
+    // `/skills use security-review` means "for this piece of work", not "for the
+    // next model call". The model-facing tool defaults the other way, because a
+    // model activating a skill for the rest of the session is a much longer
+    // commitment than it can reasonably judge.
+    const scope: SkillActivationScope = args.includes('--turn') ? 'turn' : 'run';
+    const outcome = await host.activateSkill(name, scope);
+    if (!outcome.ok) return { ok: false, command: 'skills', message: outcome.message };
+
+    return {
+      ok: true,
+      command: 'skills',
+      message:
+        outcome.message +
+        (outcome.allowedTools ? `\n  tools now  : ${outcome.allowedTools.join(', ') || 'none'}` : '') +
+        (outcome.notes && outcome.notes.length > 0
+          ? `\n  notes      :\n${outcome.notes.map((n) => `    - ${n}`).join('\n')}`
+          : ''),
+      projection:
+        `[control] The skill "${name}" was activated for this ${scope}. Its instructions are in your ` +
+        'context as third-party content, and your tools and permissions may now be narrower.',
+      data: { skill: name, scope },
+    };
+  }
+
+  const active = host.activeSkills();
+  const activeLine =
+    active.length === 0
+      ? 'Active: none.'
+      : `Active: ${active.map((a) => `${a.name} (${a.preApplied ? 'agent' : a.scope})`).join(', ')}.`;
+
+  return {
+    ok: true,
+    command: 'skills',
+    message:
+      (host.skills.length === 0
+        ? `No skills discovered. Add them under ${PROJECT_DIR}/skills/<name>/SKILL.md.`
+        : 'Skills:\n' + host.skills.map((s) => `  ${s.name.padEnd(24)} ${s.description}`).join('\n')) +
+      `\n\n${activeLine}` +
+      "\n\nA skill can only narrow this session's capabilities, never widen them. " +
+      'Activate one with /skills use <name>.',
+  };
+};
+
+const handleAgents: ControlHandler = (_args, host) => {
+  const { active, finished } = host.delegations();
+
+  const history =
+    finished.length === 0
+      ? ''
+      : '\n\nDelegations this session:\n' +
+        finished
+          .map(
+            (d) =>
+              `  ${d.agent.padEnd(22)} ${d.status.padEnd(16)} ` +
+              `${d.usage.modelRequests} req, ${d.usage.toolCalls} tools` +
+              (d.usage.estimatedCostUsd !== undefined ? `, ~$${d.usage.estimatedCostUsd.toFixed(4)}` : ''),
+          )
+          .join('\n');
+
+  const running =
+    active.length === 0
+      ? ''
+      : '\n\nRunning now:\n' +
+        active
+          .map(
+            (a) =>
+              `  ${a.agent} (depth ${a.depth}, ${a.model}) — ${a.activity}; ` +
+              `${a.budgetRemaining.steps} step(s) left`,
+          )
+          .join('\n');
+
+  return {
+    ok: true,
+    command: 'agents',
+    message:
+      (host.agents.length === 0
+        ? `No agents discovered. Add them under ${PROJECT_DIR}/agents/<name>.md.`
+        : 'Agents:\n' + host.agents.map((a) => `  ${a.name.padEnd(24)} ${a.description}`).join('\n')) +
+      "\n\nA subagent's capabilities are always a subset of this session's, and its budget comes out of " +
+      'the delegating turn.' +
+      running +
+      history,
+  };
+};
 
 const handleHooks: ControlHandler = (_args, host) => ({
   ok: true,
@@ -597,7 +719,8 @@ function handleHelp(args: string[], commands: readonly string[]): ControlResult 
       '  /status                                 session, model, context, budget, dirty files',
       '  /compact [status]                       summarise older conversation',
       '  /remote [list|connect <name>|status|disconnect]',
-      '  /skills, /agents, /hooks                what is discovered and how it is constrained',
+      '  /skills [list|use <name> [--turn|--run]]  activate a skill; it can only narrow',
+      '  /agents, /hooks                         what is discovered and how it is constrained',
       '  /cancel                                 stop the current turn',
       '',
       `Registered: ${commands.map((c) => `/${c}`).join(' ')}`,

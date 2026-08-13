@@ -29,6 +29,17 @@ export interface ReplayedSession {
   messages: ModelMessage[];
   /** Tool calls that never got a result; synthetic ones were appended. */
   interrupted: string[];
+  /**
+   * Delegations that started and never reached a terminal event (alpha.4 §29).
+   *
+   * A child that was running when the process died is the worst case resume has
+   * to handle: it may have edited files, and the parent's `Delegate` call has no
+   * result. Both halves are repaired — the tool call gets a synthetic result that
+   * says the outcome is unknown, and the child is *not* restarted, because
+   * re-running a task that may have half-completed is how one interrupted edit
+   * becomes two.
+   */
+  unfinishedDelegations: Array<{ delegationId: string; agent: string; toolCallId?: string }>;
   /** Files the session edited, for the dirty-file summary. */
   editedPaths: string[];
   /** Receipts are deliberately NOT restored; see `freshnessNote`. */
@@ -67,6 +78,8 @@ export async function replaySession(
   // Tool calls seen, in order, so an interrupted one can be identified.
   const pendingCalls = new Map<string, ToolCallPart>();
   let pendingResults: ToolResultPart[] = [];
+  /** Delegations started and not yet finished, keyed by delegation id. */
+  const openDelegations = new Map<string, { agent: string; toolCallId?: string }>();
 
   const flushResults = (): void => {
     if (pendingResults.length === 0) return;
@@ -78,8 +91,36 @@ export async function replaySession(
     eventCount += 1;
     lastSeq = event.seq;
 
+    // Work performed inside a delegated child is recorded but never folded into
+    // the parent's transcript: the parent never saw the child's steps, and
+    // replaying them into its history would both misattribute them and leave the
+    // child's tool calls looking unanswered to the parent. What the parent did see
+    // — its own `Delegate` call and the result — is untagged and handled below.
+    const inChild = typeof event.delegationId === 'string';
+
     switch (event.type) {
+      case 'delegation.requested': {
+        const payload = event.payload as { delegationId?: string; agent?: string; toolCallId?: string };
+        if (typeof payload.delegationId === 'string') {
+          openDelegations.set(payload.delegationId, {
+            agent: payload.agent ?? 'unknown',
+            ...(payload.toolCallId ? { toolCallId: payload.toolCallId } : {}),
+          });
+        }
+        break;
+      }
+
+      case 'delegation.completed':
+      case 'delegation.failed':
+      case 'delegation.cancelled':
+      case 'delegation.denied': {
+        const payload = event.payload as { delegationId?: string };
+        if (typeof payload.delegationId === 'string') openDelegations.delete(payload.delegationId);
+        break;
+      }
+
       case 'turn.started': {
+        if (inChild) break;
         flushResults();
         const payload = event.payload as { input?: string; origin?: string };
         if (typeof payload.input === 'string' && payload.input !== '') {
@@ -93,6 +134,7 @@ export async function replaySession(
       }
 
       case 'model.request.completed': {
+        if (inChild) break;
         flushResults();
         const payload = event.payload as { textLength?: number };
         // The log deliberately does not store assistant text (spec §21.2), so
@@ -113,6 +155,7 @@ export async function replaySession(
       }
 
       case 'tool.call': {
+        if (inChild) break;
         const payload = event.payload as { toolCallId?: string; name?: string; argsSummary?: string };
         if (!payload.toolCallId || !payload.name) break;
         const call: ToolCallPart = {
@@ -130,6 +173,7 @@ export async function replaySession(
 
       case 'tool.result':
       case 'tool.synthetic_result': {
+        if (inChild) break;
         const payload = event.payload as { toolCallId?: string; isError?: boolean; contentBytes?: number };
         if (!payload.toolCallId) break;
         pendingCalls.delete(payload.toolCallId);
@@ -169,17 +213,48 @@ export async function replaySession(
 
   // Step 5 + 6: close anything left open.
   const interrupted = [...pendingCalls.keys()];
+  const unfinishedDelegations = [...openDelegations].map(([delegationId, info]) => ({
+    delegationId,
+    agent: info.agent,
+    ...(info.toolCallId ? { toolCallId: info.toolCallId } : {}),
+  }));
+
   if (interrupted.length > 0) {
-    const synthetic = interrupted.map((id) =>
-      syntheticInterruptedResult(id, 'The previous session ended while this tool call was running.'),
+    // A delegating call gets a reason that names the child, because "verify before
+    // assuming it took effect" means something more specific here: a subagent may
+    // have edited several files and reported none of them.
+    const delegated = new Map(
+      unfinishedDelegations
+        .filter((d) => d.toolCallId !== undefined)
+        .map((d) => [d.toolCallId!, d.agent] as const),
     );
+    const synthetic = interrupted.map((id) => {
+      const agent = delegated.get(id);
+      return syntheticInterruptedResult(
+        id,
+        agent === undefined
+          ? 'The previous session ended while this tool call was running.'
+          : `The previous session ended while the "${agent}" subagent was still running. It was not ` +
+              'restarted: any files it had already changed are still changed, and re-dispatching the same ' +
+              'task could repeat a partial edit.',
+      );
+    });
     messages.push({ role: 'tool', parts: synthetic, origin: { kind: 'tool' } });
+  }
+
+  if (unfinishedDelegations.length > 0) {
+    warnings.push(
+      `${unfinishedDelegations.length} delegation(s) were still running when the previous session ended ` +
+        `(${unfinishedDelegations.map((d) => d.agent).join(', ')}). They were not resumed. Check the ` +
+        'workspace before repeating that work.',
+    );
   }
 
   return {
     metadata,
     messages,
     interrupted,
+    unfinishedDelegations,
     editedPaths: [...editedPaths],
     // Step 7: receipts are not restored. A receipt asserts "the model has seen
     // these exact bytes"; after a restart that is no longer true of the process
@@ -259,6 +334,12 @@ export function describeResume(replayed: ReplayedSession): string {
   if (replayed.interrupted.length > 0) {
     lines.push(
       `  interrupted      : ${replayed.interrupted.length} tool call(s) were cut off and marked as unknown outcome`,
+    );
+  }
+  if (replayed.unfinishedDelegations.length > 0) {
+    lines.push(
+      `  delegations      : ${replayed.unfinishedDelegations.length} unfinished ` +
+        `(${replayed.unfinishedDelegations.map((d) => d.agent).join(', ')}); not resumed`,
     );
   }
   for (const warning of replayed.warnings) lines.push(`  warning          : ${warning}`);

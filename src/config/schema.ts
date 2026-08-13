@@ -95,6 +95,13 @@ export interface LoopConfig {
   maxRepeatedFailures?: number;
   maxWallTimeMs?: number;
   maxCostUsd?: number;
+  /**
+   * How deep delegation may go (alpha.4 §12). Default 1: root → child only.
+   *
+   * Merged by `Math.min` like every other loop limit, so a project can lower it
+   * to 0 — disabling delegation entirely — but never raise it above the user's.
+   */
+  maxDelegationDepth?: number;
 }
 
 export interface ShellConfig {
@@ -144,6 +151,7 @@ export function defaultConfig(): KernelConfig {
       maxModelRequests: 16,
       maxRepeatedFailures: 3,
       maxWallTimeMs: 10 * 60_000,
+      maxDelegationDepth: 1,
     },
     shell: { defaultNetwork: false, timeoutMs: 120_000 },
     telemetry: { enabled: true, content: false, traceUpload: false },
@@ -240,6 +248,7 @@ function mergeLoop(lower: LoopConfig, higher: LoopConfig): LoopConfig {
     maxModelRequests: minDefined(lower.maxModelRequests, higher.maxModelRequests),
     maxRepeatedFailures: minDefined(lower.maxRepeatedFailures, higher.maxRepeatedFailures),
     maxWallTimeMs: minDefined(lower.maxWallTimeMs, higher.maxWallTimeMs),
+    maxDelegationDepth: minDefined(lower.maxDelegationDepth, higher.maxDelegationDepth),
   };
   const cost = minDefined(lower.maxCostUsd, higher.maxCostUsd);
   if (cost !== undefined) out.maxCostUsd = cost;
@@ -468,6 +477,9 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
         : {}),
       ...(num(loop.max_wall_time_ms) !== undefined ? { maxWallTimeMs: num(loop.max_wall_time_ms)! } : {}),
       ...(num(loop.max_cost_usd) !== undefined ? { maxCostUsd: num(loop.max_cost_usd)! } : {}),
+      ...(num(loop.max_delegation_depth) !== undefined
+        ? { maxDelegationDepth: num(loop.max_delegation_depth)! }
+        : {}),
     };
   }
 

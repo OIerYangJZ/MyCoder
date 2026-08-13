@@ -19,6 +19,10 @@ export type ToolCallId = Brand<string, 'ToolCallId'>;
 export type EventId = Brand<string, 'EventId'>;
 export type ReceiptId = Brand<string, 'ReceiptId'>;
 export type ModelRequestId = Brand<string, 'ModelRequestId'>;
+/** Identifies a delegation *request* (ADR-0013). */
+export type DelegationId = Brand<string, 'DelegationId'>;
+/** Identifies the child *execution scope* a delegation produced. */
+export type ChildRunId = Brand<string, 'ChildRunId'>;
 
 /** Monotonic-ish, sortable, human-scannable id: <prefix>_<base36 time>_<rand>. */
 function makeId(prefix: string, nowMs: number): string {
@@ -44,6 +48,12 @@ export function newReceiptId(nowMs: number): ReceiptId {
 }
 export function newModelRequestId(nowMs: number): ModelRequestId {
   return makeId('mrq', nowMs) as ModelRequestId;
+}
+export function newDelegationId(nowMs: number): DelegationId {
+  return makeId('dlg', nowMs) as DelegationId;
+}
+export function newChildRunId(nowMs: number): ChildRunId {
+  return makeId('crn', nowMs) as ChildRunId;
 }
 
 /** Tool call ids originate from the model and are therefore untrusted input. */

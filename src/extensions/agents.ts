@@ -29,6 +29,16 @@ export interface AgentDefinition {
   requestedProfile?: string;
   requestedTools?: string[];
   requestedMaxSteps?: number;
+  requestedMaxToolCalls?: number;
+  /**
+   * Skills to activate for this agent's children (alpha.4 §22, §26).
+   *
+   * An activation, not a grant: each named skill is resolved against what the
+   * child already has and can only narrow it further. A skill the session has
+   * not discovered is reported in `notes` rather than silently ignored, because
+   * "my security-review skill did not run" is otherwise invisible.
+   */
+  requestedSkills?: string[];
   instructions: string;
   sourcePath: string;
   notes: string[];
@@ -98,6 +108,11 @@ export async function parseAgentFile(
   if (typeof attrs.max_steps === 'number' && attrs.max_steps > 0) {
     definition.requestedMaxSteps = Math.floor(attrs.max_steps);
   }
+  if (typeof attrs.max_tool_calls === 'number' && attrs.max_tool_calls > 0) {
+    definition.requestedMaxToolCalls = Math.floor(attrs.max_tool_calls);
+  }
+  const skills = asStringList(attrs.skills);
+  if (skills) definition.requestedSkills = skills;
 
   return definition;
 }

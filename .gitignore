@@ -8,5 +8,9 @@ coverage/
 # readable by anyone the evidence matrix points at it. `scripts/evidence.ts`
 # enforces the distinction: an `artifact:` reference to an untracked path is a
 # failure, because "it exists on my machine" is not evidence.
-evals/results/
+# `evals/results/*` and not `evals/results/`: git cannot re-include anything under
+# an excluded *directory*, so the negation below was inert and a released artifact
+# had to be `git add -f`ed by hand. Excluding the entries rather than the directory
+# is what makes `!` work — and what makes the rule below true rather than aspirational.
+evals/results/*
 !evals/results/release/

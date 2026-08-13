@@ -23,7 +23,8 @@ export type Capability =
   | 'secret.use'
   | 'env.read'
   | 'vcs.mutate'
-  | 'remote.connect';
+  | 'remote.connect'
+  | 'agent.invoke';
 
 export const ALL_CAPABILITIES: readonly Capability[] = [
   'file.read',
@@ -35,6 +36,7 @@ export const ALL_CAPABILITIES: readonly Capability[] = [
   'env.read',
   'vcs.mutate',
   'remote.connect',
+  'agent.invoke',
 ];
 
 export interface FileReadAccess {
@@ -100,6 +102,30 @@ export interface RemoteAccess {
   firstConnection: boolean;
 }
 
+/**
+ * Dispatching a bounded child execution scope to a discovered agent (ADR-0013).
+ *
+ * Delegation is a capability rather than a bare tool call for two reasons. The
+ * first is configurability: a project can deny `agent.invoke` for one agent by
+ * name, which is how "discovery does not imply invocation" (alpha.4 §11) becomes
+ * something a policy layer can express instead of a convention. The second is
+ * that the depth travels with the request, so a child asking for a grandchild is
+ * refused by the same mechanism that refuses everything else — a policy
+ * decision — rather than by a special case inside the tool.
+ *
+ * Note what it deliberately does **not** carry: no permission profile, no
+ * secret list, no environment. A delegation cannot request capability; the child
+ * receives the intersection of what its parent already had with what its own
+ * definition permits, computed in `DelegationService`.
+ */
+export interface AgentInvokeAccess {
+  kind: 'agent.invoke';
+  agent: string;
+  /** Depth of the *child* being requested. A root turn dispatches depth 1. */
+  depth: number;
+  display: string;
+}
+
 export type AccessRequest =
   | FileReadAccess
   | FileWriteAccess
@@ -108,7 +134,8 @@ export type AccessRequest =
   | SecretAccess
   | EnvironmentAccess
   | VcsMutationAccess
-  | RemoteAccess;
+  | RemoteAccess
+  | AgentInvokeAccess;
 
 /** The capability a request draws on, used to index policy rules. */
 export function capabilityOf(access: AccessRequest): Capability {
@@ -129,6 +156,8 @@ export function capabilityOf(access: AccessRequest): Capability {
       return 'vcs.mutate';
     case 'remote.connect':
       return 'remote.connect';
+    case 'agent.invoke':
+      return 'agent.invoke';
   }
 }
 
@@ -150,6 +179,8 @@ export function matchTargetOf(access: AccessRequest): string {
       return access.operation;
     case 'remote.connect':
       return access.remote;
+    case 'agent.invoke':
+      return access.agent;
   }
 }
 
@@ -180,6 +211,11 @@ export function subjectKeyOf(access: AccessRequest): string {
       return `vcs.mutate:${access.operation}`;
     case 'remote.connect':
       return `remote.connect:${access.remote}`;
+    // Deliberately not keyed by depth: approving "delegate to security-reviewer"
+    // once should not re-prompt for the same agent later in the session, and the
+    // depth limit is enforced separately rather than through the approval cache.
+    case 'agent.invoke':
+      return `agent.invoke:${access.agent}`;
   }
 }
 
@@ -202,5 +238,7 @@ export function describeAccess(access: AccessRequest): string {
       return `git ${access.operation}`;
     case 'remote.connect':
       return `connect to remote "${access.remote}" (${access.host})`;
+    case 'agent.invoke':
+      return `delegate to agent "${access.agent}" at depth ${access.depth}`;
   }
 }

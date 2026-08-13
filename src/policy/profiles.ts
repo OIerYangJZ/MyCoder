@@ -220,6 +220,37 @@ function searchRules(): PolicyRule[] {
   ];
 }
 
+/**
+ * Delegation is permitted by every builtin profile (alpha.4 §11, ADR-0013).
+ *
+ * That reads like a widening and is the opposite of one. A child's effective
+ * capability is an intersection that includes its parent's, so dispatching one
+ * grants nothing that was not already available — a read-only session delegating
+ * to an agent whose definition asks for `workspace-dev` still produces a
+ * read-only child. What delegation does spend is *budget*, and budget is bounded
+ * separately and exactly (§13).
+ *
+ * Denying it by default would mean the useful case — a read-only reviewer child
+ * under a read-only parent — needed an approval prompt to do strictly nothing
+ * new, and the security property being protected would come from the prompt
+ * rather than from the intersection. So the rule is `allow` with a note, and a
+ * project that wants a narrower answer writes it in `permissions.toml`:
+ *
+ *     [[rule]] action = "deny" capability = "agent.invoke" pattern = "release-bot"
+ *
+ * which is what alpha.4 §11's "discovery must not imply invocation" asks for —
+ * an expressible policy, not a hard-coded one.
+ */
+function delegationRules(): PolicyRule[] {
+  return [
+    {
+      action: 'allow',
+      capability: 'agent.invoke',
+      note: 'delegate a bounded task; the child inherits this profile as a ceiling',
+    },
+  ];
+}
+
 export function readOnlyProfile(ctx: ProfileContext): PermissionProfile {
   return {
     name: 'read-only',
@@ -229,6 +260,7 @@ export function readOnlyProfile(ctx: ProfileContext): PermissionProfile {
       ...readRules(ctx.workspaceRoot),
       ...gitReadRules(),
       ...searchRules(),
+      ...delegationRules(),
       { action: 'deny', capability: 'file.write', note: 'read-only profile' },
       { action: 'deny', capability: 'network.connect', note: 'read-only profile' },
       { action: 'deny', capability: 'vcs.mutate', note: 'read-only profile' },
@@ -254,6 +286,7 @@ export function reviewProfile(ctx: ProfileContext): PermissionProfile {
       ...readRules(ctx.workspaceRoot),
       ...gitReadRules(),
       ...searchRules(),
+      ...delegationRules(),
       { action: 'deny', capability: 'file.write', note: 'review profile is read-only' },
       { action: 'deny', capability: 'network.connect', note: 'review profile has no network' },
       { action: 'deny', capability: 'vcs.mutate', note: 'review profile does not mutate git' },
@@ -298,6 +331,7 @@ export function workspaceDevProfile(ctx: ProfileContext): PermissionProfile {
       ...readRules(root),
       ...gitReadRules(),
       ...searchRules(),
+      ...delegationRules(),
 
       // --- writes -------------------------------------------------------
       {
