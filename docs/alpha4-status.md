@@ -49,11 +49,28 @@ are still the evidence for alpha.3's claims.
 | `pnpm test:live:model` (DeepSeek)            | 9/9                                                               |
 | live delegation eval (DeepSeek, N=5)         | **15/15 solved, 0 violations**                                    |
 | `main` CI after the alpha.3 merge            | green                                                             |
+| `main` CI on the alpha.4 merge commit        | green on attempt 2; see the note below                            |
 | CI on this milestone's tree                  | **20/20 jobs green** (runs `31707435395`, `31708209743`)          |
 
 The 71 skipped tests are the SSH matrix under a plain `pnpm test`; it is opt-in
 through `KERNEL_SSH=1` and runs as its own CI job. It skips with a stated reason,
 not silently.
+
+**One unexplained CI failure, recorded rather than smoothed over.** On the alpha.4
+merge commit, `Platform / macos-latest` failed once at `pnpm test:platform` and
+passed on re-run. The same job had passed three times on the pull request. The log
+could not be read from the machine doing the release — GitHub serves job logs from
+a blob host that was unreachable there — so **the cause is unknown**, and this line
+exists because "green on attempt 2" is not the same claim as "green".
+
+What was done instead of guessing: the suite was run five times locally on macOS
+(246 pass, 0 fail each time), and the two timing-dependent tests this milestone
+added were rewritten to be deterministic. Both cancelled a parent from a 1ms
+`setTimeout` and then asserted on what the child had managed to do — a property
+that depends on whether a timer beats a whole model exchange, which is exactly the
+shape of test that passes locally and fails on a loaded runner. They now cancel
+synchronously from inside the child's own request. That removes a real flake
+whether or not it was this one.
 
 Test count went 572 → 633. Nothing from alpha.3 was deleted or weakened.
 

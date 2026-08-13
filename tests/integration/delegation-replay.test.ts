@@ -196,7 +196,9 @@ describe('the replay gate holds across a delegation (§28)', () => {
       responder: (request) => {
         if (isChildRequest(request, 'reviewer')) {
           childRequests += 1;
-          if (childRequests === 1) setTimeout(() => ws.kernel.session.cancel('test'), 1);
+          // Synchronous, not on a timer: the assertion is about propagation, not
+          // about whether a 1ms callback wins a race on a busy runner.
+          if (childRequests === 1) ws.kernel.session.cancel('test');
           return { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'src/a.ts' } }] };
         }
         return delegateStep('reviewer', 'Review slowly.');

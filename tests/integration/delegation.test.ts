@@ -575,18 +575,22 @@ describe('child failure and cancellation are contained (§19, §20)', () => {
 
   test('cancelling the parent stops the child; nothing continues in the background', async () => {
     let childRequests = 0;
-    let cancelled = false;
 
     const ws = await createTestWorkspace({
       files: FILES,
+      // A non-zero chunk delay is what gives the fake stream a point at which to
+      // observe the abort. The cancellation itself is *synchronous*, below: a
+      // timer-based version passed locally and left the outcome to whether a 1ms
+      // callback beat a whole model exchange, which is not a property to assert on
+      // a loaded CI runner.
       chunkDelayMs: 5,
       responder: (request) => {
         if (isChildRequest(request, 'reviewer')) {
           childRequests += 1;
-          if (childRequests === 1 && !cancelled) {
-            cancelled = true;
-            // Cancel the *parent* while the child is mid-stream.
-            setTimeout(() => ws.kernel.session.cancel('test cancellation'), 1);
+          if (childRequests === 1) {
+            // Cancel the *parent* from inside the child's first request, so the
+            // abort is already set when the stream reaches its next chunk.
+            ws.kernel.session.cancel('test cancellation');
           }
           return { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'src/a.ts' } }] };
         }
