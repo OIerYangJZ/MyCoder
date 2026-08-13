@@ -3,9 +3,11 @@
 **Baseline:** `v0.1.0-alpha.3` (`882cd4f`, now in `main` through the merge commit
 `df6b29d`) · **Provider #1 (live-validated):** DeepSeek over `openai-chat` ·
 **SSH composition validated against:** a **separate aarch64 Linux VM over the
-network**, and again on loopback · **Trusted CI evidence:** run
-[`31707435395`](https://github.com/OIerYangJZ/MyCoder/actions/runs/31707435395) —
-20/20 jobs green
+network**, and again on loopback · **Trusted CI evidence:** the run for the
+**exact tagged commit** on `main`, whose id is recorded in the annotated tag —
+pre-merge runs [`31707435395`](https://github.com/OIerYangJZ/MyCoder/actions/runs/31707435395)
+and [`31708209743`](https://github.com/OIerYangJZ/MyCoder/actions/runs/31708209743)
+were both 20/20 green
 
 Status vocabulary is the four values from alpha.3 §34. **PASS** means a named,
 executable piece of evidence asserts it. **NOT TESTED** means it is not asserted
@@ -47,7 +49,7 @@ are still the evidence for alpha.3's claims.
 | `pnpm test:live:model` (DeepSeek)            | 9/9                                                               |
 | live delegation eval (DeepSeek, N=5)         | **15/15 solved, 0 violations**                                    |
 | `main` CI after the alpha.3 merge            | green                                                             |
-| CI on this milestone's tree                  | **20/20 jobs green** (run `31707435395`)                          |
+| CI on this milestone's tree                  | **20/20 jobs green** (runs `31707435395`, `31708209743`)          |
 
 The 71 skipped tests are the SSH matrix under a plain `pnpm test`; it is opt-in
 through `KERNEL_SSH=1` and runs as its own CI job. It skips with a stated reason,
