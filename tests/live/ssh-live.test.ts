@@ -98,13 +98,25 @@ function guard(t: { skip(reason: string): void }): boolean {
   return false;
 }
 
-const remotePath = (rel: string): CanonicalPath => `${fixture.workspace}/${rel}` as CanonicalPath;
+/**
+ * The workspace root to build paths from — the **backend's**, not the fixture's.
+ *
+ * These differ, and that is the point: `connect` resolves the configured
+ * workspace on the remote (`pwd -P`), so on macOS `/var/folders/...` becomes
+ * `/private/var/folders/...`. The jail compares against the resolved form. A
+ * test that built paths from the configured spelling would be asking about a
+ * directory the jail has never heard of — which is ADR-0012's mistake, one layer
+ * out, and it is exactly what happened here.
+ */
+const wsRoot = (): CanonicalPath => backend.environment.workspaceRoot;
+
+const remotePath = (rel: string): CanonicalPath => `${wsRoot()}/${rel}` as CanonicalPath;
 
 /** A capability profile shaped the way the tool runtime builds them. */
 function profile(overrides: Partial<CapabilityProfile> = {}): CapabilityProfile {
   return {
-    readRoots: [fixture.workspace as CanonicalPath],
-    writeRoots: [fixture.workspace as CanonicalPath],
+    readRoots: [wsRoot()],
+    writeRoots: [wsRoot()],
     allowExec: true,
     network: false,
     envAllow: [],
@@ -130,10 +142,7 @@ async function withExecutor<T>(
 /** Run a remote command through the backend and record its output for §16. */
 async function exec(argv: string[], opts: { timeoutMs?: number; signal?: AbortSignal } = {}) {
   return withExecutor(async (ex) => {
-    const result = await ex.exec(
-      { argv, cwd: fixture.workspace as CanonicalPath, timeoutMs: opts.timeoutMs ?? 30_000 },
-      opts.signal,
-    );
+    const result = await ex.exec({ argv, cwd: wsRoot(), timeoutMs: opts.timeoutMs ?? 30_000 }, opts.signal);
     remoteOutputs.push(result.stdout, result.stderr);
     return result;
   });
@@ -226,32 +235,56 @@ describe('SSH connection (§14)', () => {
 
   test('a host-key mismatch is a distinct, non-retryable error', async (t) => {
     if (guard(t)) return;
-    if (!fixture.loopback) return t.skip('would require tampering with the real host key');
 
     // A known_hosts entry that does not match the server's actual key is the
     // shape of a MITM, and must not be reported as a transient failure a retry
     // could fix.
-    const { mkdtemp, writeFile } = await import('node:fs/promises');
+    //
+    // This runs against a **real host** too. An earlier version skipped it there,
+    // on the reasoning that it "would require tampering with the real host key" —
+    // which was simply wrong. The tampering is entirely in this temp directory:
+    // the client is pointed at a `known_hosts` holding the wrong key, and nothing
+    // on the remote is touched or even contacted beyond the handshake it refuses.
+    // Skipping it meant the one case that exercises the MITM shape never ran
+    // against the target it matters for.
+    const { mkdtemp, readFile, rm, writeFile } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const pathMod = await import('node:path');
     const dir = await mkdtemp(pathMod.join(tmpdir(), 'ssh-badkey-'));
     const badKnown = pathMod.join(dir, 'known_hosts');
     const badConfig = pathMod.join(dir, 'ssh_config');
 
-    const original = await (await import('node:fs/promises')).readFile(fixture.remote.sshConfigFile!, 'utf8');
-    // Same alias and port, but a known_hosts holding a *different* key.
+    // A key that is definitely not the server's.
     const { spawnSync } = await import('node:child_process');
     spawnSync('ssh-keygen', ['-q', '-t', 'ed25519', '-f', pathMod.join(dir, 'other'), '-N', '']);
-    const otherPub = await (
-      await import('node:fs/promises')
-    ).readFile(pathMod.join(dir, 'other.pub'), 'utf8');
-    const port = /Port (\d+)/.exec(original)?.[1] ?? '22';
-    await writeFile(badKnown, `[127.0.0.1]:${port} ${otherPub.trim()}\n`, 'utf8');
-    await writeFile(
-      badConfig,
-      original.replace(/UserKnownHostsFile .*/, `UserKnownHostsFile ${badKnown}`),
-      'utf8',
-    );
+    const otherPub = (await readFile(pathMod.join(dir, 'other.pub'), 'utf8')).trim();
+
+    if (fixture.loopback) {
+      const original = await readFile(fixture.remote.sshConfigFile!, 'utf8');
+      const port = /Port (\d+)/.exec(original)?.[1] ?? '22';
+      await writeFile(badKnown, `[127.0.0.1]:${port} ${otherPub}\n`, 'utf8');
+      await writeFile(
+        badConfig,
+        original.replace(/UserKnownHostsFile .*/, `UserKnownHostsFile ${badKnown}`),
+        'utf8',
+      );
+    } else {
+      // Keep the user's alias so hostname, port and identity still resolve from
+      // their own ssh_config; override only where the host key is looked up.
+      await writeFile(badKnown, `${fixture.remote.host} ${otherPub}\n`, 'utf8');
+      await writeFile(
+        badConfig,
+        [
+          `Host ${fixture.remote.host}`,
+          `  UserKnownHostsFile ${badKnown}`,
+          '  GlobalKnownHostsFile /dev/null',
+          '  StrictHostKeyChecking yes',
+          `Include ${pathMod.join(process.env.HOME ?? '~', '.ssh', 'config')}`,
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+    }
 
     await assert.rejects(
       () =>
@@ -268,7 +301,71 @@ describe('SSH connection (§14)', () => {
       },
     );
 
-    await (await import('node:fs/promises')).rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  // An explicit timeout, because the failure mode under test *is* a hang. Without
+  // one, node:test waits forever and a CI job wedges until the platform kills it
+  // — which is how the first version of this test behaved.
+  test('a server that accepts and then says nothing is still bounded', { timeout: 90_000 }, async (t) => {
+    if (guard(t)) return;
+
+    // The hostile-network shape that a refused connection does not cover, and
+    // the SSH-layer twin of the model-runtime hole alpha.2 found (§1.2): the peer
+    // completes the TCP handshake and then emits no protocol banner. A client
+    // that waits for the banner without a deadline waits forever, and the turn
+    // it belongs to never ends.
+    //
+    // No privileges needed, which is why this is worth having: real packet-loss
+    // injection needs root, so it stays NOT TESTED, but *this* case is the one
+    // that turns into a hung session rather than an error.
+    const net = await import('node:net');
+    const open: import('node:net').Socket[] = [];
+    const server = net.createServer((socket) => {
+      // Accept, then deliberately never speak.
+      open.push(socket);
+      socket.on('error', () => {});
+    });
+
+    const port = await new Promise<number>((resolve, reject) => {
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (addr === null || typeof addr === 'string') return reject(new Error('no port'));
+        resolve(addr.port);
+      });
+      server.on('error', reject);
+    });
+
+    try {
+      const stalling: RemoteConfig = {
+        ...defaultRemoteConfig('stalling', '127.0.0.1', fixture.workspace),
+        port,
+        connectTimeoutSec: 4,
+        controlMaster: false,
+      };
+
+      const started = Date.now();
+      await assert.rejects(
+        () => SshExecutionBackend.connect({ config: stalling, redactor, logger: nullLogger }),
+        (e: unknown) => {
+          const err = toKernelError(e);
+          // Whatever it is called, it must be a structured error rather than a
+          // hang, and it must not be reported as a host-key problem.
+          assert.notEqual(err.code, 'REMOTE_HOST_KEY_ERROR');
+          return true;
+        },
+      );
+      const elapsed = Date.now() - started;
+
+      assert.ok(elapsed < 30_000, `a stalled handshake took ${elapsed}ms; nothing bounded it`);
+    } finally {
+      // `server.close()` stops accepting but *waits* for live connections, and
+      // the stalled socket never ends on its own — so it has to be destroyed
+      // explicitly or teardown hangs, which is the same hang this test exists
+      // to catch, relocated into the fixture.
+      for (const socket of open) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   test('the connect timeout is bounded', async (t) => {
@@ -432,7 +529,7 @@ describe('SSH process execution (§14)', () => {
       (ex) =>
         ex.exec({
           argv: ['sh', '-c', 'yes abcdefghij | head -c 200000'],
-          cwd: fixture.workspace as CanonicalPath,
+          cwd: wsRoot(),
           timeoutMs: 30_000,
           maxOutputBytes: 4096,
         }),
@@ -520,7 +617,7 @@ describe('remote workspace jail (§15)', () => {
     test(`read is refused: ${name}`, async (t) => {
       if (guard(t)) return;
       await assert.rejects(
-        () => backend.fs.readFile(`${fixture.workspace}/${rel}` as CanonicalPath),
+        () => backend.fs.readFile(`${wsRoot()}/${rel}` as CanonicalPath),
         (e: unknown) => {
           assert.equal(toKernelError(e).code, 'PATH_OUTSIDE_WORKSPACE');
           return true;

@@ -176,9 +176,16 @@ describe('a full turn drives remote tools (ADR-0012)', () => {
     assert.notEqual(kernel.projectRoot, kernel.workspaceRoot);
     assert.equal(kernel.policy.workspaceRoot, kernel.backend.environment.workspaceRoot);
 
-    // The remote may resolve the configured path through a link, so compare on
-    // the trailing component rather than demanding the exact spelling.
-    assert.match(kernel.workspaceRoot, /kernel-ssh-fixture$|MyCoder$/);
+    // The property that matters, rather than the path's spelling: the tool plane
+    // operates on a tree that is not the local project. An earlier version
+    // matched the trailing component, which broke the moment the fixture started
+    // scoping each run to its own subdirectory — a brittle assertion about a
+    // detail, standing in for the claim actually being made.
+    assert.equal(
+      kernel.workspaceRoot.startsWith(kernel.projectRoot),
+      false,
+      'the tool plane root is inside the local project root; the remote tree is not being used',
+    );
   });
 
   test('the turn completed', (t) => {

@@ -80,6 +80,18 @@ export interface RemoteConfig {
 const CONTROL_PATH_MAX = 104;
 
 /**
+ * Would this ControlPath fit in a unix domain socket?
+ *
+ * Exported so the limit has a regression test that runs everywhere. Without one
+ * the property is only checked incidentally, on macOS, where `os.tmpdir()`
+ * happens to be long enough to break it — a Linux-only CI run would not notice
+ * the socket being moved back under `tmpdir()` with a `%C` suffix.
+ */
+export function controlPathFits(candidate: string): boolean {
+  return Buffer.byteLength(candidate) < CONTROL_PATH_MAX;
+}
+
+/**
  * How long to let stdout drain after the ssh client exits.
  *
  * Long enough for a local pipe to flush what has already been written, short
@@ -220,7 +232,7 @@ class SshTransport {
     const dir = await mkdtemp(path.join(base, 'agent-ssh-'));
     const candidate = path.join(dir, 'cm');
 
-    if (Buffer.byteLength(candidate) >= CONTROL_PATH_MAX) {
+    if (!controlPathFits(candidate)) {
       this.logger.debug('ssh multiplexing disabled: control path would exceed the socket limit', {
         length: Buffer.byteLength(candidate),
         limit: CONTROL_PATH_MAX,

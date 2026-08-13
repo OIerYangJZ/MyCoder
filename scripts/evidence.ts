@@ -73,7 +73,11 @@ export interface Problem {
  * prefix, which is the one token a name cannot begin with by accident.
  */
 export function splitEvidence(cell: string): string[] {
-  const prefix = new RegExp(`(?=\\b(?:${EVIDENCE_KINDS.join('|')}):)`);
+  // `(?<!:)` guards the one shape the lookahead otherwise mangles: a reference
+  // whose *target* itself begins with a prefix word, as in the pnpm script name
+  // `suite:test:live:model`. Without it that splits into `suite:` — naming
+  // nothing — plus a stray `test:live:model`.
+  const prefix = new RegExp(`(?<!:)(?=\\b(?:${EVIDENCE_KINDS.join('|')}):)`);
   return cell
     .split(prefix)
     .map((e) =>

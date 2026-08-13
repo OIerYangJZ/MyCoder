@@ -214,8 +214,20 @@ async function realRemote(alias: string): Promise<SshFixture> {
     );
   }
 
-  const remote = defaultRemoteConfig('alpha3-validation', alias, workspace);
-  const canaryPath = `${home}/${CANARY_BASENAME}`;
+  // Each fixture instance gets its own subdirectory under the configured
+  // workspace. `pnpm test:ssh` runs two suites, node:test runs files in parallel
+  // processes, and both would otherwise share one remote directory — where one
+  // suite's teardown deletes the other's files mid-run. Sharing a *local* temp
+  // dir is impossible by construction; sharing a remote one is the default, so
+  // it has to be arranged against.
+  //
+  // It is also strictly safer for the user: the directory they configured is
+  // never emptied, only a subdirectory this run created.
+  const runId = `run-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  const scoped = `${workspace}/${runId}`;
+
+  const remote = defaultRemoteConfig('alpha3-validation', alias, scoped);
+  const canaryPath = `${home}/${CANARY_BASENAME}-${runId}`;
 
   // Anything created outside the workspace is registered here so teardown can
   // remove it. Without this, the §16 case that deliberately writes beside the
@@ -224,9 +236,9 @@ async function realRemote(alias: string): Promise<SshFixture> {
 
   const fixture: SshFixture = {
     remote,
-    workspace,
+    workspace: scoped,
     canaryPath,
-    description: `real remote host via ssh alias "${alias}" (workspace ${workspace})`,
+    description: `real remote host via ssh alias "${alias}" (workspace ${scoped})`,
     loopback: false,
     facts: () => gatherFacts(fixture),
     raw: (script) => rawSsh(alias, script, []),
@@ -238,6 +250,7 @@ async function realRemote(alias: string): Promise<SshFixture> {
       // since, so the destructive command cannot be reached by any path that
       // has not passed the check.
       if (!checkRemoteWorkspace(workspace, home).ok) return;
+      if (!scoped.startsWith(`${workspace}/run-`)) return;
 
       // `find -mindepth 1 -maxdepth 1 -exec rm -rf` rather than `rm -rf <ws>/*`.
       // The glob misses dotfiles, so the `.git` the git test creates survived
@@ -245,16 +258,19 @@ async function realRemote(alias: string): Promise<SshFixture> {
       // because git marks its object files read-only, and `rm -rf` is the form
       // that reliably removes such a tree. The workspace directory itself is
       // kept — the user may have created it with particular ownership.
+      // Litter first, then the scoped directory — the order matters. Tracked
+      // paths are frequently written relative to the workspace, as in
+      // `<scoped>/../thing`, and once `<scoped>` is gone that path has a missing
+      // intermediate component: `rm -rf` then silently does nothing and the file
+      // survives every run. Removing the directory last keeps those paths
+      // resolvable.
       const targets = [...litter].map(shq).join(' ');
-      await rawSsh(
-        alias,
-        `find ${shq(workspace)} -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null; rm -rf ${targets}`,
-        [],
-      );
+      if (targets) await rawSsh(alias, `rm -rf ${targets}`, []);
+      await rawSsh(alias, `rm -rf ${shq(scoped)}`, []);
     },
   };
 
-  await fixture.raw(`mkdir -p ${shq(workspace)}`);
+  await fixture.raw(`mkdir -p ${shq(scoped)}`);
   await fixture.raw(`umask 077; printf '%s\\n' ${shq(REMOTE_CANARY)} > ${shq(canaryPath)}`);
   return fixture;
 }

@@ -129,6 +129,14 @@ describe('the evidence gate rejects unsupported claims (§33)', () => {
     assert.match(messages(found), /a test nobody wrote/);
   });
 
+  test('a reference whose target starts with a prefix word is not split', async () => {
+    // `suite:test:live:model` is a real pnpm script name. Splitting before the
+    // nested `test:` produced a bare `suite:` that "names nothing" plus a stray
+    // second reference — a confusing failure for a correct row.
+    const rows = parseMatrix(`${HEADER}\n| a requirement | PASS | suite:test:live:model | |`);
+    assert.deepEqual(rows[0]?.evidence, ['suite:test:live:model']);
+  });
+
   test('an empty evidence reference is rejected', async () => {
     const found = await problems('| a requirement | PASS | test: | |');
     assert.match(messages(found), /names nothing/);

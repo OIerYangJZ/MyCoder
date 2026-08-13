@@ -16,15 +16,17 @@
 | Separate machine / uid / filesystem | **yes**                                         | no                                       |
 | Network hop                         | **yes**                                         | no                                       |
 | Workspace                           | `/home/<user>/workspaces/kernel-ssh-fixture`    | temp directory                           |
-| Result                              | **49 pass, 0 fail, 1 skipped**                  | **50 pass, 0 fail**                      |
+| Result                              | **69 pass, 0 fail, 0 skipped**                  | **69 pass, 0 fail, 0 skipped**           |
 | Wall time                           | 43.5 s                                          | 161.8 s                                  |
 
 Backend in both cases: `SshExecutionBackend`, `sandboxStrength: policy-enforced`.
 
-The one skip on Target A is `a host-key mismatch is a distinct, non-retryable
-error`, which is loopback-only by design — reproducing it needs the fixture to
-control the host key, and tampering with a real host's key is not something a
-test suite should do to someone's machine. It is covered on Target B.
+Nothing is skipped on either target any more. The host-key mismatch case used to
+be loopback-only, on the reasoning that it "would require tampering with the real
+host key" — which was wrong. The tampering is entirely local: the client is
+pointed at a `known_hosts` holding the wrong key, and the remote is never touched
+or even contacted beyond the handshake it refuses. Skipping it meant the one case
+that exercises the MITM shape never ran against the target it matters for.
 
 ### Why both, and what each one is for
 
@@ -56,9 +58,11 @@ shape took 20017 ms.
 - **Cross-host OS isolation.** The remote is a different machine, but the
   workspace jail is still a path check — see "Known uncertainty" below. A remote
   shell can read outside it.
-- **Hostile-network behaviour.** No packet loss, no MITM, no flaky link. The
-  host-key mismatch case that would exercise the MITM shape is the one skipped
-  here.
+- **Packet loss and link flapping.** Injecting either needs root, so they stay
+  untested. The two hostile shapes that produce a _hung session_ rather than an
+  error are covered: a host-key mismatch (the MITM shape) and a peer that accepts
+  TCP then never speaks, which `ConnectTimeout` bounds at 4017 ms for a 4 s
+  setting.
 
 ### Running it against a real host
 
@@ -95,10 +99,18 @@ repository inside it, a canary at `$HOME/.agent-test-secret`, and one file
 beside the workspace (`kernel-alpha3-plain.txt`, for the §16 enforcement-level
 case).
 
-**It deletes, on teardown:** the _contents_ of the workspace — including
-dotfiles, so the `.git` it created goes too — plus the canary and the tracked
-file beside the workspace. The workspace directory itself is kept, in case you
-created it with particular ownership. Nothing else on the machine is touched.
+**Each run works in its own subdirectory**, `<workspace>/run-<pid>-<random>`,
+created and removed by that run. `pnpm test:ssh` runs two suites, node:test runs
+files in parallel processes, and a shared remote directory means one suite's
+teardown deletes the other's files mid-run — which is not a risk a local temp
+directory has, so it has to be arranged against deliberately. It also means the
+directory you configured is never emptied; only a subdirectory this run created.
+
+**It deletes, on teardown:** that subdirectory, the canary, and any tracked file
+written outside the workspace — in that order, litter first. Removing the
+directory first would leave a tracked path like `<scoped>/../thing` with a
+missing intermediate component, and `rm -rf` then silently does nothing. That is
+not hypothetical; it left a file behind on the first scoped run.
 
 **`KERNEL_SSH_WORKSPACE` is checked before anything is created**, because that
 deletion is driven by an environment variable. `checkRemoteWorkspace` refuses:
