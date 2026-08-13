@@ -41,6 +41,12 @@ export interface ProjectConfig {
 export interface ProviderEndpointConfig {
   protocol: 'anthropic-messages' | 'openai-responses' | 'openai-chat';
   baseUrl: string;
+  /**
+   * Path to a file holding the credential (alpha.3 §5). Never the credential
+   * itself. Validated and registered as a protected path before first use —
+   * see `src/security/credential-file.ts`.
+   */
+  apiKeyFile?: string;
   /** Environment variable holding the credential. Never the credential itself. */
   apiKeyEnv?: string;
   authScheme?: 'Bearer' | 'x-api-key' | 'none';
@@ -361,10 +367,24 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
         continue;
       }
 
+      // A literal credential in a config file is refused rather than honoured.
+      // Config is the one artifact people paste into issues and check into
+      // dotfile repositories, and an inline key would be readable by anything
+      // that can read the file — which is the whole problem `api_key_file`
+      // exists to solve. Warned loudly so it does not look like it took effect.
+      if (entry.api_key !== undefined) {
+        warnings.push(
+          `${source}: provider "${name}" set api_key inline; this was ignored. ` +
+            'Use api_key_file (a 0600 file outside the workspace) or api_key_env — ' +
+            'a credential must never be stored in a configuration file.',
+        );
+      }
+
       const scheme = str(entry.auth_scheme);
       providers[name] = {
         protocol,
         baseUrl: baseUrl.replace(/\/+$/, ''),
+        ...(str(entry.api_key_file) ? { apiKeyFile: str(entry.api_key_file)! } : {}),
         ...(str(entry.api_key_env) ? { apiKeyEnv: str(entry.api_key_env)! } : {}),
         ...(scheme === 'Bearer' || scheme === 'x-api-key' || scheme === 'none' ? { authScheme: scheme } : {}),
         ...(headerTable(entry.extra_headers) ? { extraHeaders: headerTable(entry.extra_headers)! } : {}),

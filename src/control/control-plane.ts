@@ -54,6 +54,14 @@ export interface ControlHost {
   skills: ReadonlyArray<{ name: string; description: string }>;
   agents: ReadonlyArray<{ name: string; description: string }>;
   hooks: ReadonlyArray<{ event: string; command: string[] }>;
+  /**
+   * Per-provider credential *source* lines (alpha.3 §8).
+   *
+   * "file" / "environment (X)" / "none", and whether a credential was found.
+   * Never the value, and never a fingerprint of it: `/status` is the screen
+   * people paste into bug reports.
+   */
+  credentialSources: ReadonlyArray<{ provider: string; description: string }>;
   now(): number;
   /** Switch execution backend. Applied after the current tool call (§19.4). */
   connectRemote(name: string): Promise<{ ok: boolean; message: string }>;
@@ -434,6 +442,9 @@ const handleStatus: ControlHandler = (_args, host) => {
         (u.costUsd > 0 ? `, $${u.costUsd.toFixed(4)}` : ''),
       `dirty files  : ${dirty.length === 0 ? 'none' : `${dirty.length} (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? ', …' : ''})`}`,
       `telemetry    : ${host.config.telemetry.enabled ? 'metadata only' : 'off'}; trace upload off; content upload permanently off`,
+      ...(host.credentialSources.length > 0
+        ? ['credentials  :', ...host.credentialSources.map((c) => `  ${c.provider}: ${c.description}`)]
+        : []),
       `config from  : ${host.configSources.length > 0 ? host.configSources.join(', ') : '(defaults)'}`,
       ...(host.config.warnings.length > 0
         ? ['warnings     :', ...host.config.warnings.map((w) => `  - ${w}`)]

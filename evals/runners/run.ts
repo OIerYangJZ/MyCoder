@@ -12,18 +12,20 @@
  * of those went above zero is a regression, not an improvement.
  */
 
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { createKernel } from '../../src/kernel.ts';
+import { createKernel, KERNEL_VERSION } from '../../src/kernel.ts';
 import { FakeModel } from '../../src/model/adapters/fake.ts';
 import { ScriptedPrompter } from '../../src/cli/prompter.ts';
 import { resolveKernelDirs } from '../../src/util/platform.ts';
 import { fetchTransport, type EgressResponse, type EgressTransport } from '../../src/security/egress-gate.ts';
 import type { ModelMessage } from '../../src/model/ir.ts';
-import { GOLDEN_TASKS, type GoldenTask, type GoldenTaskContext } from '../tasks/golden.ts';
+import { GOLDEN_TASKS, type EvalFamily, type GoldenTask, type GoldenTaskContext } from '../tasks/golden.ts';
 
 const CANARY = 'CANARY_SECRET_7f3e9c2a';
 
@@ -43,6 +45,25 @@ const LIVE_ALIAS = process.env.KERNEL_LIVE_MODEL;
 const LIVE = Boolean(LIVE_ALIAS);
 
 /**
+ * How many times each task runs (§26).
+ *
+ * Live defaults to 5 because a single live score is not a measurement: the same
+ * configuration produced 10/10, 8/10 and 10/10 across three alpha.2 runs with no
+ * kernel change in between. §26 permits dropping to 3 when cost bites, but the
+ * sample size has to be recorded either way — it is written into the artifact.
+ *
+ * Scripted runs default to 1. The fake provider is deterministic and there is a
+ * separate ×100 determinism gate; repeating it here would spend time proving
+ * something already proven.
+ */
+const RUNS = (() => {
+  const flag = process.argv.find((a) => a.startsWith('--runs='));
+  const parsed = flag ? Number.parseInt(flag.slice('--runs='.length), 10) : Number.NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return LIVE ? 5 : 1;
+})();
+
+/**
  * Why a task failed (§34).
  *
  * The plan is explicit that this classification matters more than the raw pass
@@ -50,6 +71,16 @@ const LIVE = Boolean(LIVE_ALIAS);
  * "3 MODEL_CAPABILITY, 1 ADAPTER_BUG" tells you exactly one of those is yours.
  */
 export type FailureClass =
+  // The model simply did not perform a needed step, while the runtime behaved
+  // correctly throughout (§25). This is the class alpha.2 was missing, and its
+  // absence is why a model that forgot to re-run the tests was indistinguishable
+  // from a kernel that lost the tool result.
+  | 'MODEL_ACTION_OMISSION'
+  // The model acted, but did the wrong thing — a different edit, a different
+  // file. Distinguished from omission because the remedies differ: omission is
+  // usually a prompt or an autonomy-profile problem, wrong action is usually a
+  // capability one.
+  | 'MODEL_WRONG_ACTION'
   | 'MODEL_CAPABILITY'
   | 'MODEL_TOOL_SCHEMA'
   | 'MODEL_EDIT_STRATEGY'
@@ -60,13 +91,39 @@ export type FailureClass =
   | 'TEST_FIXTURE_ERROR'
   | 'UNKNOWN';
 
-/** The §31 result schema, written verbatim to evals/results/. */
+/**
+ * Failure classes that mean *the kernel* was wrong (§28).
+ *
+ * Everything else leaves Kernel Correctness at PASS, which is the whole point:
+ * a model's off run must not read as a runtime regression.
+ */
+const KERNEL_FAULTS: ReadonlySet<FailureClass> = new Set<FailureClass>([
+  'KERNEL_BUG',
+  'ADAPTER_BUG',
+  'TEST_FIXTURE_ERROR',
+]);
+
+/** The alpha.3 §29 attempt schema, written verbatim to evals/results/. */
 export interface EvalResult {
   taskId: string;
+  /** Which scoreboard this belongs to (§24). Never summed across families. */
+  family: EvalFamily;
+  /** Distinguishes the repeats of one task within a run set (§26). */
+  runId: string;
   provider: string;
   model: string;
 
   solved: boolean;
+  /**
+   * True when the runtime did its job, whatever the model did (§28).
+   *
+   * `solved` and `kernelCorrect` are reported separately because they answer
+   * different questions, and collapsing them is exactly how alpha.2's 8/10 was
+   * unreadable: three of those points were the model forgetting a step.
+   */
+  kernelCorrect: boolean;
+  /** No secret reached an unauthorised sink during this attempt. */
+  securityPreserved: boolean;
   regression: boolean;
   failureClass?: FailureClass;
   failures: string[];
@@ -88,11 +145,21 @@ export interface EvalResult {
 
   securityViolations: number;
   finalDiffHash?: string;
+
+  /** §31: what would be needed to reproduce or to compare across models. */
+  fixtureVersion: number;
+  promptHash: string;
+  kernelVersion: string;
+  kernelCommit?: string;
 }
 
-interface TaskMetrics {
+export interface TaskMetrics {
   id: string;
+  family: EvalFamily;
+  runId: string;
   passed: boolean;
+  /** §28: the runtime behaved, whatever the model did. */
+  kernelCorrect: boolean;
   failures: string[];
   failureClass?: FailureClass;
   provider: string;
@@ -111,6 +178,8 @@ interface TaskMetrics {
   secretBoundaryViolations: number;
   unreviewedPersistentMutations: number;
   durationMs: number;
+  fixtureVersion: number;
+  promptHash: string;
 }
 
 /**
@@ -163,7 +232,11 @@ class Capture implements EgressTransport {
  * than guessed. A wrong label is worse than no label, because the whole point of
  * §34 is deciding whose bug it is.
  */
-function classifyFailure(failures: readonly string[], toolResults: string): FailureClass | undefined {
+export function classifyFailure(
+  failures: readonly string[],
+  toolResults: string,
+  evidence: { turnState?: string; originalFiles: Record<string, string> },
+): FailureClass | undefined {
   if (failures.length === 0) return undefined;
   const all = `${failures.join(' ')} ${toolResults}`;
 
@@ -174,10 +247,138 @@ function classifyFailure(failures: readonly string[], toolResults: string): Fail
   if (/INTERNAL_ERROR|ReferenceError|TypeError/.test(all)) return 'KERNEL_BUG';
   if (/ENOENT|EACCES|not available on this execution backend/.test(all)) return 'ENVIRONMENT_ERROR';
   if (/REPEATED_FAILURE|LOOP_BUDGET_EXCEEDED/.test(all)) return 'MODEL_CAPABILITY';
+
+  // Omission vs wrong action (§25).
+  //
+  // Both look like "a check failed", and both are the model's doing rather than
+  // the kernel's — but they are different problems, so they are separated by
+  // *evidence* rather than by guessing. The turn has to have ended cleanly: a
+  // model that crashed or ran out of budget is a different story, and those
+  // cases are already classified above.
+  //
+  // The discriminator is whether the target file still holds what the fixture
+  // put there. Untouched means the model never acted; changed-but-wrong means
+  // it acted and got it wrong.
+  if (evidence.turnState === 'completed') {
+    const contentFailures = failures.filter((f) => f.includes('has the expected contents'));
+    if (contentFailures.length > 0) {
+      const untouched = contentFailures.some((f) => {
+        const got = /got (".*")$/.exec(f)?.[1];
+        if (got === undefined) return false;
+        try {
+          return Object.values(evidence.originalFiles).includes(JSON.parse(got) as string);
+        } catch {
+          return false;
+        }
+      });
+      return untouched ? 'MODEL_ACTION_OMISSION' : 'MODEL_WRONG_ACTION';
+    }
+    // A clean turn that simply did not produce the required observable effect —
+    // the missing `grep` re-run, the unreported mutation — is the canonical
+    // omission the plan describes.
+    return 'MODEL_ACTION_OMISSION';
+  }
+
   return 'UNKNOWN';
 }
 
-async function runTask(task: GoldenTask): Promise<TaskMetrics> {
+// --- §26/§27: distributions rather than a single score ----------------------
+
+/**
+ * Median, not mean.
+ *
+ * One pathological attempt — a retry storm, a provider hiccup — moves a mean
+ * enough to make the whole column misleading. §27 asks for medians with a range
+ * beside them for exactly that reason: the range is where the outlier shows up,
+ * instead of being smeared across the central number.
+ */
+export function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+export interface Distribution {
+  median: number;
+  min: number;
+  max: number;
+}
+
+export function distribution(values: readonly number[]): Distribution {
+  return { median: median(values), min: Math.min(...values, 0), max: Math.max(...values, 0) };
+}
+
+export interface FamilySummary {
+  attempts: number;
+  solved: number;
+  kernelCorrect: number;
+  securityViolations: number;
+}
+
+/** The §24 scoreboards, computed separately and never added together. */
+export function summariseFamilies(results: readonly TaskMetrics[]): Record<EvalFamily, FamilySummary> {
+  const one = (family: EvalFamily): FamilySummary => {
+    const rows = results.filter((r) => r.family === family);
+    return {
+      attempts: rows.length,
+      solved: rows.filter((r) => r.passed).length,
+      // §28: reported on its own, because it is the number that should stay at
+      // 100% even when task success moves around.
+      kernelCorrect: rows.filter((r) => r.kernelCorrect).length,
+      securityViolations: rows.reduce((n, r) => n + r.secretBoundaryViolations, 0),
+    };
+  };
+  return { 'kernel-invariant': one('kernel-invariant'), 'model-capability': one('model-capability') };
+}
+
+/** Per-task distributions across the repeats (§27). */
+export function summarisePerTask(results: readonly TaskMetrics[]) {
+  const byTask = new Map<string, TaskMetrics[]>();
+  for (const r of results) byTask.set(r.id, [...(byTask.get(r.id) ?? []), r]);
+
+  return [...byTask].map(([taskId, rows]) => ({
+    taskId,
+    family: rows[0]!.family,
+    attempts: rows.length,
+    solved: rows.filter((r) => r.passed).length,
+    successRate: rows.filter((r) => r.passed).length / rows.length,
+    kernelCorrect: rows.filter((r) => r.kernelCorrect).length,
+    securityViolations: rows.reduce((n, r) => n + r.secretBoundaryViolations, 0),
+    modelActionOmissions: rows.filter((r) => r.failureClass === 'MODEL_ACTION_OMISSION').length,
+    modelWrongActions: rows.filter((r) => r.failureClass === 'MODEL_WRONG_ACTION').length,
+    modelRequests: distribution(rows.map((r) => r.modelRequests)),
+    toolCalls: distribution(rows.map((r) => r.toolCalls)),
+    editAttempts: distribution(rows.map((r) => r.editAttempts)),
+    permissionPrompts: distribution(rows.map((r) => r.approvalPrompts)),
+    tokens: distribution(rows.map((r) => r.inputTokens + r.outputTokens)),
+    costUsd: distribution(rows.map((r) => r.costUsd)),
+    wallTimeMs: distribution(rows.map((r) => r.durationMs)),
+  }));
+}
+
+export function countFailureClasses(results: readonly TaskMetrics[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const r of results) {
+    if (!r.failureClass) continue;
+    out[r.failureClass] = (out[r.failureClass] ?? 0) + 1;
+  }
+  return out;
+}
+
+/** Stable identity for a prompt, so a reworded fixture is visibly different (§31). */
+export function promptHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
+}
+
+/** The commit under test, when the runner is executed inside a git checkout. */
+function kernelCommit(): string | undefined {
+  const r = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { encoding: 'utf8' });
+  const out = r.stdout?.trim();
+  return r.status === 0 && out ? out : undefined;
+}
+
+async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
   const started = Date.now();
   const base = await mkdtemp(path.join(tmpdir(), `eval-${task.id}-`));
   const root = path.join(base, 'workspace');
@@ -294,11 +495,24 @@ async function runTask(task: GoldenTask): Promise<TaskMetrics> {
     const resolved = kernel.modelRegistry.resolve(kernel.session.activeModelAlias);
     const report = kernel.session.usageReportSnapshot;
 
+    const effectivePrompt = LIVE ? (task.livePrompt ?? task.prompt) : task.prompt;
+    const failureClass = classifyFailure(failures, results, {
+      ...(kernel.session.turn?.state ? { turnState: kernel.session.turn.state } : {}),
+      originalFiles: task.files,
+    });
+
     return {
       id: task.id,
+      family: task.family,
+      runId,
       passed: failures.length === 0 && secretBoundaryViolations === 0,
+      // §28: a model omission leaves Kernel Correctness at PASS. A security
+      // violation never does — that is a runtime failure by definition.
+      kernelCorrect: secretBoundaryViolations === 0 && !(failureClass && KERNEL_FAULTS.has(failureClass)),
       failures,
-      ...(classifyFailure(failures, results) ? { failureClass: classifyFailure(failures, results)! } : {}),
+      fixtureVersion: task.fixtureVersion,
+      promptHash: promptHash(effectivePrompt),
+      ...(failureClass ? { failureClass } : {}),
       provider: resolved?.provider.id ?? 'unknown',
       model: resolved?.modelId ?? kernel.session.activeModelAlias,
       usage: {
@@ -343,11 +557,19 @@ async function main(argv: readonly string[]): Promise<number> {
 
   const results: TaskMetrics[] = [];
   for (const task of tasks) {
-    const metrics = await runTask(task);
-    results.push(metrics);
+    // Every repeat of a task is its own attempt, kept separately (§26). An
+    // average computed here rather than reported as a distribution would hide
+    // exactly the variance the plan exists to expose.
+    for (let run = 1; run <= RUNS; run += 1) {
+      results.push(await runTask(task, `r${run}`));
+    }
+  }
+
+  for (const metrics of results) {
+    const task = tasks.find((t) => t.id === metrics.id)!;
     if (!json) {
       process.stdout.write(
-        `${metrics.passed ? 'pass' : 'FAIL'}  ${task.id.padEnd(32)} ` +
+        `${metrics.passed ? 'pass' : 'FAIL'}  ${`${task.id}${RUNS > 1 ? `#${metrics.runId}` : ''}`.padEnd(36)} ` +
           `${String(metrics.toolCalls).padStart(3)} tools  ` +
           `${String(metrics.modelRequests).padStart(2)} reqs  ` +
           `${String(metrics.approvalPrompts).padStart(2)} prompts  ` +
@@ -387,19 +609,38 @@ async function main(argv: readonly string[]): Promise<number> {
     },
   );
 
+  const commit = kernelCommit();
+
   // §32: machine-readable artifact, never hand-edited.
   const artifact = {
     generatedAt: new Date().toISOString(),
     provider: results[0]?.provider ?? 'unknown',
     model: results[0]?.model ?? 'unknown',
+    mode: LIVE ? 'live' : 'scripted',
+    // §26: the sample size is part of the result. A distribution over an
+    // unrecorded N is not comparable to anything.
+    runsPerTask: RUNS,
     solved,
     total: results.length,
     securityViolations: totals.secretViolations,
+    /** §24: the two scoreboards, never added together. */
+    families: summariseFamilies(results),
+    /** §27: per-task distributions across the repeats. */
+    perTask: summarisePerTask(results),
+    failureClasses: countFailureClasses(results),
     results: results.map((r): EvalResult => ({
       taskId: r.id,
+      family: r.family,
+      runId: r.runId,
       provider: r.provider,
       model: r.model,
       solved: r.passed,
+      kernelCorrect: r.kernelCorrect,
+      securityPreserved: r.secretBoundaryViolations === 0,
+      fixtureVersion: r.fixtureVersion,
+      promptHash: r.promptHash,
+      kernelVersion: KERNEL_VERSION,
+      ...(commit ? { kernelCommit: commit } : {}),
       regression: false,
       ...(r.failureClass ? { failureClass: r.failureClass } : {}),
       failures: r.failures,
@@ -432,8 +673,37 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${JSON.stringify(artifact, null, 2)}\n`);
   } else {
     const n = results.length;
+    const fam = artifact.families;
+
+    // §24: two scoreboards, printed apart. Adding them was how alpha.2 produced
+    // a number that answered neither question.
     process.stdout.write(
-      `\nTask success                    ${solved}/${n}` +
+      `\n── Kernel Invariants ${'─'.repeat(40)}\n` +
+        `enforced                        ${fam['kernel-invariant'].solved}/${fam['kernel-invariant'].attempts}\n` +
+        `kernel correct                  ${fam['kernel-invariant'].kernelCorrect}/${fam['kernel-invariant'].attempts}\n` +
+        `\n── Model Capability (${LIVE ? `live, N=${RUNS}` : 'scripted'}) ${'─'.repeat(28)}\n` +
+        `solved                          ${fam['model-capability'].solved}/${fam['model-capability'].attempts}\n` +
+        // §28: this is the line that should stay at 100% even when the one
+        // above moves. If it drops, the runtime regressed; if only `solved`
+        // drops, the model had an off run.
+        `kernel correct                  ${fam['model-capability'].kernelCorrect}/${fam['model-capability'].attempts}\n`,
+    );
+
+    if (RUNS > 1) {
+      process.stdout.write(`\n── Per-task distribution (N=${RUNS}) ${'─'.repeat(30)}\n`);
+      for (const t of artifact.perTask) {
+        const reqs = t.modelRequests;
+        process.stdout.write(
+          `${t.taskId.padEnd(30)} ${t.solved}/${t.attempts} solved  ` +
+            `reqs ${reqs.median} [${reqs.min}-${reqs.max}]  ` +
+            `omissions ${t.modelActionOmissions}  wrong ${t.modelWrongActions}\n`,
+        );
+      }
+    }
+
+    process.stdout.write(
+      `\n── Totals ${'─'.repeat(50)}\n` +
+        `Attempts                        ${n}` +
         (skipped.length > 0 ? ` (${skipped.length} scripted-only, skipped live)` : '') +
         '\n' +
         `Tool calls / task               ${(totals.toolCalls / n).toFixed(1)}\n` +
@@ -451,15 +721,31 @@ async function main(argv: readonly string[]): Promise<number> {
         // Detected, not undetected: these tasks mutate source from a shell on
         // purpose. The number to watch is whether it matches what the tasks do.
         `Shell source mutations detected ${totals.unreviewed}\n` +
-        // §34: the classification matters more than the pass rate.
-        (results.some((r) => r.failureClass)
-          ? `Failure classes                 ${[...new Set(results.filter((r) => r.failureClass).map((r) => r.failureClass))].join(', ')}\n`
+        // §25/§34: the distribution of classes, not just which ones occurred.
+        // "3 MODEL_ACTION_OMISSION" and "3 KERNEL_BUG" are the same length as a
+        // set and mean opposite things.
+        (Object.keys(artifact.failureClasses).length > 0
+          ? `Failure classes                 ${Object.entries(artifact.failureClasses)
+              .map(([k, v]) => `${k}×${v}`)
+              .join(', ')}\n`
           : ''),
     );
   }
 
-  // A secret boundary violation fails the run regardless of task success.
-  return solved === results.length && totals.secretViolations === 0 ? 0 : 1;
+  // What fails the run.
+  //
+  // A secret boundary violation always does, regardless of task success.
+  //
+  // Beyond that the two modes are gated differently, which is the practical
+  // consequence of §28. Scripted runs are deterministic, so anything less than
+  // a clean sheet is a real regression. Live runs are not: failing CI because a
+  // model forgot to re-run a grep would make the gate meaningless within a
+  // week, and people would stop reading it. So live gates on the two things
+  // that are genuinely ours — the kernel behaved, and nothing leaked — and
+  // reports the solve rate as a measurement rather than a verdict.
+  if (totals.secretViolations > 0) return 1;
+  if (LIVE) return results.every((r) => r.kernelCorrect) ? 0 : 1;
+  return solved === results.length ? 0 : 1;
 }
 
 /** True when this module is the process entry point, on every platform. */
@@ -486,4 +772,4 @@ if (isMain(import.meta.url)) {
     });
 }
 
-export { runTask, main };
+export { runTask, main, KERNEL_FAULTS, RUNS };

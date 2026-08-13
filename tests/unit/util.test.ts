@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import { compileGlob, globMatch, GlobSet } from '../../src/util/glob.ts';
+import { controlPathFits } from '../../src/execution/ssh.ts';
 import {
   canonicalize,
   isWithin,
@@ -298,5 +299,34 @@ describe('shell line parsing', () => {
 
   test('an unterminated quote is an error, not a guess', () => {
     assert.equal(parseShellLine('echo "unterminated').kind, 'error');
+  });
+});
+
+describe('ssh ControlPath length (alpha.3 defect 2)', () => {
+  test('a macOS-shaped temp path with a %C suffix does not fit', () => {
+    // The exact shape that broke every SSH connection: os.tmpdir() on macOS is
+    // a ~50-character /var/folders/... path, and `%C` *expands* to a 40-hex
+    // digest rather than the two characters it resembles.
+    const macTmp = '/var/folders/tg/nbn_fl894vb3j41w5zvzfl1c0000gn/T/agent-ssh-dowJSK';
+    const expandedC = 'a'.repeat(40);
+
+    assert.equal(
+      controlPathFits(`${macTmp}/cm-${expandedC}`),
+      false,
+      'the path that produced "ControlPath too long" is now considered to fit',
+    );
+  });
+
+  test('the short form the backend builds does fit', () => {
+    // `/tmp` plus mkdtemp plus a two-character name. The directory is already
+    // unique per transport, which is what `%C` would otherwise be for.
+    assert.equal(controlPathFits('/tmp/agent-ssh-dowJSK/cm'), true);
+  });
+
+  test('the boundary is the smaller of the two platform limits', () => {
+    // 104 on macOS, 108 on Linux. Using 104 everywhere means a path that works
+    // on Linux is not a surprise failure on a Mac.
+    assert.equal(controlPathFits('x'.repeat(103)), true);
+    assert.equal(controlPathFits('x'.repeat(104)), false);
   });
 });

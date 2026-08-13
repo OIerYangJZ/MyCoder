@@ -13,7 +13,7 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -108,6 +108,47 @@ inject_output = true
     const output = outcomes[0]?.output ?? '';
     assert.match(output, /value=\[\]/, `expected an empty expansion, got: ${output}`);
     assert.equal(output.includes(CREDENTIAL_VALUE), false);
+  });
+});
+
+describe('a Hook cannot read the provider credential *file* (alpha.3 §9)', () => {
+  // The environment tests above cover `api_key_env`. `api_key_file` moves the
+  // credential to a stable path on disk, which is a different reachability
+  // question: a hook cannot inherit a file the way it could inherit a variable,
+  // but it *can* try to open one.
+  test('a hook that cats the credential path gets nothing usable', async () => {
+    const keyPath = path.join(base, 'provider-credential.key');
+    await writeFile(keyPath, `${CREDENTIAL_VALUE}\n`, 'utf8');
+    await chmod(keyPath, 0o600);
+
+    const outcomes = await runner(`
+[[hooks]]
+event = "PostToolUse"
+matcher = "Edit"
+command = ["sh", "-c", "cat ${keyPath} 2>&1 || true"]
+inject_output = true
+`).run({ event: 'PostToolUse', toolName: 'Edit', path: 'src/a.ts', sessionId: 's1' });
+
+    const output = outcomes[0]?.output ?? '';
+
+    // The blocking layer is named, not just the outcome (alpha.3 §16). The hook
+    // subprocess runs with the *same* uid as the kernel, so `cat` genuinely
+    // opens and reads the file — POSIX permissions cannot distinguish the two
+    // processes. What stops the value reaching the conversation is the redactor
+    // on the way back. That is the honest enforcement level for this path:
+    // redacted, not sandbox-denied.
+    assert.equal(outcomes[0]?.ran, true, 'the hook did not run, so this proves nothing');
+    assert.equal(outcomes[0]?.exitCode, 0, '`cat` failed, so redaction was never exercised');
+    assert.match(
+      output,
+      /\[REDACTED:secret\/[0-9a-f]+\]/,
+      `expected the output to carry a redaction marker, got: ${output}`,
+    );
+    assert.equal(
+      output.includes(CREDENTIAL_VALUE),
+      false,
+      `the credential reached the conversation through a hook: ${output}`,
+    );
   });
 });
 

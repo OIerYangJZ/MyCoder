@@ -392,6 +392,8 @@ describe('secret scanner and redactor', () => {
     const samples = [
       'sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345',
       'ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+      // lint-allow no-real-credentials-in-tests: AWS's own published documentation example
+      // key. Using the canonical example is the point — it is what the detector must catch.
       'AKIAIOSFODNN7EXAMPLE',
       'xoxb-1234567890-abcdefghijkl',
       'AIzaSyA1234567890abcdefghijklmnopqrstuv',

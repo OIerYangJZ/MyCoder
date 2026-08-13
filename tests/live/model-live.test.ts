@@ -15,12 +15,14 @@
 
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync, statSync } from 'node:fs';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import { createKernel, type Kernel } from '../../src/kernel.ts';
 import { resolveKernelDirs } from '../../src/util/platform.ts';
+import { parseToml } from '../../src/util/toml.ts';
 import { collectModelEvents, type ModelEvent } from '../../src/model/ir.ts';
 import { resolveUsage } from '../../src/model/usage.ts';
 
@@ -48,6 +50,48 @@ const credentialVar =
   process.env.KERNEL_LIVE_KEY_ENV ?? CREDENTIAL_ENV[PROVIDER] ?? `${PROVIDER.toUpperCase()}_API_KEY`;
 
 /**
+ * Can the kernel reach a credential for this provider, by *either* mechanism?
+ *
+ * This used to be `Boolean(process.env[credentialVar])`, which asked the wrong
+ * question the moment alpha.3 added `api_key_file`: a developer who followed the
+ * new, recommended, permission-checked path had no such variable, so this whole
+ * suite skipped. It said so honestly — "this is not a pass" — but the effect was
+ * that adding the credential feature silently switched off the live validation
+ * the previous milestone had built.
+ *
+ * So the gate now asks what actually matters: is a credential *source* reachable.
+ * Synchronous on purpose — `describe(..., { skip })` is evaluated at collection
+ * time, so this cannot await.
+ */
+function credentialSource(): { kind: 'env' | 'file' | 'none'; detail: string } {
+  if (process.env[credentialVar]) return { kind: 'env', detail: credentialVar };
+
+  // Mirror the kernel's own resolution: a provider's `api_key_file` in user
+  // config, anchored to the config directory, readable, and a regular file.
+  try {
+    const dirs = resolveKernelDirs();
+    const configPath = path.join(dirs.config, 'config.toml');
+    const table = parseToml(readFileSync(configPath, 'utf8'));
+    const providers = (table.model as Record<string, unknown> | undefined)?.provider as
+      Record<string, Record<string, unknown>> | undefined;
+    const configured = providers?.[PROVIDER]?.api_key_file;
+    if (typeof configured !== 'string' || configured === '') return { kind: 'none', detail: credentialVar };
+
+    const expanded = configured.startsWith('~/')
+      ? path.join(dirs.home, configured.slice(2))
+      : path.isAbsolute(configured)
+        ? configured
+        : path.join(dirs.config, configured);
+
+    return statSync(expanded).isFile()
+      ? { kind: 'file', detail: 'api_key_file' }
+      : { kind: 'none', detail: credentialVar };
+  } catch {
+    return { kind: 'none', detail: credentialVar };
+  }
+}
+
+/**
  * Two conditions, both required.
  *
  * The credential alone is not enough: a developer with a key exported would
@@ -56,17 +100,18 @@ const credentialVar =
  * someone chose to do.
  */
 const optedIn = process.env.KERNEL_LIVE === '1';
-const hasCredential = Boolean(process.env[credentialVar]);
-const enabled = optedIn && hasCredential;
+const source = credentialSource();
+const enabled = optedIn && source.kind !== 'none';
 
 const skip = enabled
   ? false
   : !optedIn
     ? 'KERNEL_LIVE is not set — run `pnpm test:live:model` to opt in (this is not a pass)'
-    : `no ${credentialVar} in the environment — live validation skipped (this is not a pass)`;
+    : `no credential for "${PROVIDER}" — neither ${credentialVar} in the environment nor a readable ` +
+      'api_key_file in user config. Live validation skipped (this is not a pass)';
 
 /** Printed once so a skipped run says exactly what it wanted. */
-const liveTarget = `${PROVIDER}/${ALIAS} (credential: ${credentialVar})`;
+const liveTarget = `${PROVIDER}/${ALIAS} (credential: ${source.kind === 'none' ? credentialVar : source.detail})`;
 
 let kernel: Kernel | undefined;
 let base: string | undefined;

@@ -7,7 +7,7 @@
  * the two that would otherwise reach outside the machine.
  */
 
-import { mkdtemp, mkdir, rm, writeFile, symlink, readFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, rm, writeFile, symlink, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -55,10 +55,32 @@ export interface TestWorkspaceOptions {
   /** Register the canary value with the secret broker, as a user would. */
   registerCanary?: boolean;
   profile?: string;
+  /**
+   * Contents of the *user* `config.toml`, written before the kernel boots.
+   *
+   * Provider endpoints and credential sources may only be declared in user
+   * config, so anything testing them has to place a real file here rather than
+   * passing an override — the test would otherwise exercise a path the product
+   * does not have.
+   */
+  userConfig?: string;
+  /**
+   * Files created outside the workspace, relative to the temp base.
+   *
+   * `[path, contents, mode]`. A credential file has to live outside the
+   * workspace to be accepted at all, and its mode is the thing under test, so
+   * both are part of the fixture rather than something the test fixes up after.
+   */
+  outsideFiles?: Array<[string, string, number?]>;
+  logLevel?: 'silent' | 'trace';
+  /** Collects the debug log instead of dropping it. */
+  captureLog?: string[];
 }
 
 export interface TestWorkspace {
   root: string;
+  /** The temp directory containing `workspace/`, `home/` and `kernel-dirs/`. */
+  base: string;
   kernel: Kernel;
   fakeModel: FakeModel;
   transport: CapturingTransport;
@@ -89,18 +111,39 @@ export async function createTestWorkspace(opts: TestWorkspaceOptions = {}): Prom
     await symlink(path.isAbsolute(target) ? target : path.join(root, target), full);
   }
 
+  for (const [rel, content, mode] of opts.outsideFiles ?? []) {
+    const full = path.join(base, rel);
+    await mkdir(path.dirname(full), { recursive: true });
+    await writeFile(full, content, 'utf8');
+    if (mode !== undefined) await chmod(full, mode);
+  }
+
+  const dirsRoot = path.join(base, 'kernel-dirs');
+  if (opts.userConfig !== undefined) {
+    await mkdir(path.join(dirsRoot, 'config'), { recursive: true });
+    // `{{base}}` expands to the temp root. Config values like `api_key_file`
+    // have to be absolute to be realistic — a relative one anchors to the
+    // config directory — and the temp root is only known at run time.
+    await writeFile(
+      path.join(dirsRoot, 'config', 'config.toml'),
+      opts.userConfig.replaceAll('{{base}}', base),
+      'utf8',
+    );
+  }
+
   const fakeModel = new FakeModel({ script: opts.script ?? [] });
   const transport = new CapturingTransport();
   const prompter = new ScriptedPrompter(opts.approvals ?? []);
 
   const kernel = await createKernel({
     workspaceDir: root,
-    dirsRoot: path.join(base, 'kernel-dirs'),
+    dirsRoot,
     ...(opts.profile ? { profileOverride: opts.profile } : {}),
     fakeModel,
     egressTransport: transport,
     prompter,
-    logLevel: 'silent',
+    logLevel: opts.logLevel ?? 'silent',
+    ...(opts.captureLog ? { logSink: (line: string) => opts.captureLog!.push(line) } : {}),
   });
 
   if (opts.registerCanary !== false) {
@@ -109,6 +152,7 @@ export async function createTestWorkspace(opts: TestWorkspaceOptions = {}): Prom
 
   return {
     root,
+    base,
     kernel,
     fakeModel,
     transport,

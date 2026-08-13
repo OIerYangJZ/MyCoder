@@ -16,13 +16,19 @@ import * as path from 'node:path';
 
 import { PROJECT_DIR, projectDir } from './app.ts';
 import { canonicalize, displayPath, type CanonicalPath } from './util/paths.ts';
+import { toKernelError } from './util/errors.ts';
 import { newSessionId, type SessionId } from './util/ids.ts';
 import { createLogger, installLogSanitizer, type Logger, type LogLevel } from './util/logger.ts';
 import { systemClock, type Clock } from './util/clock.ts';
 import { resolveKernelDirs, sessionsDir, type KernelDirs } from './util/platform.ts';
 
 import { Redactor } from './security/redactor.ts';
-import { InMemorySecretBroker } from './security/secret-broker.ts';
+import { InMemorySecretBroker, type SecretSource } from './security/secret-broker.ts';
+import {
+  checkCredentialFile,
+  chooseCredentialSource,
+  describeCredentialSource,
+} from './security/credential-file.ts';
 import {
   DefaultEgressGate,
   defaultEgressPolicy,
@@ -72,7 +78,7 @@ import { replaySession, workspaceIdentity, checkResumeIdentity } from './session
 
 import { loadConfig, projectRulesProfile } from './config/config.ts';
 import { loadRemotes } from './config/remotes.ts';
-import type { KernelConfig } from './config/schema.ts';
+import type { KernelConfig, ProviderEndpointConfig } from './config/schema.ts';
 
 import { discoverSkills, type SkillDefinition } from './extensions/skills.ts';
 import { discoverAgents, type AgentDefinition } from './extensions/agents.ts';
@@ -107,7 +113,21 @@ export interface CreateKernelOptions {
 
 export interface Kernel {
   sessionId: SessionId;
+  /**
+   * The root the tool plane operates on (ADR-0012).
+   *
+   * Equals `backend.environment.workspaceRoot`: the local project root for a
+   * local backend, the **remote** workspace for an SSH one. Path resolution and
+   * policy containment are both against this, so the two agree by construction.
+   */
   workspaceRoot: CanonicalPath;
+  /**
+   * The local directory the session was started from (ADR-0012).
+   *
+   * Where project configuration, hooks, skills and agents are read from, and
+   * where the session store is anchored. Always local, even with `--remote`.
+   */
+  projectRoot: CanonicalPath;
   config: KernelConfig;
   configSources: string[];
   dirs: KernelDirs;
@@ -154,10 +174,28 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   });
 
   // 2. Paths.
+  //
+  // There are **two** roots, and conflating them is what made `--remote`
+  // unusable through alpha.3 (see ADR-0012):
+  //
+  //   projectRoot    the local directory the user invoked from. Where project
+  //                  configuration lives — `.mycoder/config.toml`,
+  //                  `permissions.toml`, `hooks.toml`, skills, agents — and
+  //                  where the session store is anchored. Always local, because
+  //                  the config that *names* a remote cannot itself be read
+  //                  through that remote.
+  //
+  //   workspaceRoot  the root the tool plane operates on: path resolution,
+  //                  policy containment, the repository plane, the mutation
+  //                  detector. This is `backend.environment.workspaceRoot`,
+  //                  which is the project root for a local backend and the
+  //                  *remote* workspace for an SSH one (spec §19.1 puts fs,
+  //                  grep, shell and git on the remote side).
+  //
+  // It is therefore computed **after** the backend exists, below.
   const dirs = opts.dirs ?? resolveKernelDirs(opts.dirsRoot ? { root: opts.dirsRoot } : {});
-  const workspaceResolved = await canonicalize(opts.workspaceDir, { cwd: process.cwd() });
-  const workspaceRoot = workspaceResolved.path;
-  const agentTmpDir = path.join(projectDir(workspaceRoot), 'tmp') as CanonicalPath;
+  const projectResolved = await canonicalize(opts.workspaceDir, { cwd: process.cwd() });
+  const projectRoot = projectResolved.path;
 
   // 3. Configuration, then remotes.
   const overrides: Partial<KernelConfig> = {};
@@ -165,8 +203,10 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   if (opts.modelOverride) overrides.model = { default: opts.modelOverride };
   if (opts.telemetryDisabled) overrides.telemetry = { enabled: false, content: false, traceUpload: false };
 
+  // Project configuration is read from the *local* tree. A config file that
+  // names a remote cannot be read through that remote.
   const loaded = await loadConfig({
-    workspaceRoot,
+    workspaceRoot: projectRoot,
     userConfigDir: dirs.config,
     overrides,
   });
@@ -179,7 +219,8 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   config.warnings.push(...remotesResult.warnings);
 
   // 4. Secrets. Provider credentials are registered by reference; the value is
-  //    read from the host environment only inside the broker.
+  //    read from the host environment or a credential file only inside the
+  //    broker.
   const secrets = new InMemorySecretBroker(redactor, clock);
   for (const [ref, variable] of [
     ['provider/anthropic', 'ANTHROPIC_API_KEY'],
@@ -189,16 +230,39 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   }
 
   // 5. Protected paths and reference trees.
+  // Reference trees are local paths, resolved against the local project root.
+  // With a remote backend the tool plane cannot reach them — a real limitation,
+  // recorded in ADR-0012 rather than papered over.
   const referenceRoots: CanonicalPath[] = [];
   for (const root of config.project.referenceRoots ?? []) {
-    const resolved = await canonicalize(root, { cwd: workspaceRoot });
+    const resolved = await canonicalize(root, { cwd: projectRoot });
     referenceRoots.push(resolved.path);
   }
+
+  // Credential files are resolved *before* ProtectedPaths is built, because the
+  // validated path is one of its constructor inputs (alpha.3 §7). There is
+  // deliberately no window in which a credential path is configured but not yet
+  // protected: the object that enforces the denial cannot be constructed
+  // without the list.
+  const credentials = await resolveProviderCredentials({
+    providers: config.model.providers ?? {},
+    // The "credential inside the workspace" check is about the *local*
+    // repository: that is what gets `git add`ed and published.
+    workspaceRoot: projectRoot,
+    referenceRoots,
+    home: dirs.home,
+    // A relative `api_key_file` anchors to the config directory that declared
+    // it, not to the workspace — see CredentialFileCheckOptions.cwd.
+    configDir: dirs.config,
+    warnings: config.warnings,
+  });
+
   const protectedPaths = new ProtectedPaths({
     home: dirs.home,
     configDir: dirs.config,
     referenceRoots,
     extraSecretPatterns: config.security.extraSecretPaths ?? [],
+    credentialPaths: credentials.protectedPaths,
   });
 
   // 6. Execution backend.
@@ -216,8 +280,20 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     backend = await SshExecutionBackend.connect({ config: remote, redactor, logger: logger.child('ssh') });
     activeRemote = remote.name;
   } else {
-    backend = await LocalExecutionBackend.detect({ workspaceRoot, redactor, logger: logger.child('local') });
+    backend = await LocalExecutionBackend.detect({
+      workspaceRoot: projectRoot,
+      redactor,
+      logger: logger.child('local'),
+    });
   }
+
+  // The tool plane's root, and the single source of truth for it. For a local
+  // backend this is `projectRoot`; for SSH it is the remote workspace. Deriving
+  // it from the backend rather than recomputing it is what makes the two layers
+  // agree by construction — the defect ADR-0012 describes was exactly the case
+  // where they did not.
+  const workspaceRoot = backend.environment.workspaceRoot;
+  const agentTmpDir = path.join(projectDir(workspaceRoot), 'tmp') as CanonicalPath;
 
   // 7. Policy layers, broadest to narrowest. The engine takes the strictest
   //    vote across all of them, so order is presentational only.
@@ -327,24 +403,23 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   // that a project file tried to define, so everything here came from the
   // user's own config.
   for (const [id, entry] of Object.entries(config.model.providers ?? {})) {
+    const credential = credentials.byProvider.get(id);
+
     modelRegistry.registerEndpoint({
       id,
       protocol: entry.protocol,
       baseUrl: entry.baseUrl,
       authScheme: entry.authScheme ?? 'Bearer',
-      ...(entry.apiKeyEnv ? { authSecretRef: `provider/${id}` } : {}),
+      // Declared whenever a source is *configured*, not only when its value is
+      // available — see ResolvedCredential.configured.
+      ...(credential?.configured ? { authSecretRef: `provider/${id}` } : {}),
       ...(entry.extraHeaders ? { extraHeaders: entry.extraHeaders } : {}),
     });
 
-    // The credential is registered by *reference*: the broker reads the host
-    // environment variable, and nothing downstream ever sees the value.
-    if (entry.apiKeyEnv && process.env[entry.apiKeyEnv]) {
-      secrets.register(`provider/${id}`, { kind: 'host-env', variable: entry.apiKeyEnv });
-    } else if (entry.apiKeyEnv) {
-      config.warnings.push(
-        `provider "${id}" expects ${entry.apiKeyEnv}, which is not set; requests to it will fail with MODEL_AUTH_ERROR`,
-      );
-    }
+    // The credential is registered by *reference*. The broker reads the file or
+    // the environment variable; nothing downstream ever sees the value, and the
+    // file's path is already in the protected set by the time this runs.
+    if (credential?.source) secrets.register(`provider/${id}`, credential.source);
   }
 
   for (const [alias, entry] of Object.entries(config.model.aliases ?? {})) {
@@ -434,7 +509,9 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
 
   // 12b. Extensions: hooks must exist before the tool runtime and the session,
   // because both invoke lifecycle points (spec §18.1).
-  const hookLoad = await loadHooks(workspaceRoot);
+  // Hook definitions are a project file, so they are read locally; the commands
+  // they declare execute through the backend, against `workspaceRoot`.
+  const hookLoad = await loadHooks(projectRoot);
   config.warnings.push(...hookLoad.warnings);
   const hooks = new HookRunner(hookLoad.hooks, {
     backend,
@@ -612,6 +689,11 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     workspaceRoot,
     workspaceIdentity: workspaceIdentity(workspaceRoot, facts.git.root),
     ...(activeRemote ? { remote: activeRemote } : {}),
+    // Recorded so a resume can notice the alias now points at a different
+    // machine (§20 "verify remote identity"). Until this was written, the
+    // metadata field existed and `checkResumeIdentity` read it, but nothing ever
+    // set it — so the check could not fire.
+    ...(backend.environment.hostIdentity ? { remoteIdentity: backend.environment.hostIdentity } : {}),
     model: modelAlias,
     permissionProfile: sessionProfile.name,
     backendKind: backend.kind,
@@ -633,6 +715,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
         workspaceRoot,
         workspaceIdentity: metadata.workspaceIdentity,
         ...(activeRemote ? { remote: activeRemote } : {}),
+        ...(backend.environment.hostIdentity ? { remoteIdentity: backend.environment.hostIdentity } : {}),
       });
       if (!check.ok) {
         throw new Error(`Cannot resume this session:\n  ${check.problems.join('\n  ')}`);
@@ -678,8 +761,9 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     hooks,
   });
 
-  const skills = await discoverSkills({ workspaceRoot, userConfigDir: dirs.config });
-  const agents = await discoverAgents(workspaceRoot, dirs.config);
+  // Skills and agents are project files too.
+  const skills = await discoverSkills({ workspaceRoot: projectRoot, userConfigDir: dirs.config });
+  const agents = await discoverAgents(projectRoot, dirs.config);
 
   // 16. Control plane.
   const host: ControlHost = {
@@ -694,6 +778,10 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     skills: skills.map((s) => ({ name: s.name, description: s.description })),
     agents: agents.map((a) => ({ name: a.name, description: a.description })),
     hooks: hookLoad.hooks.map((h: HookDefinition) => ({ event: h.event, command: h.command })),
+    credentialSources: [...credentials.byProvider].map(([provider, c]) => ({
+      provider,
+      description: c.description,
+    })),
     now: () => clock.now(),
 
     async connectRemote(name: string) {
@@ -764,6 +852,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   return {
     sessionId,
     workspaceRoot,
+    projectRoot,
     config,
     configSources: loaded.sources,
     dirs,
@@ -805,4 +894,143 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
 /** Display helper shared by the CLI. */
 export function relative(workspaceRoot: CanonicalPath, p: CanonicalPath): string {
   return displayPath(workspaceRoot, p);
+}
+
+interface ResolvedCredential {
+  /** Absent when the provider has no *usable* credential. */
+  source?: SecretSource;
+  /**
+   * True when configuration *declared* a credential source, usable or not.
+   *
+   * This drives `authSecretRef`, and the distinction from `source` matters more
+   * than it looks. Gating the endpoint's auth reference on the value being
+   * available means that when the value is missing the endpoint has **no auth at
+   * all** — so the request is sent unauthenticated, travels to the provider, and
+   * comes back 401. That is a network call that should never have left the
+   * process, with the blame landing on the provider instead of on the missing
+   * credential.
+   *
+   * Declaring the reference regardless makes the failure happen at the broker,
+   * before any bytes move, as `MODEL_AUTH_ERROR` — which is exactly what the
+   * startup warning promises will happen.
+   */
+  configured: boolean;
+  /** The `/status` line: names the source, never the value. */
+  description: string;
+}
+
+interface ResolvedCredentials {
+  byProvider: Map<string, ResolvedCredential>;
+  /** Canonical credential-file paths, for the protected-path set. */
+  protectedPaths: CanonicalPath[];
+}
+
+/**
+ * Resolve every provider's credential source (alpha.3 §5–§7).
+ *
+ * Three properties this function exists to guarantee, none of which survive
+ * being spread across the call sites:
+ *
+ *  1. **Precedence is applied once**, by `chooseCredentialSource`, so `file`
+ *     beating `env` is a single testable rule rather than an if-chain that
+ *     drifts.
+ *  2. **A rejected file is never a silent fallback.** If `api_key_file` is
+ *     configured but insecure, the provider ends up with *no* credential even
+ *     when `api_key_env` is also set and would have worked. Quietly falling
+ *     back would mean the run succeeds and the user never learns their key file
+ *     is world-readable — the failure has to be attached to the thing that is
+ *     wrong.
+ *  3. **The path is collected for protection even when validation fails.** A
+ *     path the user pointed at a credential is a path the model has no business
+ *     reading, whether or not the kernel could use it.
+ *
+ * Startup never throws here. A misconfigured credential produces a warning and
+ * a `MODEL_AUTH_ERROR` on first use, which is a better failure than refusing to
+ * start a session in which the user might have wanted to fix the file.
+ */
+async function resolveProviderCredentials(opts: {
+  providers: Record<string, ProviderEndpointConfig>;
+  workspaceRoot: CanonicalPath;
+  referenceRoots: readonly CanonicalPath[];
+  home: string;
+  configDir: string;
+  warnings: string[];
+}): Promise<ResolvedCredentials> {
+  const byProvider = new Map<string, ResolvedCredential>();
+  const protectedPaths: CanonicalPath[] = [];
+
+  for (const [id, entry] of Object.entries(opts.providers)) {
+    const choice = chooseCredentialSource({
+      ...(entry.apiKeyFile ? { apiKeyFile: entry.apiKeyFile } : {}),
+      ...(entry.apiKeyEnv ? { apiKeyEnv: entry.apiKeyEnv } : {}),
+    });
+
+    for (const shadowed of choice.shadowed) {
+      opts.warnings.push(
+        `provider "${id}" configures both api_key_file and api_key_env; the file takes precedence ` +
+          `and ${shadowed.selector} is unused`,
+      );
+    }
+
+    if (choice.kind === 'file' && choice.selector) {
+      let info;
+      try {
+        info = await checkCredentialFile(choice.selector, {
+          cwd: opts.configDir,
+          home: opts.home,
+          workspaceRoot: opts.workspaceRoot,
+          referenceRoots: opts.referenceRoots,
+        });
+      } catch (e) {
+        const err = toKernelError(e);
+        opts.warnings.push(
+          `provider "${id}": ${err.message} Requests to it will fail with MODEL_AUTH_ERROR.`,
+        );
+
+        // Protect it anyway — see property 3 above. Canonicalised without
+        // touching the filesystem, since the file may not exist.
+        const lexical = await canonicalize(choice.selector, {
+          cwd: opts.configDir,
+          home: opts.home,
+          resolveSymlinks: false,
+        });
+        protectedPaths.push(lexical.path);
+        byProvider.set(id, { configured: true, description: describeCredentialSource(choice, false) });
+        continue;
+      }
+
+      protectedPaths.push(info.path);
+      byProvider.set(id, {
+        source: { kind: 'file', path: info.path },
+        configured: true,
+        description: describeCredentialSource(choice, true),
+      });
+      continue;
+    }
+
+    if (choice.kind === 'env' && choice.selector) {
+      // The one place outside the broker that looks at the host environment,
+      // and only to decide whether the variable is *set* — the value is read
+      // inside the broker, on demand, under a lease.
+      if (process.env[choice.selector]) {
+        byProvider.set(id, {
+          source: { kind: 'host-env', variable: choice.selector },
+          configured: true,
+          description: describeCredentialSource(choice, true),
+        });
+      } else {
+        opts.warnings.push(
+          `provider "${id}" expects ${choice.selector}, which is not set; requests to it will fail with MODEL_AUTH_ERROR`,
+        );
+        byProvider.set(id, { configured: true, description: describeCredentialSource(choice, false) });
+      }
+      continue;
+    }
+
+    // No source configured at all: the endpoint gets no auth reference, which
+    // is correct — there is nothing to reference.
+    byProvider.set(id, { configured: false, description: describeCredentialSource(choice, false) });
+  }
+
+  return { byProvider, protectedPaths };
 }

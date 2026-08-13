@@ -51,13 +51,18 @@ export const SECRET_RULES: readonly SecretRule[] = [
     pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----/g,
   },
   {
+    // lint-allow no-provider-names-in-core: a secret scanner has to know key shapes to
+    // detect them. This is the detector, not a consumer branching on a provider.
     id: 'anthropic-api-key',
+    // lint-allow no-provider-names-in-core: as above.
     description: 'Anthropic API key',
     confidence: 'high',
     pattern: /\bsk-ant-[A-Za-z0-9_-]{24,}/g,
   },
   {
+    // lint-allow no-provider-names-in-core: as above — a detector must name what it detects.
     id: 'openai-api-key',
+    // lint-allow no-provider-names-in-core: as above.
     description: 'OpenAI API key',
     confidence: 'high',
     pattern: /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}/g,

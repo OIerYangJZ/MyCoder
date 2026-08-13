@@ -23,6 +23,7 @@ export const ERROR_CODES = [
   'CONCURRENT_MODIFICATION',
   'SECRET_ACCESS_DENIED',
   'SECRET_EGRESS_BLOCKED',
+  'CREDENTIAL_FILE_INSECURE',
   'NETWORK_DENIED',
   'PATH_OUTSIDE_WORKSPACE',
   'PROTECTED_PATH',
@@ -78,6 +79,9 @@ const DEFAULT_BLAME: Record<ErrorCode, Blame> = {
   CONCURRENT_MODIFICATION: 'environment',
   SECRET_ACCESS_DENIED: 'kernel',
   SECRET_EGRESS_BLOCKED: 'kernel',
+  // The file is the user's to fix, and only the user can fix it: the kernel
+  // deliberately does not chmod it back into shape.
+  CREDENTIAL_FILE_INSECURE: 'user',
   NETWORK_DENIED: 'kernel',
   PATH_OUTSIDE_WORKSPACE: 'model',
   PROTECTED_PATH: 'kernel',

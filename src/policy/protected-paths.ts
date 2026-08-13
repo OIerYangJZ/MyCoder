@@ -18,7 +18,12 @@ import { GlobSet } from '../util/glob.ts';
 import { toPosix, type CanonicalPath } from '../util/paths.ts';
 
 export type ProtectionReason =
-  'secret-file' | 'credential-directory' | 'system-directory' | 'kernel-policy' | 'reference-tree';
+  | 'secret-file'
+  | 'credential-directory'
+  | 'configured-credential'
+  | 'system-directory'
+  | 'kernel-policy'
+  | 'reference-tree';
 
 export interface ProtectionVerdict {
   protected: boolean;
@@ -141,6 +146,16 @@ export interface ProtectedPathsOptions {
   referenceRoots?: readonly CanonicalPath[];
   /** Additional hard-deny read patterns from configuration. */
   extraSecretPatterns?: readonly string[];
+  /**
+   * Canonical paths of configured provider credential files (alpha.3 §7).
+   *
+   * These are exact paths rather than patterns because they come from the
+   * kernel's own configuration, not from a user-supplied glob: the path the
+   * SecretBroker reads is the path that becomes unreachable, with no matching
+   * rule in between that could be written slightly wrong. A credential store
+   * the agent can read is not a credential store.
+   */
+  credentialPaths?: readonly CanonicalPath[];
 }
 
 export class ProtectedPaths {
@@ -151,6 +166,7 @@ export class ProtectedPaths {
   private readonly systemRead: GlobSet;
   private readonly kernelPolicy: GlobSet;
   private readonly referenceRoots: readonly CanonicalPath[];
+  private readonly credentialPaths: Set<string>;
 
   constructor(opts: ProtectedPathsOptions = {}) {
     const home = opts.home ?? homedir();
@@ -163,6 +179,18 @@ export class ProtectedPaths {
     this.systemRead = new GlobSet(SYSTEM_READ_DENY);
     this.kernelPolicy = new GlobSet(kernelPolicyPaths(home, configDir));
     this.referenceRoots = opts.referenceRoots ?? [];
+    // Compared case-insensitively, matching how GlobSet treats the other rules:
+    // on APFS and NTFS `deepseek.key` and `DeepSeek.key` are the same file, and
+    // a case-sensitive check here would be an exact-path bypass.
+    this.credentialPaths = new Set(
+      (opts.credentialPaths ?? []).map((p) => toPosix(p).normalize('NFC').toLowerCase()),
+    );
+  }
+
+  /** True when this exact path is a configured provider credential file. */
+  private isConfiguredCredential(canonical: CanonicalPath): boolean {
+    if (this.credentialPaths.size === 0) return false;
+    return this.credentialPaths.has(toPosix(canonical).normalize('NFC').toLowerCase());
   }
 
   /**
@@ -173,6 +201,12 @@ export class ProtectedPaths {
   checkReadToModel(canonical: CanonicalPath): ProtectionVerdict {
     const p = toPosix(canonical);
 
+    // Checked first so the verdict names the specific reason. A configured
+    // credential often *also* matches `**/*.key`, but a user who names their
+    // file `deepseek.txt` must get exactly the same denial.
+    if (this.isConfiguredCredential(canonical)) {
+      return { protected: true, reason: 'configured-credential', rule: 'configured-credential' };
+    }
     if (this.secretFiles.matches(p) && !this.secretExceptions.matches(p)) {
       return {
         protected: true,
@@ -200,6 +234,12 @@ export class ProtectedPaths {
   /** Kernel-internal reads (hashing, freshness) are broader but not unlimited. */
   checkRead(canonical: CanonicalPath): ProtectionVerdict {
     const p = toPosix(canonical);
+    // Denied even for kernel-internal reads. Hashing the file for freshness
+    // would put its digest in the event log, which is a persisted oracle for a
+    // credential nobody needs to track the mtime of.
+    if (this.isConfiguredCredential(canonical)) {
+      return { protected: true, reason: 'configured-credential', rule: 'configured-credential' };
+    }
     if (this.credentialDirs.matches(p)) {
       return {
         protected: true,
@@ -216,6 +256,12 @@ export class ProtectedPaths {
   checkWrite(canonical: CanonicalPath): ProtectionVerdict {
     const p = toPosix(canonical);
 
+    // Writing is denied as well as reading. An agent that could overwrite the
+    // credential file could swap in a key it controls, or empty it and take the
+    // session offline — neither needs the ability to read the old value.
+    if (this.isConfiguredCredential(canonical)) {
+      return { protected: true, reason: 'configured-credential', rule: 'configured-credential' };
+    }
     for (const root of this.referenceRoots) {
       const rootPosix = toPosix(root);
       if (p === rootPosix || p.startsWith(rootPosix + '/')) {
@@ -267,6 +313,8 @@ export class ProtectedPaths {
         return `"${displayPath}" is treated as a secret file and is never made available. Use secret_ref:// if the value is genuinely needed by a command.`;
       case 'credential-directory':
         return `"${displayPath}" is inside a credential directory, which is permanently off limits.`;
+      case 'configured-credential':
+        return `"${displayPath}" is this kernel's own provider credential file and is never readable from a session.`;
       case 'system-directory':
         return `"${displayPath}" is a protected system location.`;
       case 'kernel-policy':

@@ -1,0 +1,532 @@
+/**
+ * A real OpenSSH server, for validating the SSH backend against real OpenSSH.
+ *
+ * alpha.3 §11.1 asks one question: *does the existing backend contract survive
+ * real OpenSSH behaviour?* Fixtures cannot answer it. `ssh` has its own opinions
+ * about `BatchMode`, its own exit codes, its own stderr wording for a host-key
+ * mismatch, its own ControlMaster lifecycle, and its own idea of what happens to
+ * a remote process when the client goes away. All of that is what the backend
+ * is written against, and none of it is exercised by a fake.
+ *
+ * So this starts a genuine `sshd`: real host key, real public-key auth, real
+ * protocol, real remote `sh`. Two things it is **not**:
+ *
+ *   - It is not a VPS. There is no network hop, no separate machine, no
+ *     separate user account. The remote process runs as the same uid on the
+ *     same filesystem, so anything that would be caught by *OS* isolation
+ *     between two hosts is not caught here. The evidence artifact says so in
+ *     those words; see `docs/alpha3-ssh-validation.md`.
+ *   - It is not a substitute for the VPS run. `KERNEL_SSH_REMOTE` points the
+ *     same suite at a real host, and the matrix is written so that every case
+ *     runs unchanged against either target. That is the point of putting the
+ *     target behind a resolver rather than hard-coding loopback.
+ *
+ * What loopback *does* buy is that the whole matrix runs on every developer
+ * machine and in ordinary CI, so a regression in the SSH backend is caught the
+ * day it lands rather than the next time someone rents a server.
+ *
+ * Everything lives in one temp directory that is removed on teardown: host key,
+ * client key, `sshd_config`, the remote workspace, and the out-of-workspace
+ * canary. Nothing touches `~/.ssh`.
+ */
+
+import { spawn, spawnSync } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir, userInfo } from 'node:os';
+import * as path from 'node:path';
+import { createConnection } from 'node:net';
+
+import type { RemoteConfig } from '../../src/execution/ssh.ts';
+import { defaultRemoteConfig } from '../../src/execution/ssh.ts';
+
+/** Value that must never appear in any sink (alpha.3 §16). */
+export const REMOTE_CANARY = 'REMOTE_CANARY_SECRET_93af2b7c load-bearing';
+
+/** Where the canary lives on the remote, deliberately outside the workspace. */
+export const CANARY_BASENAME = '.agent-test-secret';
+
+export interface SshFixture {
+  /** Remote config pointing at whichever target is in use. */
+  remote: RemoteConfig;
+  /** Absolute remote path of the workspace root. */
+  workspace: string;
+  /** Absolute remote path of the out-of-workspace canary file. */
+  canaryPath: string;
+  /** Human-readable target description for the evidence artifact. */
+  description: string;
+  /** True when this is a loopback sshd rather than a real remote host. */
+  loopback: boolean;
+  /** Remote OS and OpenSSH version, recorded in the evidence artifact. */
+  facts(): Promise<{ os: string; sshd: string; client: string }>;
+  /** Run a raw command on the remote, outside the kernel. Setup/assertions only. */
+  raw(script: string): Promise<{ stdout: string; stderr: string; code: number | null }>;
+  /**
+   * Register an absolute remote path created *outside* the workspace, so
+   * teardown removes it.
+   *
+   * On loopback the whole tree is a temp directory and this is a formality. On
+   * a real host it is the difference between a clean machine and one that
+   * accumulates a file per run — the §16 case that writes beside the workspace
+   * is deliberately outside the jail, so nothing else would collect it.
+   */
+  trackForCleanup(absoluteRemotePath: string): void;
+  cleanup(): Promise<void>;
+}
+
+/** Reason the SSH suite cannot run here, or undefined when it can. */
+export function sshUnavailable(): string | undefined {
+  if (process.env.KERNEL_SSH_REMOTE) return undefined;
+  if (process.platform === 'win32') return 'the loopback sshd fixture is POSIX-only';
+  if (which('ssh') === undefined) return 'no ssh client on PATH';
+  if (sshdBinary() === undefined) return 'no sshd binary found';
+  return undefined;
+}
+
+function which(bin: string): string | undefined {
+  const r = spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' });
+  const out = r.stdout.trim();
+  return out === '' ? undefined : out;
+}
+
+function sshdBinary(): string | undefined {
+  // `sshd` is normally in sbin, which is often absent from a non-root PATH.
+  for (const candidate of ['/usr/sbin/sshd', '/usr/local/sbin/sshd', '/sbin/sshd']) {
+    const r = spawnSync(candidate, ['-?'], { encoding: 'utf8' });
+    // `-?` is not a real flag; a binary that exists answers with usage on
+    // stderr rather than failing to spawn.
+    if (r.error === undefined) return candidate;
+  }
+  return which('sshd');
+}
+
+/**
+ * Resolve the target.
+ *
+ * `KERNEL_SSH_REMOTE=<ssh-alias>` plus `KERNEL_SSH_WORKSPACE=<abs path>` runs
+ * the whole matrix against a real host, using the user's own `~/.ssh/config`
+ * for credentials — the kernel never reads a private key, which is the §13
+ * rule. Absent those, a loopback sshd is started.
+ */
+export async function startSshFixture(): Promise<SshFixture> {
+  const alias = process.env.KERNEL_SSH_REMOTE;
+  return alias ? await realRemote(alias) : await loopbackSshd();
+}
+
+// --- a real remote ---------------------------------------------------------
+
+/**
+ * Paths this fixture will never treat as a disposable workspace.
+ *
+ * The cleanup step deletes the workspace's contents, on a machine that belongs
+ * to someone else. `KERNEL_SSH_WORKSPACE` is an environment variable, and
+ * environment variables are one typo and one unset-variable expansion away from
+ * being empty or `/`. The original guard was `startsWith('/')`, which `/`
+ * satisfies — so a mistyped variable would have run `rm -rf /*` on the user's
+ * VPS. Nothing about the suite's purpose requires that risk to exist.
+ */
+const FORBIDDEN_WORKSPACE_PREFIXES = [
+  '/bin',
+  '/boot',
+  '/dev',
+  '/etc',
+  '/lib',
+  '/proc',
+  '/root',
+  '/run',
+  '/sbin',
+  '/sys',
+  '/usr',
+  '/var',
+];
+
+export interface WorkspaceGuardResult {
+  ok: boolean;
+  problem?: string;
+}
+
+/**
+ * Refuse a remote workspace that cleanup must not be pointed at.
+ *
+ * Pure, exported and tested, because "the destructive step is guarded" is
+ * exactly the kind of claim §32 says must not be prose. The rules:
+ *
+ *   absolute            an environment variable that failed to expand is empty
+ *   at least 3 segments `/home/agent/ws` yes, `/home/agent` no, `/srv` no —
+ *                       a workspace should be a directory *someone made for
+ *                       this*, not a whole account or a mount point
+ *   no system prefix    see the list above
+ *   not the home dir    the canary lives there; deleting its contents would
+ *                       take the user's dotfiles with it
+ *   no traversal        `..` would let the effective target escape the checks
+ */
+export function checkRemoteWorkspace(workspace: string, home: string): WorkspaceGuardResult {
+  if (!workspace || !workspace.startsWith('/')) {
+    return { ok: false, problem: 'must be an absolute remote path' };
+  }
+  if (workspace.includes('..')) {
+    return { ok: false, problem: 'must not contain a traversal segment' };
+  }
+
+  const normalised = workspace.replace(/\/+$/, '');
+  const segments = normalised.split('/').filter(Boolean);
+
+  if (segments.length < 3) {
+    return {
+      ok: false,
+      problem:
+        `is only ${segments.length} segment(s) deep. Use a dedicated directory such as ` +
+        '/home/<user>/workspaces/kernel-ssh-fixture — this suite deletes the workspace contents on teardown',
+    };
+  }
+  for (const prefix of FORBIDDEN_WORKSPACE_PREFIXES) {
+    if (normalised === prefix || normalised.startsWith(`${prefix}/`)) {
+      return { ok: false, problem: `is inside ${prefix}, which is a system location` };
+    }
+  }
+  if (home && (normalised === home.replace(/\/+$/, '') || normalised === '/')) {
+    return { ok: false, problem: 'is the home directory itself, whose contents must not be deleted' };
+  }
+
+  return { ok: true };
+}
+
+async function realRemote(alias: string): Promise<SshFixture> {
+  const workspace = (process.env.KERNEL_SSH_WORKSPACE ?? '').replace(/\/+$/, '');
+
+  // The remote's own `$HOME`, asked rather than derived. The previous version
+  // guessed it from the first two path segments, which is right for
+  // `/home/user/...` and wrong for `/opt/...`, `/srv/...` and every container
+  // image that puts the account somewhere else — and being wrong meant writing
+  // the canary into a system directory.
+  const homeProbe = await rawSsh(alias, 'printf %s "$HOME"', []);
+  const home = homeProbe.stdout.trim();
+  if (homeProbe.code !== 0 || !home.startsWith('/')) {
+    throw new Error(
+      `could not determine $HOME on "${alias}" (exit ${homeProbe.code}): ${homeProbe.stderr.trim().slice(0, 300)}`,
+    );
+  }
+
+  const guard = checkRemoteWorkspace(workspace, home);
+  if (!guard.ok) {
+    throw new Error(
+      `KERNEL_SSH_WORKSPACE ${JSON.stringify(workspace)} ${guard.problem}.\n` +
+        'This suite deletes the workspace contents on teardown, so the path is checked before anything is created.',
+    );
+  }
+
+  // Each fixture instance gets its own subdirectory under the configured
+  // workspace. `pnpm test:ssh` runs two suites, node:test runs files in parallel
+  // processes, and both would otherwise share one remote directory — where one
+  // suite's teardown deletes the other's files mid-run. Sharing a *local* temp
+  // dir is impossible by construction; sharing a remote one is the default, so
+  // it has to be arranged against.
+  //
+  // It is also strictly safer for the user: the directory they configured is
+  // never emptied, only a subdirectory this run created.
+  const runId = `run-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  const scoped = `${workspace}/${runId}`;
+
+  const remote = defaultRemoteConfig('alpha3-validation', alias, scoped);
+  const canaryPath = `${home}/${CANARY_BASENAME}-${runId}`;
+
+  // Anything created outside the workspace is registered here so teardown can
+  // remove it. Without this, the §16 case that deliberately writes beside the
+  // workspace would leave a file on the user's machine after every run.
+  const litter = new Set<string>([canaryPath]);
+
+  const fixture: SshFixture = {
+    remote,
+    workspace: scoped,
+    canaryPath,
+    description: `real remote host via ssh alias "${alias}" (workspace ${scoped})`,
+    loopback: false,
+    facts: () => gatherFacts(fixture),
+    raw: (script) => rawSsh(alias, script, []),
+    trackForCleanup: (p) => litter.add(p),
+
+    async cleanup() {
+      // Re-checked immediately before deleting. The guard above ran against the
+      // value at construction time; this asserts nothing has reassigned it
+      // since, so the destructive command cannot be reached by any path that
+      // has not passed the check.
+      if (!checkRemoteWorkspace(workspace, home).ok) return;
+      if (!scoped.startsWith(`${workspace}/run-`)) return;
+
+      // `find -mindepth 1 -maxdepth 1 -exec rm -rf` rather than `rm -rf <ws>/*`.
+      // The glob misses dotfiles, so the `.git` the git test creates survived
+      // every teardown; `find` sees it. `-exec rm -rf` rather than `-delete`
+      // because git marks its object files read-only, and `rm -rf` is the form
+      // that reliably removes such a tree. The workspace directory itself is
+      // kept — the user may have created it with particular ownership.
+      // Litter first, then the scoped directory — the order matters. Tracked
+      // paths are frequently written relative to the workspace, as in
+      // `<scoped>/../thing`, and once `<scoped>` is gone that path has a missing
+      // intermediate component: `rm -rf` then silently does nothing and the file
+      // survives every run. Removing the directory last keeps those paths
+      // resolvable.
+      const targets = [...litter].map(shq).join(' ');
+      if (targets) await rawSsh(alias, `rm -rf ${targets}`, []);
+      await rawSsh(alias, `rm -rf ${shq(scoped)}`, []);
+    },
+  };
+
+  await fixture.raw(`mkdir -p ${shq(scoped)}`);
+  await fixture.raw(`umask 077; printf '%s\\n' ${shq(REMOTE_CANARY)} > ${shq(canaryPath)}`);
+  return fixture;
+}
+
+// --- a loopback sshd -------------------------------------------------------
+
+async function loopbackSshd(): Promise<SshFixture> {
+  const sshd = sshdBinary();
+  if (!sshd) throw new Error('no sshd binary found');
+
+  const base = await mkdtemp(path.join(tmpdir(), 'kernel-sshd-'));
+  const workspace = path.join(base, 'remote-home', 'workspaces', 'kernel-ssh-fixture');
+  const remoteHome = path.join(base, 'remote-home');
+  const canaryPath = path.join(remoteHome, CANARY_BASENAME);
+
+  await mkdir(workspace, { recursive: true });
+  await writeFile(canaryPath, `${REMOTE_CANARY}\n`, 'utf8');
+  await chmod(canaryPath, 0o600);
+
+  const hostKey = path.join(base, 'host_ed25519');
+  const clientKey = path.join(base, 'client_ed25519');
+  run('ssh-keygen', ['-q', '-t', 'ed25519', '-f', hostKey, '-N', '', '-C', 'kernel-test-host']);
+  run('ssh-keygen', ['-q', '-t', 'ed25519', '-f', clientKey, '-N', '', '-C', 'kernel-test-client']);
+
+  const authorized = path.join(base, 'authorized_keys');
+  await writeFile(authorized, await readText(`${clientKey}.pub`), 'utf8');
+  await chmod(authorized, 0o600);
+  await chmod(hostKey, 0o600);
+  await chmod(clientKey, 0o600);
+
+  const port = await freePort();
+  const configPath = path.join(base, 'sshd_config');
+  const logPath = path.join(base, 'sshd.log');
+
+  // Deliberately mirrors the security posture the backend assumes it is talking
+  // to: no agent forwarding, no password auth, no root. If a future change to
+  // the backend started depending on one of these being *on*, the suite fails
+  // here rather than silently passing against a permissive server.
+  await writeFile(
+    configPath,
+    [
+      `Port ${port}`,
+      'ListenAddress 127.0.0.1',
+      `HostKey ${hostKey}`,
+      `AuthorizedKeysFile ${authorized}`,
+      `PidFile ${path.join(base, 'sshd.pid')}`,
+      // The temp tree is 0700-ish but not owned the way sshd wants for a real
+      // home; StrictModes would refuse to read authorized_keys.
+      'StrictModes no',
+      'UsePAM no',
+      'PasswordAuthentication no',
+      'KbdInteractiveAuthentication no',
+      'PubkeyAuthentication yes',
+      'PermitRootLogin no',
+      'AllowAgentForwarding no',
+      'AllowTcpForwarding no',
+      'X11Forwarding no',
+      'PermitUserEnvironment no',
+      // No `AcceptEnv` line at all: accepting nothing is sshd's default, and
+      // the directive requires at least one pattern, so writing `AcceptEnv`
+      // with an empty argument is a config *error* rather than a stricter
+      // setting. This is the server half of the §17 assertion; the client half
+      // is `SendEnv=` on the backend's command line.
+      'LogLevel VERBOSE',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const proc = spawn(sshd, ['-f', configPath, '-E', logPath, '-D'], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    // lint-allow no-ambient-env-spawn: this is the fixture *server*, standing in
+    // for a machine we do not own, not a kernel-spawned child. Scrubbing it
+    // would weaken the §17 test rather than strengthen it: the assertion is that
+    // host variables do not cross the connection, which is only meaningful if
+    // the far side would have accepted them.
+    env: process.env,
+  });
+
+  let stderr = '';
+  proc.stderr?.setEncoding('utf8');
+  proc.stderr?.on('data', (c: string) => {
+    stderr += c;
+  });
+
+  const ready = await waitForPort(port, 5_000);
+  if (!ready) {
+    proc.kill('SIGKILL');
+    // sshd writes config errors to the `-E` log, not to stderr, so a failure
+    // reported without the log body says only "it did not start".
+    let log = '';
+    try {
+      log = await readText(logPath);
+    } catch {
+      log = '(no log file)';
+    }
+    await rm(base, { recursive: true, force: true });
+    throw new Error(
+      `sshd did not start on 127.0.0.1:${port}\n  stderr: ${stderr.slice(0, 400)}\n  log: ${log.slice(0, 800)}`,
+    );
+  }
+
+  const knownHosts = path.join(base, 'known_hosts');
+  // Pre-seed known_hosts from the host key we generated, rather than connecting
+  // once with StrictHostKeyChecking=no. The backend passes
+  // `StrictHostKeyChecking=yes` unconditionally, so the very first kernel
+  // connection has to succeed against a *pre-trusted* key — which is the real
+  // deployment shape, and is what makes the host-key-mismatch case meaningful.
+  await writeFile(knownHosts, `[127.0.0.1]:${port} ${(await readText(`${hostKey}.pub`)).trim()}\n`, 'utf8');
+
+  // A dedicated ssh_config so the client uses this fixture's identity and
+  // known_hosts and nothing from the developer's own ~/.ssh.
+  const sshConfig = path.join(base, 'ssh_config');
+  const alias = 'kernel-ssh-fixture';
+  await writeFile(
+    sshConfig,
+    [
+      `Host ${alias}`,
+      '  HostName 127.0.0.1',
+      `  Port ${port}`,
+      `  User ${userInfo().username}`,
+      `  IdentityFile ${clientKey}`,
+      '  IdentitiesOnly yes',
+      `  UserKnownHostsFile ${knownHosts}`,
+      '  GlobalKnownHostsFile /dev/null',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  // `-F <file>` is prepended to every invocation. This is also the mechanism a
+  // real deployment uses: the kernel names an alias and OpenSSH resolves it.
+  const extraArgs = ['-F', sshConfig];
+
+  const remote: RemoteConfig = {
+    ...defaultRemoteConfig('alpha3-loopback', alias, workspace),
+    sshConfigFile: sshConfig,
+  };
+
+  const fixture: SshFixture = {
+    remote,
+    workspace,
+    canaryPath,
+    description: `loopback OpenSSH sshd on 127.0.0.1:${port} (NOT a remote VPS)`,
+    loopback: true,
+    facts: () => gatherFacts(fixture),
+    raw: (script) => rawSsh(alias, script, extraArgs),
+    // Everything loopback creates is inside `base`, which is removed wholesale
+    // below, so tracking is a no-op here. The method exists so a test written
+    // against one target cannot silently litter the other.
+    trackForCleanup: () => {},
+    async cleanup() {
+      proc.kill('SIGTERM');
+      await new Promise((r) => setTimeout(r, 150));
+      proc.kill('SIGKILL');
+      await rm(base, { recursive: true, force: true });
+    },
+  };
+
+  return fixture;
+}
+
+// --- helpers ---------------------------------------------------------------
+
+async function gatherFacts(fixture: SshFixture): Promise<{ os: string; sshd: string; client: string }> {
+  const os = await fixture.raw('uname -sr');
+  // `sshd -V` on modern OpenSSH, falling back to the usage banner that older
+  // builds print for an unknown flag. Wrapped in `sh -c` with everything
+  // quoted: the remote *login* shell may be zsh, where a bare `-?` is a glob
+  // that matches nothing and aborts the command before sshd runs at all.
+  const sshd = await fixture.raw(
+    `sh -c 'for b in /usr/sbin/sshd sshd; do "$b" -V 2>&1 | head -1 && exit 0; done; echo unknown'`,
+  );
+  const client = spawnSync('ssh', ['-V'], { encoding: 'utf8' });
+  return {
+    os: os.stdout.trim() || 'unknown',
+    sshd: sshd.stdout.trim() || sshd.stderr.trim() || 'unknown',
+    client: (client.stderr || client.stdout).trim(),
+  };
+}
+
+function rawSsh(
+  alias: string,
+  script: string,
+  extraArgs: readonly string[],
+): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      'ssh',
+      [...extraArgs, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', alias, '--', script],
+      // lint-allow no-ambient-env-spawn: fixture setup and out-of-band
+      // assertions, run as the *user* would run them. Against a real VPS this
+      // needs HOME and SSH_AUTH_SOCK to resolve the alias and the key. Nothing
+      // the kernel does goes through here.
+      { stdio: ['ignore', 'pipe', 'pipe'], env: process.env },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (c: string) => (stdout += c));
+    child.stderr.on('data', (c: string) => (stderr += c));
+    child.on('close', (code) => resolve({ stdout, stderr, code }));
+    child.on('error', (e) => resolve({ stdout: '', stderr: String(e), code: -1 }));
+  });
+}
+
+function run(bin: string, args: string[]): void {
+  const r = spawnSync(bin, args, { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`${bin} ${args.join(' ')} failed: ${r.stderr}`);
+}
+
+async function readText(file: string): Promise<string> {
+  return (await import('node:fs/promises')).readFile(file, 'utf8');
+}
+
+/** An ephemeral port the OS has just told us is free. */
+async function freePort(): Promise<number> {
+  const net = await import('node:net');
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (address === null || typeof address === 'string') {
+        server.close();
+        reject(new Error('could not determine a free port'));
+        return;
+      }
+      const { port } = address;
+      server.close(() => resolve(port));
+    });
+    server.on('error', reject);
+  });
+}
+
+async function waitForPort(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const open = await new Promise<boolean>((resolve) => {
+      const socket = createConnection({ port, host: '127.0.0.1' });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+    if (open) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
+/** POSIX single-quote escaping, for the fixture's own setup commands. */
+export function shq(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
