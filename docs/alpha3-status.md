@@ -341,21 +341,45 @@ reference to a doc that did not exist yet.
 | Eval Stop — model stochasticity conflated with kernel correctness    | not triggered; separated by construction and tested                                                      |
 | Evidence Stop — a release-blocking item marked PASS without evidence | not triggered; mechanically enforced                                                                     |
 
-## 6. Tagging
+## 6. Trusted CI evidence (§52)
 
-**Not tagged.** §52 requires tagging the exact commit whose _trusted CI_
-evidence is recorded, and CI has not run these jobs yet — the numbers above are
-from a local run. The new jobs (`lint-selftest`, `evidence`,
-`credential-security`, `ssh`, `eval-methodology`) need one green CI run on the
-release commit first.
+Commit `c8b93c3` on `alpha3-operational-readiness`, PR
+[#1](https://github.com/OIerYangJZ/MyCoder/pull/1), CI run
+[31674140236](https://github.com/OIerYangJZ/MyCoder/actions/runs/31674140236):
+**18 jobs, 18 pass.**
 
-Two things should be decided before tagging:
+All five new gates passed on their first CI run:
 
-1. Whether to run the SSH matrix against a real VPS and upgrade those rows, or
-   ship with them `NOT TESTED` and the runbook.
-2. Whether to spend a live eval run to populate the Pillar C rows, or ship the
-   methodology with alpha.2's live evidence and no new numbers.
+| Job                   | Result                                       |
+| --------------------- | -------------------------------------------- |
+| Linter Self-Tests     | pass 16s                                     |
+| Release Evidence Gate | pass 23s                                     |
+| Credential Security   | pass 18s                                     |
+| Eval Methodology      | pass 15s                                     |
+| Real SSH Matrix       | pass 5m2s — **68 tests, 68 pass, 0 skipped** |
 
-Both are scope calls, not blockers — the milestone's own success definition (§55)
-is met either way, with the SSH clause reading "a real OpenSSH server" rather
-than "a real isolated VPS".
+And every alpha.2 gate stayed green: Node 22 and 24, Linux and macOS platform,
+Windows smoke, security invariants, replay, determinism ×100, golden tasks,
+offline provider fixtures, static checks.
+
+The SSH job is worth one note. It was the milestone's last unverified assumption
+— whether a non-privileged `sshd` can be started on a GitHub runner — and the log
+confirms the suite _ran_ rather than skipping: `68 pass, 0 skipped`. A green
+"skipped everything" is the failure mode that assertion guards against.
+
+## 7. Tagging
+
+The §52 precondition is now met: there is a trusted CI run against a specific
+commit. `v0.1.0-alpha.3` has **not** been tagged, because that is a release
+decision rather than a gate, and two scope questions are still open:
+
+1. Whether to spend a live repeated-run eval (`KERNEL_LIVE_MODEL=deepseek pnpm
+eval --runs=5`) to populate the Pillar C rows, which are the last substantive
+   `NOT TESTED` entries.
+2. Whether the remaining four `NOT TESTED` rows are acceptable for this release:
+   live repeated runs, hostile-network behaviour, Windows credential permission
+   checking, and cross-host OS isolation. The last two are honest, documented
+   gaps rather than untried work.
+
+Do not tag a locally green commit and fix CI afterward (§52). Tag `c8b93c3`, or a
+later commit with its own green run.
