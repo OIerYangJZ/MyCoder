@@ -28,6 +28,7 @@
  * Usage:  node scripts/evidence.ts [--json]
  */
 
+import { spawnSync } from 'node:child_process';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -125,6 +126,8 @@ export interface CheckOptions {
   testCorpus: string;
   /** Resolves an `artifact:` path. Returns false when it does not exist. */
   artifactExists(relativePath: string): Promise<boolean>;
+  /** Whether the path is committed. Omitted outside a git checkout. */
+  isTracked?(relativePath: string): boolean;
 }
 
 export async function checkRows(rows: readonly Row[], opts: CheckOptions): Promise<Problem[]> {
@@ -180,6 +183,14 @@ export async function checkRows(rows: readonly Row[], opts: CheckOptions): Promi
       if (kind === 'artifact') {
         if (!(await opts.artifactExists(target))) {
           add(row, `evidence "${ref}" points at a file that does not exist`);
+        } else if (opts.isTracked && !opts.isTracked(target)) {
+          // Present on this machine but not in the repository — which is not
+          // evidence, it is a local file. `artifact:` exists so a reader can go
+          // and look; a gitignored path defeats that, and the failure would
+          // otherwise appear only in CI, where the file is genuinely absent.
+          // That is how a broken reference gets committed: green locally, red
+          // for everyone else.
+          add(row, `evidence "${ref}" exists locally but is not tracked by git`);
         }
       }
 
@@ -195,6 +206,19 @@ export async function checkRows(rows: readonly Row[], opts: CheckOptions): Promi
   }
 
   return problems;
+}
+
+/**
+ * Every file git knows about, or undefined outside a checkout.
+ *
+ * Read once rather than shelling out per reference. Absent when this is not a
+ * git working tree, in which case the tracked-ness check is simply skipped —
+ * the gate should still be usable from a tarball.
+ */
+function trackedFiles(): Set<string> | undefined {
+  const r = spawnSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  if (r.status !== 0 || typeof r.stdout !== 'string') return undefined;
+  return new Set(r.stdout.split('\n').filter((l) => l !== ''));
 }
 
 /** Every test name and file name under tests/, as one searchable string. */
@@ -240,8 +264,11 @@ async function main(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
+  const tracked = trackedFiles();
+
   const problems = await checkRows(rows, {
     testCorpus: await buildTestCorpus(),
+    ...(tracked ? { isTracked: (p: string) => tracked.has(p) } : {}),
     artifactExists: async (rel) => {
       try {
         await stat(path.join(ROOT, rel));

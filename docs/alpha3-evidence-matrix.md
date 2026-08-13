@@ -177,7 +177,7 @@ Evidence prefixes: `test:` `suite:` `ci:` `eval:` `artifact:` `live:` `manual:`.
 | kernel version and commit recorded                   | PASS   | test:the sample size is written into the artifact                            |                                                                                                                                                                             |
 | cost distribution recorded                           | PASS   | test:per-task distributions report median and range                          | Reads `unknown` when no pricing is configured                                                                                                                               |
 | offline golden tasks pass                            | PASS   | ci:evals                                                                     | `pnpm eval` → 12/12                                                                                                                                                         |
-| live repeated-run results                            | PASS   | artifact:evals/results/deepseek-deepseek-chat-2026-08-13T06-50-58-470Z.json  | DeepSeek, N=5, 50 attempts. Kernel invariants 33/35 enforced and 35/35 kernel-correct; model capability 10/15 solved and 15/15 kernel-correct; 0 secret boundary violations |
+| live repeated-run results                            | PASS   | artifact:evals/results/release/alpha3-deepseek-live-n5.json                  | DeepSeek, N=5, 50 attempts. Kernel invariants 33/35 enforced and 35/35 kernel-correct; model capability 10/15 solved and 15/15 kernel-correct; 0 secret boundary violations |
 
 ## 4. Architecture and gates (§38–§43)
 

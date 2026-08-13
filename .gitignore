@@ -4,4 +4,9 @@ dist/
 coverage/
 *.log
 .DS_Store
+# Ad-hoc eval runs are noise; a *released* artifact is evidence and must be
+# readable by anyone the evidence matrix points at it. `scripts/evidence.ts`
+# enforces the distinction: an `artifact:` reference to an untracked path is a
+# failure, because "it exists on my machine" is not evidence.
 evals/results/
+!evals/results/release/

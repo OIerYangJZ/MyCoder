@@ -23,7 +23,7 @@ const HEADER = ['| Requirement | Status | Evidence | Notes |', '| --- | --- | --
 /** Lint one table body against a permissive world, so only the rule under test can fire. */
 async function problems(
   body: string,
-  world: { tests?: string; artifacts?: string[] } = {},
+  world: { tests?: string; artifacts?: string[]; tracked?: string[] } = {},
 ): Promise<Problem[]> {
   const rows = parseMatrix(`${HEADER}\n${body}`);
   assert.ok(rows.length > 0, 'the fixture produced no rows, so this case proves nothing');
@@ -31,6 +31,7 @@ async function problems(
   return checkRows(rows, {
     testCorpus: world.tests ?? 'a known test name\nanother known test',
     artifactExists: async (p) => (world.artifacts ?? ['docs/exists.md']).includes(p),
+    isTracked: (p) => (world.tracked ?? ['docs/exists.md']).includes(p),
   });
 }
 
@@ -97,6 +98,26 @@ describe('the evidence gate rejects unsupported claims (§33)', () => {
 
   test('evidence naming an artifact that exists is accepted', async () => {
     const found = await problems('| a requirement | PASS | artifact:docs/exists.md | |');
+    assert.deepEqual(found, [], messages(found));
+  });
+
+  test('an artifact that exists locally but is not committed is rejected', async () => {
+    // The case that reached CI: `evals/results/` was gitignored, so an eval
+    // artifact cited as evidence was on my disk and nowhere else. The gate
+    // passed locally and failed for everyone — which is the failure mode the
+    // whole matrix exists to prevent, arriving through the matrix itself.
+    const found = await problems('| a requirement | PASS | artifact:evals/results/run.json | |', {
+      artifacts: ['evals/results/run.json'],
+      tracked: [],
+    });
+    assert.match(messages(found), /exists locally but is not tracked by git/);
+  });
+
+  test('a committed artifact is accepted', async () => {
+    const found = await problems('| a requirement | PASS | artifact:docs/exists.md | |', {
+      artifacts: ['docs/exists.md'],
+      tracked: ['docs/exists.md'],
+    });
     assert.deepEqual(found, [], messages(found));
   });
 
