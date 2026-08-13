@@ -34,7 +34,17 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = process.cwd();
-const MATRIX = 'docs/alpha3-evidence-matrix.md';
+
+/**
+ * Every shipped matrix, checked on every run.
+ *
+ * A milestone's matrix is not superseded by the next one: alpha.3's rows are the
+ * evidence for alpha.3's claims, and a rename or a deleted test that invalidates
+ * one of them is a regression in the record even after alpha.4 ships. Checking
+ * only the newest would let the older claims rot quietly, which is the failure the
+ * gate exists to prevent — one milestone later than before.
+ */
+const MATRICES = ['docs/alpha3-evidence-matrix.md', 'docs/alpha4-evidence-matrix.md'];
 
 export const STATUSES = ['PASS', 'FAIL', 'NOT TESTED', 'NOT APPLICABLE'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -250,24 +260,11 @@ async function buildTestCorpus(): Promise<string> {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  let markdown: string;
-  try {
-    markdown = await readFile(path.join(ROOT, MATRIX), 'utf8');
-  } catch {
-    process.stderr.write(`evidence gate: ${MATRIX} is missing\n`);
-    return 2;
-  }
-
-  const rows = parseMatrix(markdown);
-  if (rows.length === 0) {
-    process.stderr.write(`evidence gate: no table rows found in ${MATRIX}\n`);
-    return 2;
-  }
-
   const tracked = trackedFiles();
+  const corpus = await buildTestCorpus();
 
-  const problems = await checkRows(rows, {
-    testCorpus: await buildTestCorpus(),
+  const options: CheckOptions = {
+    testCorpus: corpus,
     ...(tracked ? { isTracked: (p: string) => tracked.has(p) } : {}),
     artifactExists: async (rel) => {
       try {
@@ -277,29 +274,79 @@ async function main(argv: readonly string[]): Promise<number> {
         return false;
       }
     },
-  });
+  };
 
-  const counts = STATUSES.map((s) => [s, rows.filter((r) => r.status === s).length] as const);
+  const reports: Array<{ matrix: string; rows: Row[]; problems: Problem[] }> = [];
+
+  for (const matrix of MATRICES) {
+    let markdown: string;
+    try {
+      markdown = await readFile(path.join(ROOT, matrix), 'utf8');
+    } catch {
+      // A matrix that does not exist yet is not a failure; one that exists and is
+      // unreadable is caught above. The "no matrix at all" case is checked below.
+      continue;
+    }
+
+    const rows = parseMatrix(markdown);
+    if (rows.length === 0) {
+      process.stderr.write(`evidence gate: no table rows found in ${matrix}\n`);
+      return 2;
+    }
+    reports.push({ matrix, rows, problems: await checkRows(rows, options) });
+  }
+
+  if (reports.length === 0) {
+    process.stderr.write(`evidence gate: none of ${MATRICES.join(', ')} could be read\n`);
+    return 2;
+  }
+
+  const allProblems = reports.flatMap((r) => r.problems);
+  const allRows = reports.flatMap((r) => r.rows);
+  const counts = STATUSES.map((s) => [s, allRows.filter((r) => r.status === s).length] as const);
 
   if (argv.includes('--json')) {
     process.stdout.write(
-      `${JSON.stringify({ rows: rows.length, counts: Object.fromEntries(counts), problems }, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          matrices: reports.map((r) => ({
+            matrix: r.matrix,
+            rows: r.rows.length,
+            counts: Object.fromEntries(STATUSES.map((s) => [s, r.rows.filter((x) => x.status === s).length])),
+            problems: r.problems,
+          })),
+          rows: allRows.length,
+          counts: Object.fromEntries(counts),
+          problems: allProblems,
+        },
+        null,
+        2,
+      )}\n`,
     );
-    return problems.length === 0 ? 0 : 1;
+    return allProblems.length === 0 ? 0 : 1;
   }
 
-  process.stdout.write(
-    `evidence gate: ${rows.length} requirement(s) — ` + counts.map(([s, n]) => `${n} ${s}`).join(', ') + '\n',
-  );
+  for (const report of reports) {
+    const perFile = STATUSES.map(
+      (status) => [status, report.rows.filter((r) => r.status === status).length] as const,
+    );
+    process.stdout.write(
+      `${report.matrix}: ${report.rows.length} requirement(s) — ` +
+        perFile.map(([s, n]) => `${n} ${s}`).join(', ') +
+        '\n',
+    );
+  }
 
-  if (problems.length === 0) {
+  if (allProblems.length === 0) {
     process.stdout.write('every claim points at something that exists\n');
     return 0;
   }
 
-  process.stdout.write(`\n${problems.length} problem(s):\n\n`);
-  for (const p of problems) {
-    process.stdout.write(`  ${MATRIX}:${p.line}  ${p.requirement}\n      ${p.message}\n`);
+  process.stdout.write(`\n${allProblems.length} problem(s):\n\n`);
+  for (const report of reports) {
+    for (const p of report.problems) {
+      process.stdout.write(`  ${report.matrix}:${p.line}  ${p.requirement}\n      ${p.message}\n`);
+    }
   }
   return 1;
 }

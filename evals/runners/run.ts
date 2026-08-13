@@ -299,12 +299,18 @@ export function classifyFailure(
 
   const delegations = evidence.delegations ?? [];
   if (delegations.length > 0) {
-    // A child that burned requests and returned nothing useful is a bad
-    // delegation; one that ran when the task was a single edit is an unnecessary
-    // one. Both are the model's judgement, not the runtime's.
-    if (delegations.some((d) => d.status === 'denied' || d.status === 'budget_exceeded')) {
-      return 'MODEL_BAD_DELEGATION';
-    }
+    // A refused delegation and an unaffordable one are different problems. The
+    // model chose to dispatch something the policy or the depth limit refused —
+    // its judgement. Running out of allowance is the *configuration* speaking, and
+    // §35 gives it its own class so a session that was simply too small to finish
+    // does not read as a model that cannot delegate.
+    //
+    // Note what this class deliberately does not cover: a plain
+    // LOOP_BUDGET_EXCEEDED on the parent's own loop stays MODEL_CAPABILITY, which
+    // is the distinction alpha.3 §25 drew and is still right — a model that spent
+    // sixteen steps without finishing has a capability problem, not a budget one.
+    if (delegations.some((d) => d.status === 'budget_exceeded')) return 'BUDGET_BLOCKED';
+    if (delegations.some((d) => d.status === 'denied')) return 'MODEL_BAD_DELEGATION';
     if (
       evidence.delegationSuite === undefined &&
       delegations.every((d) => d.toolCalls === 0) &&
@@ -314,14 +320,13 @@ export function classifyFailure(
     }
   }
 
-  if (/LOOP_BUDGET_EXCEEDED/.test(all)) return 'BUDGET_BLOCKED';
   if (/PROTECTED_PATH|TOOL_DENIED|NETWORK_DENIED|hard_deny/.test(all)) return 'POLICY_BLOCKED';
   if (/TOOL_INVALID_ARGS|did not match its schema/.test(all)) return 'MODEL_TOOL_SCHEMA';
   if (/STALE_FILE|NON_UNIQUE_MATCH|INSUFFICIENT_READ_COVERAGE/.test(all)) return 'MODEL_EDIT_STRATEGY';
   if (/MODEL_INVALID_RESPONSE|__unparsed/.test(all)) return 'ADAPTER_BUG';
   if (/INTERNAL_ERROR|ReferenceError|TypeError/.test(all)) return 'KERNEL_BUG';
   if (/ENOENT|EACCES|not available on this execution backend/.test(all)) return 'ENVIRONMENT_ERROR';
-  if (/REPEATED_FAILURE/.test(all)) return 'MODEL_CAPABILITY';
+  if (/REPEATED_FAILURE|LOOP_BUDGET_EXCEEDED/.test(all)) return 'MODEL_CAPABILITY';
 
   // Omission vs wrong action (§25).
   //

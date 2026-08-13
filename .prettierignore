@@ -2,3 +2,9 @@ node_modules/
 pnpm-lock.yaml
 dist/
 coverage/
+
+# Released eval artifacts are evidence, and evidence is not reformatted. `pnpm
+# format` rewrote alpha.3's artifact — changing bytes the evidence matrix points
+# at, months after the run that produced them. The runner writes these; nothing
+# else should touch them.
+evals/results/

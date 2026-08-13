@@ -212,6 +212,65 @@ describe('failure classification (§25)', () => {
     assert.equal(classify(['tool result: PROTECTED_PATH']), 'POLICY_BLOCKED');
   });
 
+  describe('the alpha.4 delegation classes (§35)', () => {
+    /** Classify with delegation evidence attached. */
+    const withDelegations = (
+      failures: string[],
+      delegations: Array<{ status: string; modelRequests: number; toolCalls: number }>,
+    ): FailureClass | undefined =>
+      classifyFailure(failures, '', { turnState: 'completed', originalFiles: {}, delegations });
+
+    test('a refused delegation is bad judgement by the model', () => {
+      assert.equal(
+        withDelegations(
+          ['the answer names the parsing function: no'],
+          [{ status: 'denied', modelRequests: 0, toolCalls: 0 }],
+        ),
+        'MODEL_BAD_DELEGATION',
+      );
+    });
+
+    test('an unaffordable delegation is a budget problem, not a model one', () => {
+      // The distinction matters for what you do next: BUDGET_BLOCKED means raise
+      // the allowance, MODEL_BAD_DELEGATION means the model asked for the wrong
+      // thing.
+      assert.equal(
+        withDelegations(['a check failed'], [{ status: 'budget_exceeded', modelRequests: 0, toolCalls: 0 }]),
+        'BUDGET_BLOCKED',
+      );
+    });
+
+    test("a parent's own budget exhaustion is still MODEL_CAPABILITY", () => {
+      // alpha.3 §25 drew this line and it is still right: sixteen steps without
+      // finishing is a capability problem. BUDGET_BLOCKED is for a *delegation*
+      // that could not be afforded, which is the configuration speaking.
+      assert.equal(classify(['turn ended as failed LOOP_BUDGET_EXCEEDED']), 'MODEL_CAPABILITY');
+    });
+
+    test('a child that never ran the runtime is our bug rather than the model', () => {
+      assert.equal(
+        classify(['a delegation completed: no delegation was dispatched']),
+        'DELEGATION_RUNTIME_BUG',
+      );
+      assert.equal(
+        classify(['the child actually sampled a model and ran a tool: the child executed no tool']),
+        'DELEGATION_RUNTIME_BUG',
+      );
+    });
+
+    test('a nested delegation attempt is a bad delegation', () => {
+      assert.equal(classify(['tool result: error: DELEGATION_DEPTH_EXCEEDED']), 'MODEL_BAD_DELEGATION');
+    });
+
+    test('a skill that failed to narrow is a skill runtime bug', () => {
+      assert.equal(classify(['the skill did not narrow: Edit was still available']), 'SKILL_RUNTIME_BUG');
+    });
+
+    test('NEGATIVE CONTROL: delegation evidence with no failure classifies as nothing', () => {
+      assert.equal(withDelegations([], [{ status: 'completed', modelRequests: 2, toolCalls: 1 }]), undefined);
+    });
+  });
+
   test('a budget exhaustion is a capability problem, not an omission', () => {
     assert.equal(
       classify(['turn ends as completed: turn ended as failed LOOP_BUDGET_EXCEEDED']),

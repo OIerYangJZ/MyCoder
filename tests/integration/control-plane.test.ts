@@ -9,7 +9,13 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createTestWorkspace } from '../helpers/workspace.ts';
+import {
+  agentFile,
+  createTestWorkspace,
+  delegateStep,
+  isChildRequest,
+  skillFile,
+} from '../helpers/workspace.ts';
 import { FakeModel } from '../../src/model/adapters/fake.ts';
 import { MemorySessionStore } from '../../src/session/store.ts';
 import { Redactor } from '../../src/security/redactor.ts';
@@ -469,5 +475,195 @@ describe('fake model plumbing', () => {
     assert.ok(events.filter((e) => e === 'text_delta').length > 1, 'text really streams');
     assert.ok(events.includes('usage'));
     assert.equal(events.at(-1), 'finish');
+  });
+});
+
+describe('delegation in the control plane (alpha.4 §40, §41)', () => {
+  test('a delegated approval names the agent, not the root session', () => {
+    // §40: the user is being asked to approve something a *subagent* wants. The
+    // same action from the root agent is a different decision, and presenting the
+    // two identically puts their trust in the wrong place.
+    const text = renderApproval({
+      subject: {
+        key: 'process.exec:npm:install',
+        title: 'Run npm install zod',
+        details: ['command: npm install zod'],
+        risk: 'high',
+      },
+      toolName: 'Shell',
+      toolCallId: 'call_9',
+      pending: [
+        {
+          action: 'ask',
+          access: {
+            kind: 'network.connect',
+            host: 'registry.npmjs.org',
+            port: 443,
+            via: 'shell',
+            display: 'registry.npmjs.org:443',
+          },
+          subjectKey: 'network.connect:shell:registry.npmjs.org:443',
+          reason: 'network access is opt-in per host',
+          final: false,
+          errorCode: 'NETWORK_DENIED',
+        },
+      ],
+      delegation: { agent: 'implementation-worker', delegationId: 'dlg_abc', depth: 1 },
+    });
+
+    assert.match(text, /agent    : implementation-worker/);
+    assert.match(text, /subagent, depth 1/);
+    assert.match(text, /delegation: dlg_abc/);
+    assert.match(text, /child action: Run npm install zod/);
+
+    // NEGATIVE CONTROL: without the delegation field the same prompt reads as the
+    // root agent's, so the attribution above is doing work rather than always
+    // being printed.
+    const root = renderApproval({
+      subject: { key: 'k', title: 'Run npm install zod', details: [], risk: 'low' },
+      toolName: 'Shell',
+      toolCallId: 'call_10',
+      pending: [],
+    });
+    assert.ok(!root.includes('subagent'), 'a root approval mentioned a subagent');
+    assert.match(root, /action   : Run npm install zod/);
+  });
+
+  test('/status names the active delegation and the cost split', async () => {
+    const ws = await createTestWorkspace({
+      files: {
+        '.mycoder/agents/reviewer.md': agentFile({ name: 'reviewer', profile: 'read-only', tools: ['Read'] }),
+        '.mycoder/skills/inspect/SKILL.md': skillFile({ name: 'inspect', tools: ['Read', 'Delegate'] }),
+        'src/a.ts': 'export const a = 1;\n',
+      },
+      responder: (request) => {
+        if (isChildRequest(request, 'reviewer')) {
+          // While the child is running, ask the control plane what it can see.
+          const status = statusDuringChild ?? '';
+          if (status === '') statusDuringChild = pendingStatus();
+          return { kind: 'final', text: 'nothing to report' };
+        }
+        return request.messages.some((m) => m.parts.some((p) => p.type === 'tool_result'))
+          ? { kind: 'final', text: 'done' }
+          : delegateStep('reviewer', 'SECRET_TASK_TEXT_do_not_print: review src/a.ts');
+      },
+    });
+
+    let statusDuringChild: string | undefined;
+    const pendingStatus = (): string => {
+      const active = ws.kernel.delegation!.activeDelegations();
+      return JSON.stringify(active);
+    };
+
+    try {
+      await ws.kernel.control.execute('/skills use inspect');
+      await ws.kernel.session.runTurn('Delegate a review.');
+
+      // §41: while a child is live, the operational state is visible…
+      assert.ok(statusDuringChild, 'the child never ran');
+      assert.match(statusDuringChild, /reviewer/);
+      assert.match(statusDuringChild, /"depth":1/);
+      // …and the task text is not part of it. `/status` is the screen people paste
+      // into bug reports.
+      assert.ok(!statusDuringChild.includes('SECRET_TASK_TEXT'), 'the child task text leaked into /status');
+
+      const status = await ws.kernel.control.execute('/status');
+      assert.ok(status.ok, status.message);
+      assert.match(status.message, /delegation   : 1 finished/);
+      assert.match(status.message, /skills       : inspect \(run\)/);
+      assert.ok(!status.message.includes('SECRET_TASK_TEXT'), 'the task text reached /status');
+
+      // The cost line appears only when there is a cost to report: a fabricated
+      // $0.0000 would be worse than its absence (§18).
+      const cost = ws.kernel.session.costBreakdown;
+      assert.equal(cost.totalUsd, 0, 'the fake provider has no pricing, so cost must stay zero');
+      assert.ok(!status.message.includes('cost         :'), 'an unpriced session printed a cost line');
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('/agents reports what ran and what it cost', async () => {
+    const ws = await createTestWorkspace({
+      files: {
+        '.mycoder/agents/reviewer.md': agentFile({ name: 'reviewer', profile: 'read-only', tools: ['Read'] }),
+        'src/a.ts': 'export const a = 1;\n',
+      },
+      responder: (request) =>
+        isChildRequest(request, 'reviewer')
+          ? { kind: 'final', text: 'looks fine' }
+          : request.messages.some((m) => m.parts.some((p) => p.type === 'tool_result'))
+            ? { kind: 'final', text: 'done' }
+            : delegateStep('reviewer', 'Review src/a.ts.'),
+    });
+
+    try {
+      const before = await ws.kernel.control.execute('/agents');
+      assert.match(before.message, /reviewer/);
+      assert.ok(!before.message.includes('Delegations this session'), 'history appeared before anything ran');
+
+      await ws.kernel.session.runTurn('Delegate a review.');
+
+      const after = await ws.kernel.control.execute('/agents');
+      assert.match(after.message, /Delegations this session/);
+      assert.match(after.message, /reviewer\s+completed/);
+      assert.match(after.message, /\d+ req, \d+ tools/);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('delegation is refused by a project rule that names the agent', async () => {
+    // §11: discovery must not imply invocation. The builtin profiles allow
+    // `agent.invoke` because a child cannot exceed its parent — but a project that
+    // wants a narrower answer must be able to say so, and this is that claim.
+    const ws = await createTestWorkspace({
+      files: {
+        '.mycoder/agents/reviewer.md': agentFile({ name: 'reviewer', profile: 'read-only', tools: ['Read'] }),
+        '.mycoder/agents/banned.md': agentFile({ name: 'banned', profile: 'read-only', tools: ['Read'] }),
+        '.mycoder/permissions.toml': [
+          '[[rule]]',
+          'action = "deny"',
+          'capability = "agent.invoke"',
+          'pattern = "banned"',
+          'note = "this project does not use the banned agent"',
+        ].join('\n'),
+        'src/a.ts': 'export const a = 1;\n',
+      },
+      responder: (request) => {
+        if (isChildRequest(request, 'reviewer')) return { kind: 'final', text: 'allowed child ran' };
+        const results = request.messages
+          .flatMap((m) => m.parts)
+          .filter((p) => p.type === 'tool_result').length;
+        if (results === 0) return delegateStep('banned', 'You should not run.');
+        if (results === 1) return delegateStep('reviewer', 'You should run.');
+        return { kind: 'final', text: 'done' };
+      },
+    });
+
+    try {
+      await ws.kernel.session.runTurn('Try both agents.');
+
+      const results: string[] = [];
+      for (const message of ws.kernel.context.history()) {
+        for (const part of message.parts) {
+          if (part.type === 'tool_result') results.push(part.content);
+        }
+      }
+
+      // The named agent is refused by the policy layer, with the project's own note.
+      assert.match(results[0]!, /DELEGATION_DENIED|error:/);
+      assert.match(results[0]!, /banned agent/);
+
+      // NEGATIVE CONTROL: the rule is specific. The other agent still runs, so the
+      // denial is the pattern doing work rather than delegation being off.
+      assert.match(results[1]!, /\[subagent:reviewer\] completed/);
+
+      const records = ws.kernel.session.delegationRecords();
+      assert.equal(records.length, 1, 'a denied delegation should not have produced a child run');
+      assert.equal(records[0]!.agent, 'reviewer');
+    } finally {
+      await ws.cleanup();
+    }
   });
 });
