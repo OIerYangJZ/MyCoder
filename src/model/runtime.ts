@@ -368,6 +368,45 @@ export class HttpModelRuntime implements ModelRuntime {
         safeDetails: { status, provider: resolved.provider.id },
       });
     }
+    // 402, and the body codes providers use for the same condition on a 400 or a
+    // 429. Found when a live experiment ran the DeepSeek account dry mid-run: every
+    // attempt failed with zero tokens and the operator had to read the HTTP status
+    // out of a debug probe to find out why.
+    //
+    // What was actually wrong with the old behaviour — it fell through to the
+    // generic branch below — is narrower than it first looks, and worth stating
+    // accurately rather than dramatically:
+    //
+    //   - **`blame: 'provider'` named the wrong actor.** An exhausted balance is
+    //     the account holder's to fix, and `blame` is what the eval and the CLI use
+    //     to decide whose problem to report.
+    //   - **The message said `Provider returned HTTP 402` and nothing else.** The
+    //     remedy — top up, or point the alias elsewhere — was left to the reader.
+    //
+    // What was *not* wrong: it was already non-retryable, so there was no retry
+    // storm. And the eval run in question classified as `UNKNOWN` rather than as
+    // `ADAPTER_BUG`, because the error never reached a tool result for the
+    // classifier to read. The `MODEL_INVALID_RESPONSE` → `ADAPTER_BUG` path is a
+    // real hazard for a 4xx whose text *does* surface, which is why the classifier
+    // was tightened too — but it is not what happened here.
+    //
+    // Reusing `MODEL_AUTH_ERROR` rather than adding a code keeps the public error
+    // vocabulary unchanged (AGENTS.md rule 4 would want an ADR for that), and the
+    // remedy has the same shape — the user fixes their provider account. The
+    // message carries the distinction the code does not.
+    if (status === 402 || /insufficient[_ ](quota|balance)|exceeded your current quota/i.test(body)) {
+      return kernelError(
+        'MODEL_AUTH_ERROR',
+        `Provider "${resolved.provider.id}" refused the request for billing reasons (HTTP ${status}). ` +
+          'The credential is being accepted; the account cannot pay for the request. Top it up, or ' +
+          'point the alias at another provider.',
+        {
+          blame: 'user',
+          retryable: false,
+          safeDetails: { status, provider: resolved.provider.id, reason: 'quota-or-balance' },
+        },
+      );
+    }
     if (status === 429) {
       return kernelError('MODEL_RATE_LIMIT', `Provider "${resolved.provider.id}" is rate limiting.`, {
         blame: 'provider',

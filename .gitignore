@@ -14,3 +14,7 @@ coverage/
 # is what makes `!` work — and what makes the rule below true rather than aspirational.
 evals/results/*
 !evals/results/release/
+# An experiment artifact backing a documented conclusion has to be readable for the
+# same reason a release artifact does: the numbers in the write-up are only checkable
+# if the run behind them is.
+!evals/results/experiments/

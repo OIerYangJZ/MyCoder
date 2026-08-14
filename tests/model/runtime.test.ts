@@ -10,6 +10,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 import { HttpModelRuntime } from '../../src/model/runtime.ts';
 import { OpenAiChatAdapter } from '../../src/model/adapters/openai-chat.ts';
@@ -117,6 +118,23 @@ async function collect(events: AsyncIterable<ModelEvent>): Promise<ModelEvent[]>
 
 const errorOf = (events: ModelEvent[]) => events.find((e) => e.type === 'error');
 
+/**
+ * The KernelError the runtime produces for an HTTP status and body.
+ *
+ * Drives the real `HttpModelRuntime` rather than calling the mapper directly, so
+ * the adapter's own `mapHttpError` gets first refusal exactly as it does in
+ * production — the ordering between adapter and runtime is part of what is under
+ * test.
+ */
+async function mapHttpStatus(status: number, body: string) {
+  const egress = new ScriptedEgress([async () => ({ status, headers: {}, body })]);
+  const runtime = makeRuntime(egress);
+  const events = await collect(await runtime.generate(REQUEST, { sessionId: 's' }));
+  const failure = errorOf(events);
+  if (!failure || failure.type !== 'error') throw new Error(`no error event for HTTP ${status}`);
+  return failure.error;
+}
+
 describe('a stalled request cannot hang the turn', () => {
   test('a provider that never returns headers times out, and the timeout is retried', async () => {
     const egress = new ScriptedEgress([
@@ -221,5 +239,42 @@ describe('retries stay bounded', () => {
       1,
       'a rejected credential will be rejected again; retrying only burns time',
     );
+  });
+});
+
+describe('an exhausted provider account is the environment, not our bug', () => {
+  test('402 maps to a non-retryable user error that names billing', async () => {
+    // The condition that produced this test: a live experiment ran the DeepSeek
+    // account dry mid-run. Thirty attempts failed with 0 tokens each, and the only
+    // way to find out why was a hand-written probe that printed the HTTP status —
+    // the error the kernel produced said `Provider returned HTTP 402`, blamed the
+    // provider, and offered no remedy.
+    const fixture = JSON.parse(
+      await readFile(new URL('./fixtures/openai/http-payment-required.json', import.meta.url), 'utf8'),
+    ) as { status: number; body: unknown };
+
+    const err = await mapHttpStatus(fixture.status, JSON.stringify(fixture.body));
+
+    assert.equal(err.code, 'MODEL_AUTH_ERROR');
+    assert.equal(err.blame, 'user', "an exhausted balance is the account holder's to fix");
+    assert.equal(err.retryable, false, 'retrying a request the account cannot pay for burns wall time');
+    assert.match(err.message, /billing/i);
+    assert.match(err.message, /Top it up/);
+  });
+
+  test('a body that says "insufficient balance" is caught even on a 400', async () => {
+    // Providers disagree about the status for this: some use 402, some a 400 or a
+    // 429 with the reason in the body. The remedy is the same either way.
+    const err = await mapHttpStatus(400, JSON.stringify({ error: { message: 'Insufficient Balance' } }));
+    assert.equal(err.code, 'MODEL_AUTH_ERROR');
+    assert.equal(err.retryable, false);
+  });
+
+  test('NEGATIVE CONTROL: an ordinary 400 is still a provider-shaped failure', async () => {
+    // Without this, the two assertions above would pass just as well if every 4xx
+    // had been relabelled as a billing problem.
+    const err = await mapHttpStatus(400, JSON.stringify({ error: { message: 'bad request' } }));
+    assert.equal(err.code, 'MODEL_INVALID_RESPONSE');
+    assert.equal(err.retryable, false);
   });
 });

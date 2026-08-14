@@ -1,0 +1,45 @@
+{
+  "generatedAt": "2026-08-14T07:43:16.181Z",
+  "experiment": "delegation-utility",
+  "question": "Does offering delegation change what a real model does, and does it pay?",
+  "provider": "deepseek",
+  "model": "deepseek-chat",
+  "runsPerCell": 5,
+  "cells": [],
+  "descriptionVariants": [
+    {
+      "variant": "shipped",
+      "attempts": 5,
+      "solved": 5,
+      "attemptsThatDelegated": 0,
+      "delegationsTotal": 0,
+      "modelRequests": {
+        "median": 6,
+        "min": 0,
+        "max": 9
+      },
+      "tokens": {
+        "median": 33773,
+        "min": 0,
+        "max": 51802
+      }
+    },
+    {
+      "variant": "neutral",
+      "attempts": 5,
+      "solved": 5,
+      "attemptsThatDelegated": 0,
+      "delegationsTotal": 0,
+      "modelRequests": {
+        "median": 6,
+        "min": 0,
+        "max": 7
+      },
+      "tokens": {
+        "median": 31659,
+        "min": 0,
+        "max": 39428
+      }
+    }
+  ]
+}
