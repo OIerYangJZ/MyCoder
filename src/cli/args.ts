@@ -27,6 +27,15 @@ export interface CliArgs {
   profile?: string;
   cwd?: string;
   remote?: string;
+  /**
+   * Execution backend (alpha.5 §40).
+   *
+   * `--backend container` is a *requirement*, not a preference: if the runtime is
+   * unusable the session fails to start. There is deliberately no
+   * `--backend auto`, because "try the container and fall back" is the silent
+   * degradation of a security decision.
+   */
+  backend?: 'local' | 'container';
   readOnly: boolean;
   noTelemetry: boolean;
   json: boolean;
@@ -106,6 +115,17 @@ export function parseArgs(argv: readonly string[]): CliArgs {
         break;
       }
 
+      case '--backend': {
+        const v = takeValue(arg);
+        if (v === 'local' || v === 'container') args.backend = v;
+        else if (v === 'ssh') {
+          args.errors.push('--backend ssh is selected with --remote <name>, which names the host.');
+        } else if (v !== undefined) {
+          args.errors.push(`--backend must be local or container, not "${v}"`);
+        }
+        break;
+      }
+
       case '--log-level': {
         const v = takeValue(arg);
         if (v) args.logLevel = v;
@@ -165,6 +185,16 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   }
   if (args.readOnly) args.profile = 'read-only';
 
+  // Two backends cannot both be the backend. Reported rather than resolved by a
+  // precedence rule, because either guess would silently run the session
+  // somewhere the user did not ask for.
+  if (args.backend === 'container' && args.remote) {
+    args.errors.push(
+      '--backend container and --remote name two different execution backends. ' +
+        'Running a container on a remote host is not implemented in v0.1; pick one.',
+    );
+  }
+
   return args;
 }
 
@@ -178,6 +208,7 @@ Usage:
   mycoder --profile <name>          permission profile: read-only | workspace-dev | review
   mycoder --cwd <path>              workspace root (defaults to the current directory)
   mycoder --remote <name>           run tools on a configured SSH remote
+  mycoder --backend container       run commands in a container (fails if docker is unusable)
   mycoder --read-only               force the read-only profile
   mycoder --no-telemetry            disable telemetry entirely
   mycoder --json                    emit machine-readable events on stdout

@@ -90,6 +90,17 @@ export interface TestWorkspaceOptions {
   /** Extra CLI-level overrides, for tests that need a resumed session. */
   resumeSessionId?: string;
   store?: import('../../src/session/store.ts').SessionStore;
+  /**
+   * Execution backend for this workspace (alpha.5).
+   *
+   * `'container'` boots the *same* kernel against `ContainerExecutionBackend`,
+   * which is the point: the composition suites (§43–§47) have to prove that
+   * Subagent, Skill, Hook, replay and resume behave identically on a backend they
+   * know nothing about. It requires a working Docker runtime and throws if there
+   * is none — see `containerAvailable()`, which is how the suites skip rather than
+   * fail on a machine without one.
+   */
+  backend?: 'local' | 'container';
 }
 
 export interface TestWorkspace {
@@ -165,6 +176,7 @@ export async function createTestWorkspace(opts: TestWorkspaceOptions = {}): Prom
     ...(opts.captureLog ? { logSink: (line: string) => opts.captureLog!.push(line) } : {}),
     ...(opts.store ? { store: opts.store } : {}),
     ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
+    ...(opts.backend ? { backend: opts.backend } : {}),
   });
 
   if (opts.registerCanary !== false) {
@@ -199,9 +211,35 @@ export async function createTestWorkspace(opts: TestWorkspaceOptions = {}): Prom
 
     async cleanup() {
       await kernel.shutdown();
-      await rm(base, { recursive: true, force: true });
+      await removeWithRetry(base);
     },
   };
+}
+
+/**
+ * Remove a temp tree, tolerating a bind mount that has not finished going away.
+ *
+ * `docker run --rm` returns when the *container* exits; the daemon unmounts the
+ * bind afterwards, and on Docker Desktop that lag is measurable — under a
+ * parallel suite, `rmdir` of a directory that was a mount target returns
+ * `EACCES` on macOS rather than `EBUSY`, which reads like a permissions bug and
+ * is not one.
+ *
+ * Retried rather than ignored: swallowing the error would leave temp trees
+ * behind on every run, and asserting on the first attempt would make the
+ * container suites flaky in exactly the configuration CI uses.
+ */
+async function removeWithRetry(target: string, attempts = 10): Promise<void> {
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      await rm(target, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (i === attempts - 1 || (code !== 'EACCES' && code !== 'EBUSY' && code !== 'ENOTEMPTY')) throw e;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (i + 1)));
+    }
+  }
 }
 
 /**

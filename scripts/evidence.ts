@@ -44,7 +44,11 @@ const ROOT = process.cwd();
  * only the newest would let the older claims rot quietly, which is the failure the
  * gate exists to prevent — one milestone later than before.
  */
-const MATRICES = ['docs/alpha3-evidence-matrix.md', 'docs/alpha4-evidence-matrix.md'];
+const MATRICES = [
+  'docs/alpha3-evidence-matrix.md',
+  'docs/alpha4-evidence-matrix.md',
+  'docs/alpha5-evidence-matrix.md',
+];
 
 export const STATUSES = ['PASS', 'FAIL', 'NOT TESTED', 'NOT APPLICABLE'] as const;
 export type Status = (typeof STATUSES)[number];

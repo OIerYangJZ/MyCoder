@@ -113,7 +113,30 @@ export interface SessionStartedPayload {
   model: string;
   permissionProfile: string;
   backend: string;
-  sandboxStrength: 'policy-enforced' | 'os-isolated';
+  /**
+   * The summary label. `container-enforced` joined the vocabulary in alpha.5;
+   * an alpha.4 log still says exactly what it said, which is why the new value is
+   * an addition rather than a redefinition of `os-isolated`.
+   */
+  sandboxStrength: 'policy-enforced' | 'container-enforced' | 'os-isolated';
+  /**
+   * Per-dimension enforcement (alpha.5 §7).
+   *
+   * Written so the audit record cannot be read as claiming more than was in
+   * force: a log line saying `os-isolated` with no breakdown was the most an
+   * alpha.4 reader could get, and for a container it would have been wrong about
+   * the trusted file broker. Optional because logs written before alpha.5 do not
+   * have it.
+   */
+  enforcement?: {
+    processFilesystem: string;
+    processNetwork: string;
+    processPrivileges: string;
+    environmentIsolation: string;
+    hostFileBroker: string;
+    networkAllowlist: string;
+    platformNotes?: readonly string[];
+  };
   kernelVersion: string;
 }
 

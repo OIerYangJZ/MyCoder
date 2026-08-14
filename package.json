@@ -25,6 +25,8 @@
     "lint:selftest": "node --test --experimental-strip-types \"tests/lint/**/*.test.ts\"",
     "mycoder": "node src/cli/main.ts",
     "test": "node --test --experimental-strip-types \"tests/**/*.test.ts\"",
+    "test:conformance": "node --test --experimental-strip-types tests/integration/backend-conformance.test.ts",
+    "test:container": "KERNEL_CONTAINER=1 node --test --experimental-strip-types \"tests/live/container-*.test.ts\" \"tests/unit/container-plan.test.ts\" \"tests/integration/backend-conformance.test.ts\"",
     "test:credentials": "node --test --experimental-strip-types \"tests/security/credential-file.test.ts\" \"tests/security/credential-isolation.test.ts\"",
     "test:delegation": "node --test --experimental-strip-types \"tests/integration/delegation*.test.ts\" \"tests/security/delegation-attacks.test.ts\" \"tests/integration/skill-runtime.test.ts\"",
     "test:evals": "node --test --experimental-strip-types \"tests/evals/**/*.test.ts\"",

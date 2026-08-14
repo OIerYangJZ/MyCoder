@@ -56,6 +56,17 @@ export function newChildRunId(nowMs: number): ChildRunId {
   return makeId('crn', nowMs) as ChildRunId;
 }
 
+/**
+ * A short random token for naming an ephemeral external resource.
+ *
+ * Used for container names, which have to be unique per execution, valid in
+ * Docker's charset, and *not* derived from anything the model supplies — a name
+ * built from a tool argument would be a way to reach a flag.
+ */
+export function shortId(length = 10): string {
+  return randomUUID().replace(/-/g, '').slice(0, length);
+}
+
 /** Tool call ids originate from the model and are therefore untrusted input. */
 export function asToolCallId(raw: string): ToolCallId {
   return raw as ToolCallId;

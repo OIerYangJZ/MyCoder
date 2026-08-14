@@ -12,7 +12,7 @@
  */
 
 import { APP_DISPLAY_NAME, PROJECT_DIR } from '../app.ts';
-import { describeSandbox, networkEnforcementLevel } from '../execution/sandbox.ts';
+import { describeEnforcement, networkEnforcementLabel } from '../execution/enforcement.ts';
 import { ModelRegistry } from '../model/profiles.ts';
 import type { GoalState } from '../context/context-engine.ts';
 import type { LoopBudget } from '../session/step.ts';
@@ -86,6 +86,19 @@ export interface ControlHost {
    * people paste into bug reports.
    */
   credentialSources: ReadonlyArray<{ provider: string; description: string }>;
+  /**
+   * Extra `/status` lines contributed by the active backend (alpha.5 §41).
+   *
+   * The container backend uses this to report its runtime, image reference and
+   * digest, network mode and mount shape. It is a callback returning strings
+   * rather than a typed `container?: {...}` field on purpose: the control plane
+   * has no business knowing what a container is, and a backend-shaped union here
+   * would be the first `if (kind === 'container')` in shared code.
+   *
+   * Whatever it returns is user-visible, so it must be safe to paste into a bug
+   * report: an image digest yes, a host path layout no.
+   */
+  backendDetail?: () => string[];
   now(): number;
   /** Switch execution backend. Applied after the current tool call (§19.4). */
   connectRemote(name: string): Promise<{ ok: boolean; message: string }>;
@@ -419,7 +432,7 @@ const handlePermissions: ControlHandler = (args, host) => {
 
   const layers = host.policy.describeLayers();
   const approvals = host.policy.approvals.entries();
-  const sandbox = describeSandbox(host.environment.sandboxStrength);
+  const sandbox = describeEnforcement(host.environment.enforcement);
 
   return {
     ok: true,
@@ -429,6 +442,10 @@ const handlePermissions: ControlHandler = (args, host) => {
       `Available profiles : ${listProfileNames().join(', ')}\n` +
       `Policy layers      : ${layers.map((l) => `${l.name}(${l.profile})`).join(' ∩ ')}\n` +
       `Isolation          : ${sandbox.label}\n` +
+      // Per dimension, not just the summary: the summary is a rounding of these,
+      // and a reader asking "is my `.env` reachable by a subprocess?" needs the
+      // filesystem line rather than a label that averages six answers (§7).
+      sandbox.lines.map((l) => `                     ${l}\n`).join('') +
       `                     ${sandbox.caveat}\n` +
       `Session approvals  : ${approvals.length}\n` +
       approvals.map((a) => `  ${a.granted ? 'allow' : 'deny '} ${a.subjectKey}`).join('\n') +
@@ -441,7 +458,7 @@ const handleStatus: ControlHandler = (_args, host) => {
   const usage = host.contextUsage();
   const session = host.session;
   const model = host.modelRegistry.resolve(session.activeModelAlias);
-  const sandbox = describeSandbox(host.environment.sandboxStrength);
+  const sandbox = describeEnforcement(host.environment.enforcement);
   const dirty = session.editJournal.dirtyPaths();
   const u = session.usageSnapshot;
   const { active, finished } = host.delegations();
@@ -460,7 +477,15 @@ const handleStatus: ControlHandler = (_args, host) => {
       `backend      : ${host.environment.description}`,
       `remote       : ${host.activeRemote ?? 'none (local)'}`,
       `profile      : ${host.config.security.permissionProfile}`,
-      `isolation    : ${sandbox.label} — network from Shell is ${networkEnforcementLevel(host.environment.sandboxStrength)}`,
+      `isolation    : ${sandbox.label} — network from Shell is ${networkEnforcementLabel(host.environment.enforcement)}`,
+      // §41. The backend contributes its own lines rather than the control plane
+      // learning what a container is: the runtime, the image and its digest, the
+      // network mode and the mount shape all mean something different per backend,
+      // and a `if (kind === 'container')` here would be the branch ADR-0007 exists
+      // to keep out of shared code.
+      ...(host.backendDetail?.() ?? []).map((line) => `             ${line}`),
+      ...sandbox.lines.map((line) => `             ${line}`),
+      ...(host.environment.enforcement.platformNotes ?? []).map((note) => `platform     : ${note}`),
       `context      : ~${usage.estimatedTokens.toLocaleString()} / ${usage.budgetTokens.toLocaleString()} tokens (${pct}%)`,
       `loop budget  : ${session.budgetCeiling.maxSteps} steps, ${session.budgetCeiling.maxToolCalls} tool calls`,
       `goal         : ${session.goal ? `${session.goal.objective} (${session.goal.status})` : 'none'}`,

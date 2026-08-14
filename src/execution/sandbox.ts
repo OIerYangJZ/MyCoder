@@ -113,12 +113,29 @@ export class SandboxPlanner {
  *
  * Invariant 5 forbids presenting a best-effort policy as strong isolation, so
  * this returns the caveat text as well as the label, and the CLI prints both.
+ *
+ * alpha.5 moved the substance into `./enforcement.ts`, which reports one level
+ * per dimension; this wrapper survives because `/status`, the system prompt and
+ * the permissions view all want the same two strings, and because a caller that
+ * only has the summary label should still get an honest caveat rather than a
+ * cheerful one. Prefer `describeEnforcement(descriptor)` for anything new: it can
+ * say "the process filesystem is container-enforced but the trusted broker is
+ * not", which no single label can.
  */
 export function describeSandbox(strength: SandboxStrength): { label: string; caveat: string } {
   if (strength === 'os-isolated') {
     return {
       label: 'os-isolated',
       caveat: 'Processes run inside an OS sandbox with enforced filesystem and network boundaries.',
+    };
+  }
+  if (strength === 'container-enforced') {
+    return {
+      label: 'container-enforced',
+      caveat:
+        'Commands run in a container that only sees the paths mounted into it, with no network unless ' +
+        'a capability granted one. Read/Edit remain trusted kernel operations on the host filesystem, ' +
+        'and a host allowlist is not enforced on subprocesses.',
     };
   }
   return {
@@ -134,8 +151,11 @@ export function describeSandbox(strength: SandboxStrength): { label: string; cav
  * Whether "network is off" can be stated as a fact.
  *
  * With only policy enforcement it is best-effort (spec §12.3), and the CLI must
- * say "best-effort" rather than "blocked".
+ * say "best-effort" rather than "blocked". A container with `--network none` is
+ * the first backend for which "enforced" is a measurement rather than a hope —
+ * see `networkEnforcementLabel`, which reads the descriptor directly and can also
+ * report the enabled-network case as unenforced.
  */
 export function networkEnforcementLevel(strength: SandboxStrength): 'enforced' | 'best-effort' {
-  return strength === 'os-isolated' ? 'enforced' : 'best-effort';
+  return strength === 'policy-enforced' ? 'best-effort' : 'enforced';
 }

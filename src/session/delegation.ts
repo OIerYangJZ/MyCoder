@@ -254,10 +254,17 @@ export interface DelegationServiceOptions {
   logger: Logger;
   clock: Clock;
   kernelVersion: string;
-  /** Honest isolation description for the child's system prompt. */
+  /**
+   * Honest isolation description for the child's system prompt.
+   *
+   * The child is told exactly what the parent is told: a subagent that believed
+   * it had a stronger sandbox than it does would spend its budget on commands the
+   * boundary will refuse, and one that believed it had a weaker sandbox would
+   * refuse to try things that are permitted.
+   */
   environment: {
     sandboxDescription: string;
-    networkEnforcement: 'enforced' | 'best-effort';
+    networkEnforcement: 'enforced' | 'best-effort' | 'unenforced';
     backendDescription: string;
   };
   maxDepth?: number;

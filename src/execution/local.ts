@@ -34,6 +34,7 @@ import { isWithin, normalizeUnicode, type CanonicalPath } from '../util/paths.ts
 import { createLogger, type Logger } from '../util/logger.ts';
 import { scrubEnv, assertNoCredentialEnv } from '../security/env-scrub.ts';
 import type { Redactor } from '../security/redactor.ts';
+import { localEnforcement, summarizeEnforcement } from './enforcement.ts';
 import type {
   BackendKind,
   CapabilityExecutor,
@@ -436,6 +437,7 @@ export class LocalExecutionBackend implements ExecutionBackend {
     this.homeDir = opts.homeDir ?? homedir();
     this.fs = new LocalFileSystem();
     this.process = new LocalProcess(opts.redactor, this.logger);
+    const enforcement = localEnforcement();
     this.environment = {
       platform: process.platform,
       kind: 'local',
@@ -444,7 +446,8 @@ export class LocalExecutionBackend implements ExecutionBackend {
       tmpDir: opts.tmpDir ?? tmpdir(),
       hasRipgrep: opts.hasRipgrep ?? false,
       hasGit: opts.hasGit ?? false,
-      sandboxStrength: 'policy-enforced',
+      sandboxStrength: summarizeEnforcement(enforcement),
+      enforcement,
       description: 'local process execution, policy-enforced (no OS isolation)',
     };
   }

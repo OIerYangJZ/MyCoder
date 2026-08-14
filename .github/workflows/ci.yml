@@ -181,6 +181,74 @@ jobs:
 
       - run: pnpm test:ssh
 
+  container:
+    name: Container Enforcement (native Linux Docker)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.5 §37: the strongest isolation evidence has to come from a native
+      # Linux Docker Engine, because that is the only configuration where the
+      # mount and network namespaces are enforced by the host kernel with no VM
+      # and no file-sharing layer in between. GitHub's ubuntu runners are exactly
+      # that, which is why this job is the one the release claim rests on — the
+      # maintainer's macOS runs are Docker Desktop, and §38 says not to call them
+      # equivalent.
+      - name: Record the runtime for the evidence artifact
+        run: |
+          docker version
+          docker info --format 'OperatingSystem={{.OperatingSystem}} Kernel={{.KernelVersion}} Security={{.SecurityOptions}}'
+          uname -a
+
+      # Pulled here, as a setup step. §11: an image pull is a control-plane
+      # action and must never happen as a side effect of a tool call, so the
+      # backend refuses to run when the image is absent rather than fetching it.
+      - name: Pull the container image
+        run: docker pull node:22-bookworm
+
+      # KERNEL_CONTAINER_REQUIRED=1 is the §65 rule in one variable: if the
+      # runtime is unusable, these suites **fail** instead of skipping. A green
+      # CI whose container evidence silently skipped is how an unearned claim
+      # reaches a release note.
+      - name: Container isolation, conformance and composition
+        env:
+          KERNEL_CONTAINER: '1'
+          KERNEL_CONTAINER_REQUIRED: '1'
+        run: |
+          node --test --experimental-strip-types \
+            "tests/unit/container-plan.test.ts" \
+            "tests/live/container-live.test.ts" \
+            "tests/live/container-composition.test.ts" \
+            "tests/integration/backend-conformance.test.ts" 2>&1 | tee container-test.log
+
+      - name: Assert no container leaked out of the suite
+        if: always()
+        run: |
+          leaked=$(docker ps -a --filter 'name=mycoder-' --format '{{.Names}} {{.Status}}')
+          if [ -n "$leaked" ]; then
+            echo "containers leaked by the suite:"
+            echo "$leaked"
+            exit 1
+          fi
+          echo "no mycoder-* containers remain"
+
+      - name: Upload the container test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-enforcement-log
+          path: container-test.log
+          retention-days: 14
+
   delegation:
     name: Delegated Execution
     runs-on: ubuntu-latest
