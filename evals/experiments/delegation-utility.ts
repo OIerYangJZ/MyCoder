@@ -34,6 +34,7 @@ import { distribution, median, runTask, type TaskMetrics } from '../runners/run.
 import {
   delegationUtilityTasks,
   descriptionVariantTasks,
+  guidanceVariantTasks,
   type Condition,
   type Size,
 } from './delegation-utility-fixtures.ts';
@@ -88,10 +89,12 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  // Phase 2 runs only when asked for, because it is a follow-up question: it is
-  // worth the money once phase 1 has shown the answer is "never".
+  // Phases 2 and 3 run only when asked for: each is a follow-up worth the money
+  // once the previous one has shown the answer is still "never".
   const phase2 = process.argv.includes('--descriptions');
-  const tasks = phase2 ? [] : delegationUtilityTasks();
+  const phase3 = process.argv.includes('--guidance');
+  const variantPhase = phase2 || phase3;
+  const tasks = variantPhase ? [] : delegationUtilityTasks();
   const cells: Cell[] = [];
 
   for (const task of tasks) {
@@ -111,16 +114,16 @@ async function main(): Promise<number> {
     cells.push(cell);
   }
 
-  // --- phase 2: the same large task, two tool descriptions ----------------
+  // --- phases 2 and 3: the same large task, one thing varied ---------------
   const variantCells: Array<{ variant: string; intent: string; attempts: TaskMetrics[] }> = [];
-  if (phase2) {
-    for (const task of descriptionVariantTasks()) {
+  if (variantPhase) {
+    for (const task of phase3 ? guidanceVariantTasks() : descriptionVariantTasks()) {
       const attempts: TaskMetrics[] = [];
       for (let run = 1; run <= RUNS; run += 1) {
         const metrics = await runTask(task, `r${run}`);
         attempts.push(metrics);
         process.stdout.write(
-          `${metrics.passed ? 'pass' : 'FAIL'}  ${task.variant.padEnd(8)} description  r${run}  ` +
+          `${metrics.passed ? 'pass' : 'FAIL'}  ${task.variant.padEnd(13)} r${run}  ` +
             `${String(metrics.delegations).padStart(2)} delegation(s)  ` +
             `${String(metrics.modelRequests).padStart(2)} reqs  ` +
             `${String(metrics.inputTokens + metrics.outputTokens).padStart(6)} tok\n`,
@@ -135,7 +138,7 @@ async function main(): Promise<number> {
 
   const artifact = {
     generatedAt: new Date().toISOString(),
-    experiment: 'delegation-utility',
+    experiment: phase3 ? 'delegation-guidance' : phase2 ? 'delegation-description' : 'delegation-utility',
     question: 'Does offering delegation change what a real model does, and does it pay?',
     // Read from whichever phase ran: phase 2 leaves `cells` empty, and an artifact
     // that records the model as "unknown" is an artifact nobody can compare.
@@ -156,19 +159,18 @@ async function main(): Promise<number> {
 
   const dir = path.join(process.cwd(), 'evals', 'results', 'experiments');
   await mkdir(dir, { recursive: true });
-  const file = path.join(
-    dir,
-    `delegation-${phase2 ? 'description' : 'utility'}-${artifact.model}-${RUNS}x.json`,
-  );
+  const file = path.join(dir, `${artifact.experiment}-${artifact.model}-${RUNS}x.json`);
   await writeFile(file, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
 
   // --- report ------------------------------------------------------------
-  if (phase2) {
-    process.stdout.write(`\n── Delegate description, N=${RUNS} per variant ${'─'.repeat(22)}\n`);
-    process.stdout.write('variant   solved  chose delegation  reqs (med)  tokens (med)\n');
+  if (variantPhase) {
+    process.stdout.write(
+      `\n── ${phase3 ? 'System-prompt guidance' : 'Delegate description'}, N=${RUNS} per variant ${'─'.repeat(18)}\n`,
+    );
+    process.stdout.write('variant        solved  chose delegation  reqs (med)  tokens (med)\n');
     for (const v of artifact.descriptionVariants) {
       process.stdout.write(
-        `${v.variant.padEnd(10)}${`${v.solved}/${v.attempts}`.padEnd(8)}` +
+        `${v.variant.padEnd(15)}${`${v.solved}/${v.attempts}`.padEnd(8)}` +
           `${`${v.attemptsThatDelegated}/${v.attempts}`.padEnd(18)}` +
           `${String(v.modelRequests.median).padEnd(12)}${v.tokens.median}\n`,
       );

@@ -198,12 +198,15 @@ root ceiling, definition, active skills, request)`, then the child's usage is
 
 ## 4. What alpha.4 measured, and what it does not know
 
-> **Followed up after the tag.** A dedicated experiment took this question further:
-> three task sizes, up to eighteen files with two independent faults, and a second
-> `Delegate` description — 0 of 25 attempts chose delegation, all solved.
-> `docs/delegation-utility-experiment.md`. Two of the three candidate explanations
-> are eliminated; the untested one is that the system prompt never mentions
-> delegation as a strategy.
+> **Followed up after the tag, and the answer changed §7's advice.** A dedicated
+> experiment pulled every lever available to the harness: three task sizes up to
+> eighteen files with two independent faults, a second `Delegate` description, and a
+> system-prompt sentence introducing delegation as a strategy. Counting the run below,
+> DeepSeek was offered a verified tool **70 times and chose it zero times**, solving
+> every attempt. All three candidate explanations are eliminated, which leaves the
+> model itself — so a second provider is now the _only_ way left to learn whether the
+> delegation runtime pays for itself, the opposite of what §7 concluded.
+> `docs/delegation-utility-experiment.md`.
 
 **Natural delegation: 0 out of 10.** On the two tasks where DeepSeek was told it
 had subagents available and left to judge, it delegated **zero times** — and

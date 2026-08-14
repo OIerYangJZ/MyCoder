@@ -1,0 +1,209 @@
+{
+  "generatedAt": "2026-08-14T08:11:36.601Z",
+  "experiment": "delegation-utility",
+  "question": "Does offering delegation change what a real model does, and does it pay?",
+  "provider": "deepseek",
+  "model": "deepseek-chat",
+  "runsPerCell": 5,
+  "cells": [
+    {
+      "size": "small",
+      "condition": "agents-available",
+      "intent": "one file, one line — delegation should not pay, and choosing it would be waste",
+      "attempts": 5,
+      "solved": 5,
+      "solveRate": 1,
+      "attemptsThatDelegated": 0,
+      "delegationsTotal": 0,
+      "kernelCorrect": 5,
+      "modelRequests": {
+        "median": 3,
+        "min": 0,
+        "max": 11
+      },
+      "toolCalls": {
+        "median": 2,
+        "min": 0,
+        "max": 10
+      },
+      "tokens": {
+        "median": 9538,
+        "min": 0,
+        "max": 46998
+      },
+      "costUsd": 0.0012168856000000002,
+      "wallTimeMs": {
+        "median": 3732,
+        "min": 0,
+        "max": 17041
+      },
+      "failureClasses": {}
+    },
+    {
+      "size": "small",
+      "condition": "no-agents",
+      "intent": "one file, one line — delegation should not pay, and choosing it would be waste",
+      "attempts": 5,
+      "solved": 5,
+      "solveRate": 1,
+      "attemptsThatDelegated": 0,
+      "delegationsTotal": 0,
+      "kernelCorrect": 5,
+      "modelRequests": {
+        "median": 3,
+        "min": 0,
+        "max": 5
+      },
+      "toolCalls": {
+        "median": 2,
+        "min": 0,
+        "max": 5
+      },
+      "tokens": {
+        "median": 8258,
+        "min": 0,
+        "max": 15061
+      },
+      "costUsd": 0.0010330656,
+      "wallTimeMs": {
+        "median": 3810,
+        "min": 0,
+        "max": 7579
+      },
+      "failureClasses": {}
+    },
+    {
+      "size": "medium",
+      "condition": "agents-available",
+      "intent": "six files, one root cause three files deep — delegation is marginal",
+      "attempts": 5,
+      "solved": 5,
+      "solveRate": 1,
+      "attemptsThatDelegated": 0,
+      "delegationsTotal": 0,
+      "kernelCorrect": 5,
+      "modelRequests": {
+        "median": 4,
+        "min": 0,
+        "max": 5
+      },
+      "toolCalls": {
+        "median": 8,
+        "min": 0,
+        "max": 10
+      },
+      "tokens": {
+        "median": 14918,
+        "min": 0,
+        "max": 21301
+      },
+      "costUsd": 0.0014704704000000003,
+      "wallTimeMs": {
+        "median": 9168,
+        "min": 0,
+        "max": 19254
+      },
+      "failureClasses": {}
+    },
+    {
+      "size": "medium",
+      "condition": "no-agents",
+      "intent": "six files, one root cause three files deep — delegation is marginal",
+      "attempts": 5,
+      "solved": 5,
+      "solveRate": 1,
+      "attemptsThatDelegated": 0,
+      "delegationsTotal": 0,
+      "kernelCorrect": 5,
+      "modelRequests": {
+        "median": 3,
+        "min": 0,
+        "max": 4
+      },
+      "toolCalls": {
+        "median": 7,
+        "min": 0,
+        "max": 9
+      },
+      "tokens": {
+        "median": 9486,
+        "min": 0,
+        "max": 14048
+      },
+      "costUsd": 0.0012467056000000003,
+      "wallTimeMs": {
+        "median": 6961,
+        "min": 0,
+        "max": 9904
+      },
+      "failureClasses": {}
+    },
+    {
+      "size": "large",
+      "condition": "agents-available",
+      "intent": "eighteen files, two independent faults in two subsystems — the shape delegation should help with",
+      "attempts": 5,
+      "solved": 5,
+      "solveRate": 1,
+      "attemptsThatDelegated": 0,
+      "delegationsTotal": 0,
+      "kernelCorrect": 5,
+      "modelRequests": {
+        "median": 6,
+        "min": 0,
+        "max": 7
+      },
+      "toolCalls": {
+        "median": 15,
+        "min": 0,
+        "max": 21
+      },
+      "tokens": {
+        "median": 33850,
+        "min": 0,
+        "max": 36441
+      },
+      "costUsd": 0.0033790008000000003,
+      "wallTimeMs": {
+        "median": 16425,
+        "min": 0,
+        "max": 32314
+      },
+      "failureClasses": {}
+    },
+    {
+      "size": "large",
+      "condition": "no-agents",
+      "intent": "eighteen files, two independent faults in two subsystems — the shape delegation should help with",
+      "attempts": 5,
+      "solved": 5,
+      "solveRate": 1,
+      "attemptsThatDelegated": 0,
+      "delegationsTotal": 0,
+      "kernelCorrect": 5,
+      "modelRequests": {
+        "median": 6,
+        "min": 0,
+        "max": 7
+      },
+      "toolCalls": {
+        "median": 18,
+        "min": 0,
+        "max": 21
+      },
+      "tokens": {
+        "median": 28732,
+        "min": 0,
+        "max": 34251
+      },
+      "costUsd": 0.0035361423999999996,
+      "wallTimeMs": {
+        "median": 15797,
+        "min": 0,
+        "max": 16369
+      },
+      "failureClasses": {}
+    }
+  ],
+  "descriptionVariants": []
+}

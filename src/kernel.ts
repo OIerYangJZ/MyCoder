@@ -470,6 +470,17 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     resolveModel,
   );
 
+  // 9b. Skills and agents are project files, read from the *local* tree.
+  //
+  // Discovered here rather than later because two things downstream need to know
+  // whether the project has any: the projector, whose delegation guidance must not
+  // advertise a tool the session will not register, and the tool registry, which only
+  // registers `Delegate` and `Skill` when there is something to delegate to or
+  // activate. A project with neither gets exactly the alpha.3 catalogue, which keeps
+  // the model's prompt honest and every alpha.3 trajectory unchanged.
+  const skills = await discoverSkills({ workspaceRoot: projectRoot, userConfigDir: dirs.config });
+  const agents = await discoverAgents(projectRoot, dirs.config);
+
   // 10. Context planes.
   const freshness = new FreshnessLedger();
   const repository = new RepositoryPlane({ workspaceRoot, referenceRoots });
@@ -483,6 +494,10 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     permissionProfile: sessionProfile.name,
     backendDescription: backend.environment.description,
     editJournal,
+    // Only when there is something to delegate to, and only if the user has not
+    // switched the nudge off. A prompt that advertises a tool the session does not
+    // register would cost a step to discover.
+    delegationGuidance: agents.length > 0 && config.loop.delegationGuidance !== false,
   });
 
   // 11. Tools.
@@ -535,15 +550,6 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     logger: logger.child('hooks'),
     now: () => clock.now(),
   });
-
-  // 12c. Skills and agents are project files too, read from the *local* tree.
-  //
-  // Discovered before the tool runtime because the `Skill` and `Delegate` tools
-  // are only registered when there is something to activate or delegate to: a
-  // project with no agents gets the same six-tool catalogue it had in alpha.3,
-  // which keeps the model's prompt honest and every alpha.3 trajectory unchanged.
-  const skills = await discoverSkills({ workspaceRoot: projectRoot, userConfigDir: dirs.config });
-  const agents = await discoverAgents(projectRoot, dirs.config);
 
   // Assigned after the session exists; the closures below only run during a turn.
   let delegationService: DelegationService | undefined;

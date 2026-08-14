@@ -9,11 +9,13 @@
  *   2. the `Delegate` tool is described in a way that suppresses its use;
  *   3. delegation genuinely does not help this model.
  *
- * The first two are addressed here. Phase 1 varies *task size* with the shipped
+ * All three levers are addressed here. Phase 1 varies *task size* with the shipped
  * tool description; phase 2 holds the largest task fixed and varies the
  * **description**, because if the answer is still "never" at eighteen files and two
  * independent faults, the sentence telling the model not to bother is the next
- * suspect. Three sizes, each in two conditions: agents discoverable, and agents
+ * suspect; phase 3 varies whether the **system prompt** introduces delegation as a
+ * strategy at all, which is the lever most harnesses actually use and the one a tool
+ * description cannot substitute for. Three sizes, each in two conditions: agents discoverable, and agents
  * absent. The second condition is a real control rather than a formality — with no
  * agent definitions the kernel does not register the `Delegate` tool at all
  * (ADR-0013), so the model cannot be influenced by a tool it never sees.
@@ -441,5 +443,58 @@ export function descriptionVariantTasks(): Array<
           },
         }
       : {}),
+  }));
+}
+
+/**
+ * Phase 3: the same large task, with and without the system-prompt guidance.
+ *
+ * The two arms go through the product's own option — `[loop] delegation_guidance`,
+ * switched off by a project config file in the fixture — rather than through a test
+ * hook. That is deliberate: an A/B whose arms are reachable only from a test would
+ * be measuring something a user cannot have.
+ *
+ * The off arm keeps the `Delegate` tool and its description in full. What it removes
+ * is one sentence in the "How this environment works" section. If that sentence is
+ * what decides whether a model delegates, the finding is about *where* a strategy
+ * has to be introduced, which is worth knowing beyond this codebase.
+ */
+export function guidanceVariantTasks(): Array<
+  GoldenTask & { variant: 'guidance-on' | 'guidance-off'; size: Size; intent: string }
+> {
+  const large = delegationUtilityTasks().find(
+    (t) => t.size === 'large' && t.condition === 'agents-available',
+  )!;
+
+  return (['guidance-on', 'guidance-off'] as const).map((variant) => ({
+    ...large,
+    id: `delegation-guidance-${variant}`,
+    variant,
+    intent: `eighteen files, two faults, system-prompt guidance ${variant === 'guidance-on' ? 'on' : 'off'}`,
+    files: {
+      ...large.files,
+      ...(variant === 'guidance-off'
+        ? { '.mycoder/config.toml': '[loop]\ndelegation_guidance = false\n' }
+        : {}),
+    },
+    checks: [
+      ...large.checks,
+      {
+        name: `NEGATIVE CONTROL: the prompt ${variant === 'guidance-on' ? 'carries' : 'omits'} the guidance`,
+        run: (ctx) => {
+          // Read from the projection the model was actually given, not from config:
+          // a flag that failed to reach the prompt would otherwise look like a model
+          // that ignored the advice.
+          const system = ctx.kernel.projector.project(
+            ctx.kernel.context,
+            ctx.kernel.context.repository.facts,
+          ).system;
+          const present = system.includes('You have subagents available through the Delegate tool');
+          if (variant === 'guidance-on' && !present) return 'the guidance never reached the prompt';
+          if (variant === 'guidance-off' && present) return 'the off switch did not take effect';
+          return undefined;
+        },
+      },
+    ],
   }));
 }

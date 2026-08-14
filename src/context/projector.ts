@@ -40,6 +40,21 @@ export interface ProjectorOptions {
   permissionProfile: string;
   backendDescription: string;
   editJournal?: EditJournal;
+  /**
+   * Tell the model that delegation is a strategy, not just a tool that exists.
+   *
+   * Set when the project defines agents and `[loop] delegation_guidance` is on. The
+   * distinction it exists to test: alpha.4 measured a model choosing delegation 0
+   * out of 25 times with the tool in front of it, under two different tool
+   * descriptions, so the remaining hypothesis was that a *tool description* is the
+   * wrong place to introduce a strategy — nothing in the prompt ever said the option
+   * was there.
+   *
+   * It is deliberately one sentence and deliberately conditional. A session with no
+   * agents must not read about a tool it does not have, and a child gets its own
+   * briefing instead (its depth limit makes the advice wrong for it).
+   */
+  delegationGuidance?: boolean;
   /** Extra instructions from a skill or an agent definition. */
   extraInstructions?: readonly string[];
   /** Instruction overlays, each labelled with where it came from. */
@@ -101,6 +116,14 @@ export class ContextProjector {
         '- oldString must match the file exactly and uniquely. If it is rejected as non-unique, add surrounding context rather than guessing.',
         "- After changing code, run the project's tests or type checks with Shell and read the failures. Do not report success you have not observed.",
         '- Shell takes an argv array, not a shell line. Use ["bash","-lc","..."] when you genuinely need shell syntax.',
+        ...(this.options.delegationGuidance
+          ? [
+              '- You have subagents available through the Delegate tool. When a task contains a ' +
+                'self-contained sub-question — one of several independent investigations, or a review that ' +
+                'should run with narrower permissions than yours — delegating it keeps your own context on ' +
+                'the main thread. You still own the final answer and any edit.',
+            ]
+          : []),
       ].join('\n'),
     );
 
