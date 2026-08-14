@@ -31,6 +31,7 @@ import { normalizeUnicode, toPosix, type CanonicalPath } from '../util/paths.ts'
 import { createLogger, type Logger } from '../util/logger.ts';
 import { scrubEnv } from '../security/env-scrub.ts';
 import type { Redactor } from '../security/redactor.ts';
+import { sshEnforcement, summarizeEnforcement } from './enforcement.ts';
 import type {
   BackendKind,
   CapabilityExecutor,
@@ -662,7 +663,8 @@ export class SshExecutionBackend implements ExecutionBackend {
       tmpDir: '/tmp',
       hasRipgrep,
       hasGit,
-      sandboxStrength: 'policy-enforced',
+      sandboxStrength: summarizeEnforcement(sshEnforcement(config.host)),
+      enforcement: sshEnforcement(config.host),
       description: `ssh ${config.host}:${config.workspace}, policy-enforced (remote jail, no agent or env forwarding)`,
     };
   }

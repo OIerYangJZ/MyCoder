@@ -36,7 +36,15 @@ export interface ContextOverlay {
 export interface ProjectorOptions {
   /** Honest description of the isolation in force. */
   sandboxDescription: string;
-  networkEnforcement: 'enforced' | 'best-effort';
+  /**
+   * How the "no network" default is imposed, in the model's own words.
+   *
+   * `unenforced` exists for the case a container introduces: a session that has
+   * network *enabled* has no subprocess network boundary at all, and telling the
+   * model "network is best-effort" there would be describing the previous
+   * backend's posture (alpha.5 §23, §42).
+   */
+  networkEnforcement: 'enforced' | 'best-effort' | 'unenforced';
   permissionProfile: string;
   backendDescription: string;
   editJournal?: EditJournal;
@@ -133,7 +141,7 @@ export class ContextProjector {
         `- Permission profile: ${this.options.permissionProfile}. Some actions will require the user's approval; that is expected, not an error.`,
         `- Execution backend: ${this.options.backendDescription}.`,
         `- Isolation: ${this.options.sandboxDescription}`,
-        `- Network from Shell is off unless you declare it, and is ${this.options.networkEnforcement} on this backend.`,
+        `- Network from Shell is off unless you declare it, and that default is ${this.options.networkEnforcement} on this backend.`,
         '- Secret files (.env, private keys, credential directories) cannot be read by any tool, by any route. Do not spend steps trying; if a command needs a credential, pass secrets: [{ref, env}] and the value will be injected without you seeing it.',
         '- Reference repositories are read-only. Read them to understand a design; never write to them.',
         '- If a tool returns a denial, treat it as final and find another approach. Repeating a denied call wastes the turn budget.',

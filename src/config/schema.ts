@@ -122,6 +122,33 @@ export interface ShellConfig {
   timeoutMs?: number;
 }
 
+/**
+ * Container backend configuration (alpha.5 §11, ADR-0014).
+ *
+ * **User config only**, and for the same reason provider endpoints are (§19.2 of
+ * the spec, applied to images): the image decides what code exists inside the
+ * boundary, so a checked-in `.mycoder/config.toml` that could name
+ * `evil/backdoored-node` would be a supply-chain hole with a friendly TOML face.
+ * `loadConfig` drops a project-declared `[container]` table and warns.
+ *
+ * Note what is *absent*: there is no `privileged`, no `network_mode`, no
+ * `extra_mounts`, no `cap_add`. Those are not omissions to be filled in later —
+ * a configuration surface that can weaken the boundary is a configuration
+ * surface a repository can weaken (§70, "Privilege Stop"). The hardening flags
+ * are properties of every plan, set in `buildContainerPlan`, with no path from
+ * config or model to any of them.
+ */
+export interface ContainerConfigSection {
+  image?: string;
+  /** Pull at startup when missing. A setup action, never a tool side effect. */
+  pullIfMissing?: boolean;
+  /** `uid:gid`. Defaults to the host user's on POSIX so writes keep ownership. */
+  user?: string;
+  pidsLimit?: number;
+  memoryBytes?: number;
+  cpus?: number;
+}
+
 export interface TelemetryConfig {
   enabled?: boolean;
   content?: boolean;
@@ -140,6 +167,7 @@ export interface KernelConfig {
   security: SecurityConfig;
   loop: LoopConfig;
   shell: ShellConfig;
+  container: ContainerConfigSection;
   telemetry: TelemetryConfig;
   egress: EgressConfig;
   generatedPaths: string[];
@@ -168,6 +196,7 @@ export function defaultConfig(): KernelConfig {
       delegationGuidance: true,
     },
     shell: { defaultNetwork: false, timeoutMs: 120_000 },
+    container: {},
     telemetry: { enabled: true, content: false, traceUpload: false },
     egress: { allowedHosts: {} },
     generatedPaths: ['dist/**', 'coverage/**', '.cache/**', 'target/**', 'build/**', 'node_modules/**'],
@@ -244,6 +273,7 @@ export function mergeConfig(lower: KernelConfig, higher: Partial<KernelConfig>):
       defaultNetwork: strictBoolean(lower.shell.defaultNetwork, higher.shell?.defaultNetwork, false),
       timeoutMs: minDefined(lower.shell.timeoutMs, higher.shell?.timeoutMs),
     },
+    container: mergeContainer(lower.container, higher.container ?? {}),
     telemetry: {
       enabled: higher.telemetry?.enabled ?? lower.telemetry.enabled,
       content: strictBoolean(lower.telemetry.content, higher.telemetry?.content, false),
@@ -256,6 +286,33 @@ export function mergeConfig(lower: KernelConfig, higher: Partial<KernelConfig>):
     generatedPaths: [...new Set([...lower.generatedPaths, ...(higher.generatedPaths ?? [])])],
     warnings: [...lower.warnings, ...(higher.warnings ?? [])],
   };
+  return out;
+}
+
+/**
+ * Merge the container section.
+ *
+ * The resource limits use `min`, like every other ceiling: a layer may tighten
+ * the bound a container runs under, never loosen it. `image` is last-write-wins
+ * among the layers that are *allowed* to set it, which is user config only —
+ * `loadConfig` has already dropped a project-declared table by the time this runs.
+ */
+function mergeContainer(
+  lower: ContainerConfigSection,
+  higher: ContainerConfigSection,
+): ContainerConfigSection {
+  const out: ContainerConfigSection = {
+    ...((higher.image ?? lower.image) ? { image: higher.image ?? lower.image! } : {}),
+    ...((higher.user ?? lower.user) ? { user: higher.user ?? lower.user! } : {}),
+    // `false` wins: a layer may decline an implicit pull, never introduce one.
+    pullIfMissing: strictBoolean(lower.pullIfMissing, higher.pullIfMissing, false),
+  };
+  const pids = minDefined(lower.pidsLimit, higher.pidsLimit);
+  if (pids !== undefined) out.pidsLimit = pids;
+  const memory = minDefined(lower.memoryBytes, higher.memoryBytes);
+  if (memory !== undefined) out.memoryBytes = memory;
+  const cpus = minDefined(lower.cpus, higher.cpus);
+  if (cpus !== undefined) out.cpus = cpus;
   return out;
 }
 
@@ -529,6 +586,31 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
       ...(bool(shell.default_network) !== undefined ? { defaultNetwork: bool(shell.default_network)! } : {}),
       ...(num(shell.timeout_ms) !== undefined ? { timeoutMs: num(shell.timeout_ms)! } : {}),
     };
+  }
+
+  const container = tableAt(table, 'container');
+  if (container) {
+    out.container = {
+      ...(str(container.image) !== undefined ? { image: str(container.image)! } : {}),
+      ...(bool(container.pull_if_missing) !== undefined
+        ? { pullIfMissing: bool(container.pull_if_missing)! }
+        : {}),
+      ...(str(container.user) !== undefined ? { user: str(container.user)! } : {}),
+      ...(num(container.pids_limit) !== undefined ? { pidsLimit: num(container.pids_limit)! } : {}),
+      ...(num(container.memory_bytes) !== undefined ? { memoryBytes: num(container.memory_bytes)! } : {}),
+      ...(num(container.cpus) !== undefined ? { cpus: num(container.cpus)! } : {}),
+    };
+    // Named explicitly so a config that tries to weaken the boundary gets told
+    // it did not, rather than being silently ignored and assumed to have worked.
+    for (const key of ['privileged', 'network_mode', 'extra_mounts', 'cap_add', 'volumes', 'entrypoint']) {
+      if (container[key] !== undefined) {
+        warnings.push(
+          `${source}: [container] ${key} was ignored. The container hardening flags are not configurable: ` +
+            'read-only root, dropped capabilities, no-new-privileges, no host namespaces and no extra mounts ' +
+            'are properties of every plan.',
+        );
+      }
+    }
   }
 
   const telemetry = tableAt(table, 'telemetry');

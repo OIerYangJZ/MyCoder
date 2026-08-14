@@ -471,6 +471,80 @@ export const RULES: Rule[] = [
   // annotation, and a linter that cries wolf gets switched off.
 
   {
+    name: 'no-docker-cli-outside-container-backend',
+    rationale:
+      "ADR-0007 / alpha.5 §8: the container runtime is one backend's business. A second place that shells out " +
+      'to `docker` is a second place that decides mounts, network mode and privileges — and none of it would go ' +
+      'through the plan validator.',
+    // `container.ts` owns the transport; the plan module builds the argv but
+    // never runs anything; the tests are allowed to inspect a real daemon.
+    applies: (f) =>
+      under(f, 'src/') && !['src/execution/container.ts', 'src/execution/container-plan.ts'].includes(f),
+    check: ({ file, text }) => [
+      ...scan(
+        file,
+        text,
+        /spawn\w*\(\s*['"]docker['"]|exec\w*\(\s*['"]docker\s/,
+        'no-docker-cli-outside-container-backend',
+        'invokes the docker CLI outside the container backend',
+      ),
+      ...scan(
+        file,
+        text,
+        /['"]docker['"]\s*,\s*\[\s*['"]run['"]/,
+        'no-docker-cli-outside-container-backend',
+        'builds a `docker run` argv outside the container backend',
+      ),
+    ],
+  },
+
+  {
+    name: 'no-container-escape-flags',
+    rationale:
+      'alpha.5 §19, §20, §70 ("Privilege Stop"): `--privileged`, a host namespace, a host-network container or a ' +
+      'mounted container socket each defeat the boundary on their own. They are not configurable, so they must not ' +
+      'appear in source at all — the plan validator refuses them at runtime, and this refuses them at review time.',
+    // The validator and its tests have to *name* the flags in order to reject
+    // them; everywhere else, naming one is the defect.
+    applies: (f) =>
+      under(f, 'src/') && !['src/execution/container-plan.ts', 'src/config/schema.ts'].includes(f),
+    check: ({ file, text }) => [
+      ...scan(
+        file,
+        text,
+        /--privileged|--network[= ]host|--pid[= ]host|--ipc[= ]host|--userns[= ]host|--cap-add/,
+        'no-container-escape-flags',
+        'names a container flag that would defeat the sandbox boundary',
+      ),
+      ...scan(
+        file,
+        text,
+        /docker\.sock|containerd\.sock/,
+        'no-container-escape-flags',
+        'names a container runtime socket, which must never be mounted or reachable',
+      ),
+    ],
+  },
+
+  {
+    name: 'no-enforcement-overclaim',
+    rationale:
+      'alpha.5 §7 / invariant 5: `/status`, the system prompt and the audit log must never say "enforced" for a ' +
+      'mechanism that is policy or string scanning. Enforcement wording is derived from the EnforcementDescriptor, ' +
+      'so a hard-coded "os-isolated" or "enforced" string outside that module is a claim nothing checks.',
+    applies: (f) =>
+      under(f, 'src/') && !['src/execution/enforcement.ts', 'src/execution/sandbox.ts'].includes(f),
+    check: ({ file, text }) =>
+      scan(
+        file,
+        text,
+        /sandboxStrength\s*[:=]\s*['"](?:os-isolated|container-enforced)['"]/,
+        'no-enforcement-overclaim',
+        'asserts an isolation level literally instead of deriving it from the enforcement descriptor',
+      ),
+  },
+
+  {
     name: 'no-console-in-kernel',
     rationale:
       'Spec §26.1 counts the user-visible debug log as a leak surface. The logger routes through the secret ' +

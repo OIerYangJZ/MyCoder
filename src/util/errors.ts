@@ -30,6 +30,21 @@ export const ERROR_CODES = [
   'UNDECLARED_WORKSPACE_MUTATION',
   'REMOTE_UNAVAILABLE',
   'REMOTE_HOST_KEY_ERROR',
+  // Container runtime failures (alpha.5 §10, §62). Distinct codes rather than one
+  // `CONTAINER_FAILED`, because the recoveries differ and a session that cannot
+  // tell them apart cannot tell the user what to do: install docker, start the
+  // daemon, pull an image, or stop asking for a flag this runtime lacks. They are
+  // never collapsed into TOOL_FAILED, and never into a silent local fallback.
+  'CONTAINER_RUNTIME_NOT_FOUND',
+  'CONTAINER_RUNTIME_UNAVAILABLE',
+  'CONTAINER_IMAGE_NOT_FOUND',
+  'CONTAINER_UNSUPPORTED_FEATURE',
+  'CONTAINER_INVALID_MOUNT',
+  'CONTAINER_START_FAILED',
+  'CONTAINER_RESOURCE_LIMIT',
+  // The plan validator refused a plan (§50). Always a kernel defect: no tool
+  // argument is supposed to be able to produce an invalid plan.
+  'CONTAINER_PLAN_REJECTED',
   'LOOP_BUDGET_EXCEEDED',
   'REPEATED_FAILURE',
   'DELEGATION_DENIED',
@@ -91,6 +106,17 @@ const DEFAULT_BLAME: Record<ErrorCode, Blame> = {
   UNDECLARED_WORKSPACE_MUTATION: 'tool',
   REMOTE_UNAVAILABLE: 'environment',
   REMOTE_HOST_KEY_ERROR: 'environment',
+  CONTAINER_RUNTIME_NOT_FOUND: 'environment',
+  CONTAINER_RUNTIME_UNAVAILABLE: 'environment',
+  // The image is named by configuration, so a missing one is the user's to fix —
+  // and deliberately so: the alternative, pulling on demand, would make a tool
+  // call reach the network as a side effect (§11).
+  CONTAINER_IMAGE_NOT_FOUND: 'user',
+  CONTAINER_UNSUPPORTED_FEATURE: 'environment',
+  CONTAINER_INVALID_MOUNT: 'kernel',
+  CONTAINER_START_FAILED: 'environment',
+  CONTAINER_RESOURCE_LIMIT: 'environment',
+  CONTAINER_PLAN_REJECTED: 'kernel',
   LOOP_BUDGET_EXCEEDED: 'kernel',
   REPEATED_FAILURE: 'model',
   // A refused delegation is the configuration speaking, the same as TOOL_DENIED.
@@ -112,6 +138,9 @@ const RETRYABLE: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'TOOL_TIMEOUT',
   'CONCURRENT_MODIFICATION',
   'REMOTE_UNAVAILABLE',
+  // A daemon that is starting up is the common case, and it is genuinely
+  // transient. A missing binary or a missing image is not, and neither is here.
+  'CONTAINER_RUNTIME_UNAVAILABLE',
 ]);
 
 export function kernelError(

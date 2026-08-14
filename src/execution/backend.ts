@@ -14,11 +14,11 @@
 
 import type { CanonicalPath } from '../util/paths.ts';
 import type { SecretLease } from '../security/secret-broker.ts';
+import type { EnforcementDescriptor, SandboxStrength } from './enforcement.ts';
 
 export type BackendKind = 'local' | 'ssh' | 'container';
 
-/** How strong the isolation actually is. Displayed verbatim in `/status`. */
-export type SandboxStrength = 'policy-enforced' | 'os-isolated';
+export type { EnforcementDescriptor, SandboxStrength };
 
 export interface FileStat {
   path: CanonicalPath;
@@ -106,8 +106,24 @@ export interface EnvironmentDescriptor {
   /** Discovered once; Grep falls back to a built-in scanner when absent. */
   hasRipgrep: boolean;
   hasGit: boolean;
-  /** Honest description of what the backend actually isolates. */
+  /**
+   * One-word summary, **derived** from `enforcement` (alpha.5 §7).
+   *
+   * Kept because the event log and `/status` have always carried it, and never
+   * asserted independently: `summarizeEnforcement()` computes it from the weakest
+   * process-facing dimension, so a backend cannot claim a label its enforcement
+   * does not support.
+   */
   sandboxStrength: SandboxStrength;
+  /**
+   * What this backend enforces, dimension by dimension.
+   *
+   * A container moves the process's filesystem view to a kernel boundary while
+   * leaving the trusted file broker exactly as policy-enforced as before, and
+   * enforces network *denial* absolutely while enforcing a host *allowlist* not at
+   * all. One field cannot say that; six can. See `./enforcement.ts`.
+   */
+  enforcement: EnforcementDescriptor;
   /** Free-form label shown in `/status`, e.g. "local (policy-enforced)". */
   description: string;
 }

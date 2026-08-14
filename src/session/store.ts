@@ -52,7 +52,19 @@ export interface SessionMetadata {
     inputTokens: number;
     outputTokens: number;
     cachedInputTokens: number;
+    /** Everything this session spent, its children included (alpha.4 §13). */
     costUsd: number;
+    /**
+     * The delegated share of `costUsd`.
+     *
+     * Persisted so the direct/delegated split survives a restart. Without it a
+     * resumed session can restore the *total* — which `usage` did — but has no
+     * way to know how much of it was a child's, so `/status` printed a total on
+     * one line and a smaller "cost" breakdown on the next. Optional because a log
+     * written before alpha.5 does not have it; when it is absent the resumed cost
+     * is attributed to direct, which is the most an older log can support.
+     */
+    delegatedCostUsd?: number;
     modelRequests: number;
     toolCalls: number;
   };

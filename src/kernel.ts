@@ -42,8 +42,15 @@ import { PolicyEngine, SessionApprovalStore, type PolicyLayer } from './policy/p
 
 import { LocalExecutionBackend } from './execution/local.ts';
 import { SshExecutionBackend, type RemoteConfig } from './execution/ssh.ts';
+import {
+  ContainerExecutionBackend,
+  defaultContainerConfig,
+  discoverMaskPaths,
+  resolveGeneratedDirs,
+  type ContainerConfig,
+} from './execution/container.ts';
 import { MutationDetector } from './execution/mutation-detector.ts';
-import { describeSandbox, networkEnforcementLevel } from './execution/sandbox.ts';
+import { describeEnforcement, networkEnforcementLabel } from './execution/enforcement.ts';
 import type { ExecutionBackend } from './execution/backend.ts';
 
 import { ModelRegistry, type ResolvedModelProfile } from './model/profiles.ts';
@@ -104,6 +111,14 @@ export interface CreateKernelOptions {
   profileOverride?: string;
   modelOverride?: string;
   remoteName?: string;
+  /**
+   * Requested execution backend (alpha.5 §40).
+   *
+   * `'container'` is a hard requirement: `createKernel` throws when the runtime is
+   * unusable rather than starting a session with weaker isolation than the caller
+   * asked for.
+   */
+  backend?: 'local' | 'container';
   telemetryDisabled?: boolean;
   logLevel?: LogLevel;
   json?: boolean;
@@ -281,6 +296,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   const remotes = remotesResult.remotes;
   let backend: ExecutionBackend;
   let activeRemote: string | undefined;
+  let containerBackend: ContainerExecutionBackend | undefined;
 
   if (opts.remoteName) {
     const remote = remotes.find((r) => r.name === opts.remoteName);
@@ -291,6 +307,67 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     }
     backend = await SshExecutionBackend.connect({ config: remote, redactor, logger: logger.child('ssh') });
     activeRemote = remote.name;
+  } else if (opts.backend === 'container') {
+    // The mount plan needs three inputs that only the bootstrap knows: which
+    // configured "generated" globs correspond to real directories, which
+    // protected paths live *inside* the workspace and therefore have to be masked
+    // out of the base mount (§16), and where the kernel's own scratch directory
+    // is. They are computed here, from the same `ProtectedPaths` the policy engine
+    // uses, so the two cannot disagree about what is protected.
+    const probeFs = (
+      await LocalExecutionBackend.detect({
+        workspaceRoot: projectRoot,
+        redactor,
+        logger: logger.child('local'),
+      })
+    ).fs;
+    const containerAgentTmp = path.join(projectDir(projectRoot), 'tmp') as CanonicalPath;
+    await probeFs.mkdirp(containerAgentTmp);
+
+    const generatedDirs = await resolveGeneratedDirs(probeFs, projectRoot, config.generatedPaths);
+    const maskPaths = await discoverMaskPaths(
+      probeFs,
+      projectRoot,
+      (p) => protectedPaths.checkReadToModel(p).protected,
+    );
+
+    const containerConfig: ContainerConfig = {
+      ...defaultContainerConfig(),
+      ...(config.container.image ? { image: config.container.image } : {}),
+      ...(config.container.user ? { user: config.container.user } : {}),
+      ...(config.container.pullIfMissing !== undefined
+        ? { pullIfMissing: config.container.pullIfMissing }
+        : {}),
+      limits: {
+        ...(config.container.pidsLimit !== undefined ? { pids: config.container.pidsLimit } : { pids: 512 }),
+        ...(config.container.memoryBytes !== undefined
+          ? { memoryBytes: config.container.memoryBytes }
+          : { memoryBytes: 2 * 1024 * 1024 * 1024 }),
+        ...(config.container.cpus !== undefined ? { cpus: config.container.cpus } : { cpus: 2 }),
+      },
+    };
+
+    // Throws when docker is missing, the daemon is down or the image is absent.
+    // There is no fallback: §40 makes that a stop condition, not an option.
+    containerBackend = await ContainerExecutionBackend.create({
+      workspaceRoot: projectRoot,
+      redactor,
+      config: containerConfig,
+      logger: logger.child('container'),
+      agentTmpDir: containerAgentTmp,
+      generatedDirs,
+      maskPaths,
+      protectedHostPaths: credentials.protectedPaths,
+      isProtectedHostPath: (hostPath) => protectedPaths.checkReadToModel(hostPath as CanonicalPath).protected,
+    });
+    backend = containerBackend;
+
+    if (maskPaths.length > 0) {
+      config.warnings.push(
+        `${maskPaths.length} protected path(s) inside the workspace are masked out of the container ` +
+          '(present on the host, absent to any command that runs).',
+      );
+    }
   } else {
     backend = await LocalExecutionBackend.detect({
       workspaceRoot: projectRoot,
@@ -487,10 +564,13 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   const context = new ContextEngine({ repository, freshness, now: () => clock.now() });
   const editJournal = new EditJournal();
 
-  const sandbox = describeSandbox(backend.environment.sandboxStrength);
+  // The model's view of the boundary comes from the same descriptor `/status`
+  // reads, so the prompt cannot describe a stronger sandbox than the one the CLI
+  // reports (§42, invariant 5).
+  const sandbox = describeEnforcement(backend.environment.enforcement);
   const projector = new ContextProjector({
     sandboxDescription: `${sandbox.label} — ${sandbox.caveat}`,
-    networkEnforcement: networkEnforcementLevel(backend.environment.sandboxStrength),
+    networkEnforcement: networkEnforcementLabel(backend.environment.enforcement),
     permissionProfile: sessionProfile.name,
     backendDescription: backend.environment.description,
     editJournal,
@@ -827,6 +907,11 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
         permissionProfile: sessionProfile.name,
         backend: backend.environment.description,
         sandboxStrength: backend.environment.sandboxStrength,
+        // The full breakdown, not just the summary label (§7): an audit record
+        // that says "container-enforced" without saying which dimensions were
+        // container-enforced is exactly the overclaim this milestone set out to
+        // make impossible.
+        enforcement: backend.environment.enforcement,
         kernelVersion: KERNEL_VERSION,
       },
     });
@@ -884,7 +969,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       kernelVersion: KERNEL_VERSION,
       environment: {
         sandboxDescription: `${sandbox.label} — ${sandbox.caveat}`,
-        networkEnforcement: networkEnforcementLevel(backend.environment.sandboxStrength),
+        networkEnforcement: networkEnforcementLabel(backend.environment.enforcement),
         backendDescription: backend.environment.description,
       },
       maxDepth: config.loop.maxDelegationDepth ?? ROOT_SCOPE.maxDepth,
@@ -928,6 +1013,28 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       provider,
       description: c.description,
     })),
+
+    // §41: what `/status` may say about a container. The image reference and its
+    // digest, the runtime and its platform, and the *shape* of the mount plan —
+    // not the host paths in it. `/status` is the screen people paste into bug
+    // reports, and a directory listing of someone's workspace is not information
+    // the reader of a bug report needs.
+    ...(containerBackend
+      ? {
+          backendDetail: (): string[] => {
+            const runtime = containerBackend.runtime;
+            const image = containerBackend.image;
+            return [
+              `runtime      : ${runtime.binary} ${runtime.serverVersion} (client ${runtime.clientVersion}) on ${runtime.operatingSystem}`,
+              `image        : ${image.configured}${image.digest ? ` @ ${image.digest}` : ' (no digest: not pulled from a registry)'}`,
+              `network mode : none by default${
+                config.shell.defaultNetwork ? '; a granted capability switches this container to bridge' : ''
+              }`,
+              'mounts       : /workspace read-only base; writable roots derived per tool call from the granted capability',
+            ];
+          },
+        }
+      : {}),
     now: () => clock.now(),
 
     async connectRemote(name: string) {

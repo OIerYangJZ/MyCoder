@@ -185,6 +185,82 @@ const FIXTURES: RuleFixtures[] = [
   },
 
   {
+    rule: 'no-docker-cli-outside-container-backend',
+    file: 'src/tools/builtin/shell.ts',
+    mustFail: [
+      { why: 'spawning the docker CLI from a tool', source: "spawn('docker', ['run', '--rm', image]);" },
+      { why: 'building a docker run argv elsewhere', source: "const argv = ['docker', ['run', '--rm']];" },
+    ],
+    mustPass: [
+      {
+        why: 'talking about docker in a message is not invoking it',
+        source: 'const hint = "install docker and start the daemon";',
+      },
+      { why: 'spawning something else', source: "spawn('git', ['status', '--porcelain']);" },
+    ],
+    exceptions: [
+      { why: 'the container backend owns the transport', file: 'src/execution/container.ts' },
+      { why: 'the plan module builds the argv it never runs', file: 'src/execution/container-plan.ts' },
+    ],
+  },
+
+  {
+    rule: 'no-container-escape-flags',
+    file: 'src/execution/container.ts',
+    mustFail: [
+      { why: '--privileged defeats the boundary outright', source: "args.push('--privileged');" },
+      { why: 'the host network namespace', source: "args.push('--network host');" },
+      { why: 'the host PID namespace', source: "args.push('--pid host');" },
+      { why: 'adding a capability back', source: "args.push('--cap-add=SYS_ADMIN');" },
+      {
+        why: 'mounting the docker socket is the classic sandbox escape',
+        source: "args.push('-v', '/var/run/docker.sock:/var/run/docker.sock');",
+      },
+    ],
+    mustPass: [
+      { why: 'dropping capabilities is the safe direction', source: "args.push('--cap-drop=ALL');" },
+      { why: 'no network at all', source: "args.push('--network', 'none');" },
+      {
+        why: 'the bridge network a granted capability produces',
+        source: "args.push('--network', 'bridge');",
+      },
+    ],
+    exceptions: [
+      { why: 'the validator must name what it rejects', file: 'src/execution/container-plan.ts' },
+      { why: 'the config schema warns about the keys it ignores', file: 'src/config/schema.ts' },
+    ],
+  },
+
+  {
+    rule: 'no-enforcement-overclaim',
+    file: 'src/execution/ssh.ts',
+    mustFail: [
+      {
+        why: 'claiming OS isolation literally',
+        source: "const env = { sandboxStrength: 'os-isolated' };",
+      },
+      {
+        why: 'claiming container enforcement literally',
+        source: 'this.environment = { sandboxStrength: "container-enforced" };',
+      },
+    ],
+    mustPass: [
+      {
+        why: 'derived from the descriptor, which is the only honest source',
+        source: 'const strength = summarizeEnforcement(enforcement);',
+      },
+      {
+        why: 'the honest default is not a claim',
+        source: "const env = { sandboxStrength: 'policy-enforced' };",
+      },
+    ],
+    exceptions: [
+      { why: 'the descriptor module defines the vocabulary', file: 'src/execution/enforcement.ts' },
+      { why: 'the sandbox describer renders it', file: 'src/execution/sandbox.ts' },
+    ],
+  },
+
+  {
     rule: 'no-console-in-kernel',
     file: 'src/session/session.ts',
     mustFail: [

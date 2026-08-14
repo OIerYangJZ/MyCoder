@@ -72,6 +72,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       ...(args.profile ? { profileOverride: args.profile } : {}),
       ...(args.model ? { modelOverride: args.model } : {}),
       ...(args.remote ? { remoteName: args.remote } : {}),
+      ...(args.backend ? { backend: args.backend } : {}),
       ...(args.noTelemetry ? { telemetryDisabled: true } : {}),
       ...(args.logLevel ? { logLevel: args.logLevel as LogLevel } : {}),
       json: args.json,

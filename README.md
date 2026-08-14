@@ -77,7 +77,7 @@ is the only step that verifies types. Run it before opening a PR — CI does.
   interrupted tool calls.
 - Control commands (`/model`, `/goal`, `/loop`, `/permissions`, `/status`,
   `/compact`, `/remote`) that change kernel state directly, never via the model.
-- Local and SSH execution backends behind one interface.
+- Local, SSH and container execution backends behind one interface.
 - Skill / agent / hook discovery, where a definition can only narrow.
 
 ## What it deliberately does not do
@@ -86,13 +86,23 @@ MCP marketplace, agent teams, IDE plugins, a full TUI, browser use, embeddings,
 PageRank repo maps, model routing, cloud session sync, and a remote daemon. Each
 has a place to attach later; none is in the way now.
 
-**And one thing it does not claim**: on the local backend this is
-`policy-enforced`, not `os-isolated`. The kernel controls what tools may request
+**And one thing it does not claim.** On the local and SSH backends this is
+`policy-enforced`, not `os-isolated`: the kernel controls what tools may request
 and redacts everything they emit, but a subprocess that runs can still reach the
-filesystem and the network with your user's rights. `/status` says so in those
-words. Strong isolation needs a container or OS-sandbox backend, and until one is
-plugged in, "network is off" is _best-effort_ — the code and the UI both say
-that rather than implying a boundary that is not there.
+filesystem and the network with your user's rights, and "network is off" is
+_best-effort_.
+
+`--backend container` (alpha.5, ADR-0014) changes that for the subprocess, and
+only for the subprocess. Commands run in a container whose mounts are derived from
+the granted capability, with host home and credential directories **absent**
+rather than denied, no network unless a capability granted one, a read-only root
+filesystem, dropped capabilities and `no-new-privileges`. What it still does not
+claim: that `Read`/`Edit` are containerised — they are trusted kernel operations
+on the host filesystem, and are reported as `policy-enforced`; that a _host
+allowlist_ is enforced when network is granted — it is not, and the approval
+prompt says so; or that a VM-backed Docker Desktop is equivalent to a native Linux
+engine. `/status` prints one enforcement level per dimension rather than a single
+reassuring word, and refuses to say "enforced" for anything that is policy.
 
 ## Layout
 
@@ -107,7 +117,8 @@ src/
 ├── edit/         edit engine, exact replace, atomic write, unified diff
 ├── policy/       access requests, policy engine, profiles, protected paths
 ├── security/     secret broker, secret scanner, egress gate, env scrub, redactor
-├── execution/    backend interface, local, ssh, sandbox planner, mutation detector
+├── execution/    backend interface, local, ssh, container (+ plan/validator),
+│                 enforcement levels, sandbox planner, mutation detector
 ├── extensions/   skills, agents, hooks
 ├── config/       layered configuration, remotes
 └── util/         ids, errors, paths, glob, text, toml, json schema, sse, walk

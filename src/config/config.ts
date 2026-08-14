@@ -90,6 +90,29 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
       for (const id of Object.keys(layer.model.providers)) userProviderIds.add(id);
     }
 
+    // Same rule, same reason, for the container image (alpha.5 §11). The image
+    // decides what code exists inside the isolation boundary, so a repository
+    // that could name it would be choosing the interpreter that runs its own
+    // tests. Limits are left alone: a project asking for *less* memory is a
+    // project tightening its own ceiling, which is always permitted.
+    if (label === 'project config' && layer.container?.image !== undefined) {
+      layer.warnings = [
+        ...(layer.warnings ?? []),
+        `project config declared container.image = "${layer.container.image}"; it was ignored. ` +
+          `The container image may only be set in ${userPath} — a project does not choose the image ` +
+          'its own code runs inside.',
+      ];
+      delete layer.container.image;
+    }
+    if (label === 'project config' && layer.container?.pullIfMissing !== undefined) {
+      layer.warnings = [
+        ...(layer.warnings ?? []),
+        'project config set container.pull_if_missing; it was ignored. Pulling an image is a user setup ' +
+          'decision, not something a repository may trigger.',
+      ];
+      delete layer.container.pullIfMissing;
+    }
+
     config = mergeConfig(config, layer);
     config.warnings.push(...parsed.warnings);
   }

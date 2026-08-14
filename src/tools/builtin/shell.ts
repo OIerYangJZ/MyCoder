@@ -26,6 +26,7 @@ import { isWithin, type CanonicalPath } from '../../util/paths.ts';
 import type { AccessRequest } from '../../policy/access.ts';
 import type { SecretLease } from '../../security/secret-broker.ts';
 import { MutationDetector, type WorkspaceChange } from '../../execution/mutation-detector.ts';
+import { atLeast, type EnforcementDescriptor } from '../../execution/enforcement.ts';
 import {
   errorResult,
   okResult,
@@ -159,7 +160,7 @@ export function createShellTool(opts: ShellToolOptions): ToolDefinition<ShellArg
           `directory: ${cwdDisplay}`,
           wantsNetwork
             ? `network: ${networkHosts.length > 0 ? networkHosts.join(', ') : 'any host'} ` +
-              `(${ctx.environment.sandboxStrength === 'os-isolated' ? 'enforced' : 'best-effort — this backend cannot truly block sockets'})`
+              `(${describeApprovalNetwork(ctx.environment.enforcement, networkHosts.length > 0)})`
             : 'network: none requested',
           ...(args.secrets?.length
             ? [`credentials: ${args.secrets.map((s) => `secret_ref://${s.ref} → $${s.env}`).join(', ')}`]
@@ -378,6 +379,29 @@ function summarizeArgv(argv: readonly string[]): string {
  * the three attacks in spec §26.1 that are expressible in argv into policy
  * denials rather than redactions after the fact.
  */
+/**
+ * What the approval prompt may promise about network access (alpha.5 §31, §42).
+ *
+ * The interesting case is the one this used to get wrong. A container gives
+ * `network: false` a real boundary, so a session that *enables* network on a
+ * container has not gone from "policy-enforced" to "enforced" — it has removed
+ * the boundary entirely, and the named hostnames are not imposed on the process
+ * by anything. Someone approving `{"hosts":["registry.npmjs.org"]}` is approving
+ * the whole internet for that command, and the prompt has to say so, because it
+ * is the last point at which a human can decline.
+ */
+function describeApprovalNetwork(enforcement: EnforcementDescriptor, hostsNamed: boolean): string {
+  const allowlist = atLeast(enforcement.networkAllowlist, 'container-enforced');
+  if (allowlist) return 'enforced for the named hosts';
+  if (atLeast(enforcement.processFilesystem, 'container-enforced')) {
+    return hostsNamed
+      ? 'the container gets a network namespace: these hostnames are recorded and audited, but NOT enforced — ' +
+          'the command can reach any host'
+      : 'the container gets a full network namespace; no host restriction is enforced';
+  }
+  return 'best-effort — this backend cannot truly block sockets';
+}
+
 async function resolveReferencedPaths(
   tokens: readonly string[],
   ctx: ToolResolveContext,

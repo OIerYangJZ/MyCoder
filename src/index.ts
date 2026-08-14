@@ -150,6 +150,42 @@ export { LocalExecutionBackend } from './execution/local.ts';
 export { SshExecutionBackend, validateRemoteConfig, type RemoteConfig } from './execution/ssh.ts';
 export { SandboxPlanner, describeSandbox, networkEnforcementLevel } from './execution/sandbox.ts';
 export { MutationDetector, type WorkspaceChange } from './execution/mutation-detector.ts';
+export {
+  ContainerExecutionBackend,
+  defaultContainerConfig,
+  probeContainerRuntime,
+  resolveContainerImage,
+  classifyDockerError,
+  discoverMaskPaths,
+  resolveGeneratedDirs,
+  summarizeWritableRoots,
+  type ContainerConfig,
+  type ContainerRuntimeInfo,
+} from './execution/container.ts';
+export {
+  planContainerMounts,
+  buildContainerPlan,
+  validateContainerPlan,
+  dockerRunArgs,
+  containerName,
+  toContainerPath,
+  translateArgvPaths,
+  CONTAINER_WORKSPACE,
+  type ContainerMount,
+  type ContainerMountPlan,
+  type ContainerPlan,
+} from './execution/container-plan.ts';
+export {
+  describeEnforcement,
+  networkEnforcementLabel,
+  summarizeEnforcement,
+  localEnforcement,
+  sshEnforcement,
+  containerEnforcement,
+  atLeast,
+  type EnforcementDescriptor,
+  type EnforcementLevel,
+} from './execution/enforcement.ts';
 
 // --- extensions ---
 export { discoverSkills, activateSkill, narrowForSkill, type SkillDefinition } from './extensions/skills.ts';

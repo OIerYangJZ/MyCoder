@@ -243,6 +243,16 @@ export class Session {
 
     if (opts.resumedUsage) {
       this.usage = { ...opts.resumedUsage };
+      // Restore the *split*, not just the total.
+      //
+      // Found by the alpha.5 dogfood (D-003). `usage.costUsd` was restored here
+      // and `directCostUsd` was not, so after a restart `/status` printed a
+      // usage line of $0.0033 directly above a cost line of $0.0006 — the same
+      // session, two totals, and the smaller one labelled "total". Anything
+      // reading the breakdown to decide whether a budget was spent got the
+      // post-restart figure only.
+      this.delegatedCostUsd = opts.resumedUsage.delegatedCostUsd ?? 0;
+      this.directCostUsd = Math.max(0, opts.resumedUsage.costUsd - this.delegatedCostUsd);
     } else if (resumed) {
       this.usage.modelRequests = resumed.modelRequests;
       this.usage.toolCalls = resumed.toolCallCount;
@@ -1241,7 +1251,9 @@ export class Session {
     const next: SessionMetadata = {
       ...existing,
       model: this.modelAlias,
-      usage: { ...this.usage },
+      // The delegated share travels with the total, so a resume can rebuild the
+      // breakdown rather than guessing at it (D-003).
+      usage: { ...this.usage, delegatedCostUsd: this.delegatedCostUsd },
     };
     if (this.context.goal) next.goal = this.context.goal;
     await this.opts.store.saveMetadata(next);
