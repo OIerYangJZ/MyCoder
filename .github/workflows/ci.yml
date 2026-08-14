@@ -268,7 +268,19 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - run: pnpm test
+      - name: Run the unit and integration suites
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm test 2>&1 | tee test-node-${{ matrix.node }}.log
+
+      - name: Upload the test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-node-${{ matrix.node }}
+          path: test-node-${{ matrix.node }}.log
+          retention-days: 14
 
   security:
     name: Security Invariants
@@ -402,11 +414,31 @@ jobs:
       # macOS is where the path layer earns its keep: APFS is case-insensitive
       # and stores filenames in NFD, so `.ENV` and a decomposed filename must
       # still hit the protected-path rules.
-      - run: pnpm test:platform
+      #
+      # Tee'd to a file and uploaded below. This job failed once on a release
+      # commit and the cause was never established, because GitHub serves job logs
+      # from a blob host that was unreachable from the machine doing the release —
+      # so "green on attempt 2" was the most that could be said. `pipefail` keeps
+      # the step's exit status the test runner's rather than tee's.
+      - name: Run the platform suite
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm test:platform 2>&1 | tee test-platform-${{ matrix.os }}.log
         env:
           # Portability is the question here, not determinism — the dedicated
           # job above covers the full 100.
           KERNEL_TRAJECTORY_REPEATS: 5
+
+      # `always()`: a failure is exactly when the log is needed, and a pass is when
+      # a flake is worth comparing against.
+      - name: Upload the platform test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-platform-${{ matrix.os }}
+          path: test-platform-${{ matrix.os }}.log
+          retention-days: 14
 
   smoke:
     name: Smoke / ${{ matrix.os }}

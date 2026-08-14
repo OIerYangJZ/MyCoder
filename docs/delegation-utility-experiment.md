@@ -195,10 +195,11 @@ breadth.
 the negative controls to phase 1 hit an exhausted provider account, and its artifact —
 written to the same filename — replaced the good one. The failed file was deleted
 rather than committed, since 30 billing failures cited as evidence would be worse than
-an absent file, and phase 1 was re-run once the account was topped up. The artifact
-name still has no run stamp, so the same overwrite is still possible; the fix is one
-line and is left undone deliberately, so that this document describes the hazard
-rather than implying it was designed away.
+an absent file, and phase 1 was re-run once the account was topped up.
+
+The artifact name now carries a run stamp, so the overwrite cannot repeat. The two
+committed artifacts predate that change and keep their original names — renaming files
+the write-up already points at would trade one hazard for a broken reference.
 
 **HTTP 402 was reported unhelpfully, and that is now fixed.** Thirty attempts failed
 with zero tokens, and finding out why took a hand-written probe: the kernel said

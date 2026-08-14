@@ -185,6 +185,8 @@ export interface SystemCeiling {
   maxToolCalls: number;
   maxModelRequests: number;
   maxWallTimeMs: number;
+  /** See the constant: one level, because only one level is validated. */
+  maxDelegationDepth: number;
   /** Content telemetry is never permitted (Appendix A, invariant 12). */
   telemetryContent: false;
   traceUpload: false;
@@ -196,6 +198,21 @@ export const SYSTEM_CEILING: SystemCeiling = {
   maxToolCalls: 2_000,
   maxModelRequests: 200,
   maxWallTimeMs: 60 * 60_000,
+  /**
+   * Delegation depth the *system* permits, whatever a config layer asks for.
+   *
+   * One, not because deeper trees are conceptually wrong, but because alpha.4 only
+   * validated one level and the accounting past it is known to be approximate: a
+   * grandchild's usage is charged to the root's turn rather than to its immediate
+   * parent (ADR-0013). That is conservative rather than exploitable, but it is
+   * untested, and shipping a reachable capability whose accounting we know is wrong
+   * is worse than not having it. `docs/alpha4-evidence-matrix.md` records the row
+   * this closes.
+   *
+   * Raising it is a deliberate act: change this constant, and validate the
+   * accounting before you do.
+   */
+  maxDelegationDepth: 1,
   telemetryContent: false,
   traceUpload: false,
   secretRedaction: true,
@@ -329,6 +346,10 @@ export function applySystemCeiling(config: KernelConfig): KernelConfig {
       maxWallTimeMs: Math.min(
         config.loop.maxWallTimeMs ?? SYSTEM_CEILING.maxWallTimeMs,
         SYSTEM_CEILING.maxWallTimeMs,
+      ),
+      maxDelegationDepth: Math.min(
+        config.loop.maxDelegationDepth ?? SYSTEM_CEILING.maxDelegationDepth,
+        SYSTEM_CEILING.maxDelegationDepth,
       ),
     },
   };
