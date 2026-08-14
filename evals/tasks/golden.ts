@@ -114,6 +114,16 @@ export interface GoldenTask {
   scriptedOnly?: string;
   approvals?: ApprovalOutcome[];
   profile?: string;
+  /**
+   * Adjust the kernel between construction and the turn.
+   *
+   * For experiments that vary the **harness** rather than the task: the same
+   * fixture and prompt against a different tool description, catalogue or
+   * configuration. A golden task should not need this — if a gate depends on the
+   * harness being tweaked, the tweak belongs in the product — so it exists for
+   * `evals/experiments/`, where the question being asked is about the harness.
+   */
+  prepare?(kernel: Kernel): void | Promise<void>;
   checks: GoldenTaskCheck[];
 }
 

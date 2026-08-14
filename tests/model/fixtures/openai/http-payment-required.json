@@ -1,0 +1,12 @@
+{
+  "status": 402,
+  "note": "What api.deepseek.com returns once the account balance is exhausted. Captured while a live delegation experiment ran the account dry mid-run.",
+  "body": {
+    "error": {
+      "message": "Insufficient Balance",
+      "type": "unknown_error",
+      "param": null,
+      "code": "invalid_request_error"
+    }
+  }
+}

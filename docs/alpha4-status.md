@@ -198,6 +198,13 @@ root ceiling, definition, active skills, request)`, then the child's usage is
 
 ## 4. What alpha.4 measured, and what it does not know
 
+> **Followed up after the tag.** A dedicated experiment took this question further:
+> three task sizes, up to eighteen files with two independent faults, and a second
+> `Delegate` description — 0 of 25 attempts chose delegation, all solved.
+> `docs/delegation-utility-experiment.md`. Two of the three candidate explanations
+> are eliminated; the untested one is that the system prompt never mentions
+> delegation as a strategy.
+
 **Natural delegation: 0 out of 10.** On the two tasks where DeepSeek was told it
 had subagents available and left to judge, it delegated **zero times** — and
 solved all ten attempts anyway. The explicit-conformance suite, where delegation

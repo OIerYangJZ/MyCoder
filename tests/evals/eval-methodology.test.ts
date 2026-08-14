@@ -20,6 +20,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  KERNEL_FAULTS,
   classifyFailure,
   countFailureClasses,
   distribution,
@@ -210,6 +211,21 @@ describe('failure classification (§25)', () => {
 
   test('a policy denial is classified as such, not as an omission', () => {
     assert.equal(classify(['tool result: PROTECTED_PATH']), 'POLICY_BLOCKED');
+  });
+
+  test('an exhausted provider account is an environment error, not an adapter bug', () => {
+    // Prompted by a live experiment that ran the provider account dry. That run
+    // classified as UNKNOWN, not as a kernel fault — the error never reached a tool
+    // result for this classifier to read. But `MODEL_INVALID_RESPONSE` does map to
+    // ADAPTER_BUG, so a 4xx whose text *does* surface would have read as our bug,
+    // and an unpaid bill must never read as a runtime regression (§28).
+    assert.equal(classify(['MODEL_AUTH_ERROR: refused for billing reasons (HTTP 402)']), 'ENVIRONMENT_ERROR');
+    assert.equal(classify(['error: MODEL_RATE_LIMIT from the provider']), 'ENVIRONMENT_ERROR');
+    assert.equal(
+      KERNEL_FAULTS.has('ENVIRONMENT_ERROR'),
+      false,
+      'an environment error must not count against Kernel Correctness',
+    );
   });
 
   describe('the alpha.4 delegation classes (§35)', () => {

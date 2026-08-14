@@ -323,6 +323,13 @@ export function classifyFailure(
   if (/PROTECTED_PATH|TOOL_DENIED|NETWORK_DENIED|hard_deny/.test(all)) return 'POLICY_BLOCKED';
   if (/TOOL_INVALID_ARGS|did not match its schema/.test(all)) return 'MODEL_TOOL_SCHEMA';
   if (/STALE_FILE|NON_UNIQUE_MATCH|INSUFFICIENT_READ_COVERAGE/.test(all)) return 'MODEL_EDIT_STRATEGY';
+  // Before the adapter/runtime branches: an account with no credit, a rejected key
+  // or a rate limit is the *environment* being broken. It used to reach
+  // `ADAPTER_BUG` — a kernel fault — so an unpaid provider bill made a live run
+  // read as a runtime regression.
+  if (/MODEL_AUTH_ERROR|billing reasons|insufficient[_ ](quota|balance)|MODEL_RATE_LIMIT/.test(all)) {
+    return 'ENVIRONMENT_ERROR';
+  }
   if (/MODEL_INVALID_RESPONSE|__unparsed/.test(all)) return 'ADAPTER_BUG';
   if (/INTERNAL_ERROR|ReferenceError|TypeError/.test(all)) return 'KERNEL_BUG';
   if (/ENOENT|EACCES|not available on this execution backend/.test(all)) return 'ENVIRONMENT_ERROR';
@@ -615,6 +622,11 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
   const failures: string[] = [];
 
   try {
+    // Harness-level variation, for experiments (see `GoldenTask.prepare`). Runs
+    // after the kernel exists and before the turn, so an override lands in the
+    // catalogue the first step is frozen against.
+    await task.prepare?.(kernel);
+
     await kernel.session.runTurn(LIVE ? (task.livePrompt ?? task.prompt) : task.prompt);
 
     for (const check of task.checks) {
