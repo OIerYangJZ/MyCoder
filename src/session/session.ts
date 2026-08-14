@@ -411,6 +411,11 @@ export class Session {
 
     this.usage.modelRequests += record.usage.modelRequests;
     this.usage.toolCalls += record.usage.toolCalls;
+    // Tokens too, or the totals describe different sets of requests: the count
+    // would include the child and the tokens would not.
+    this.usage.inputTokens += record.usage.inputTokens;
+    this.usage.outputTokens += record.usage.outputTokens;
+    this.usage.cachedInputTokens += record.usage.cachedInputTokens;
     this.pendingCharge.modelRequests += record.usage.modelRequests;
     this.pendingCharge.toolCalls += record.usage.toolCalls;
 

@@ -221,6 +221,16 @@ presently **no evidence that delegation improves solved-task probability**, and
 alpha.5 should not assume one. The two suites are reported apart for exactly this
 reason — averaging them would produce a number that answers neither question.
 
+> **Correction (post-tag).** The token figure below **understates** the five
+> delegated attempts. `recordDelegation` rolled up a child's requests, tool calls and
+> cost but not its tokens, so a root's token count excluded its children's while its
+> request count included them. Found against a live relay whose per-request token
+> count made the arithmetic impossible to miss, and fixed — see
+> `docs/provider-2-validation.md` §3. The direction is known; the magnitude is not
+> recoverable, since those runs' session stores were temporary. The cost figures are
+> unaffected: a child computes its cost from its own tokens before the roll-up, which
+> is how the disagreement surfaced.
+
 **Cost is measurable, and estimated.** The direct / delegated / total split is
 implemented and reported: `$0.0171` direct against `$0.0036` delegated across 15
 live attempts (183k input, 14k output tokens). Treat the dollars as an estimate

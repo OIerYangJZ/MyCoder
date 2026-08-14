@@ -346,6 +346,9 @@ export interface DelegationFinishedPayload {
     modelRequests: number;
     toolCalls: number;
     wallTimeMs: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
     estimatedCostUsd?: number;
   };
   errorCode?: string;
