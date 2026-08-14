@@ -51,7 +51,9 @@ matrices as well, because those rows are still the evidence for those claims.
 | `pnpm test:soak` at `KERNEL_SOAK_REPEATS=50`         | green, unchanged                                                                                                |
 | `pnpm evidence`                                      | alpha.3: 169 rows · alpha.4: 119 rows · alpha.5: **110 rows, 100 PASS, 0 FAIL, 5 NOT TESTED, 5 NOT APPLICABLE** |
 | live dogfood (DeepSeek, container backend)           | 5 turns across a restart, suite green, **0 canary leaks**                                                       |
-| CI job `Container Enforcement (native Linux Docker)` | added, fail-closed via `KERNEL_CONTAINER_REQUIRED=1`                                                            |
+| CI job `Container Enforcement (native Linux Docker)` | **green** — run `31819241927`, job `94828259242`, every step including the leak check                           |
+| full CI on this tree                                 | **21/21 jobs green** (run `31819241927`)                                                                        |
+| kickoff CI on `7663484`                              | green (run `31809527157`)                                                                                       |
 
 The 71 skipped tests are the SSH matrix under a plain `pnpm test`; it remains
 opt-in through `KERNEL_SSH=1`. The container suites skip the same way, with a

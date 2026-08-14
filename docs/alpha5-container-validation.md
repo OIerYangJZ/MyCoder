@@ -15,11 +15,36 @@ is what this milestone set out to produce.
 
 ## 1. Environments
 
-| Tier | Platform                                                | Status                                                                                              |
-| ---- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| A    | **Native Linux Docker Engine** (GitHub `ubuntu-latest`) | CI job `Container Enforcement (native Linux Docker)`, fail-closed via `KERNEL_CONTAINER_REQUIRED=1` |
-| B    | **macOS Docker Desktop** — the maintainer's machine     | Executed: docker 29.7.2, `linux/arm64`, kernel `6.12.76-linuxkit`, rootless=false                   |
-| C    | Windows Docker Desktop                                  | **NOT TESTED**. No trustworthy runner; §39 permits compatibility-only status, and no claim is made  |
+| Tier | Platform                                                | Status                                                                                                                                                                                         |
+| ---- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A    | **Native Linux Docker Engine** (GitHub `ubuntu-latest`) | **Executed and green.** CI job `Container Enforcement (native Linux Docker)`, run [`31819241927`](https://github.com/OIerYangJZ/MyCoder/actions/runs/31819241927), job `94828259242`, 2 m 01 s |
+| B    | **macOS Docker Desktop** — the maintainer's machine     | Executed: docker 29.7.2, `linux/arm64`, kernel `6.12.76-linuxkit`, rootless=false                                                                                                              |
+| C    | Windows Docker Desktop                                  | **NOT TESTED**. No trustworthy runner; §39 permits compatibility-only status, and no claim is made                                                                                             |
+
+Tier A ran the identical four suites with `KERNEL_CONTAINER_REQUIRED=1`, so a
+missing or unusable runtime would have failed the job rather than skipping it
+(§65). Every step succeeded, including the two that exist to make the result
+mean something:
+
+```
+Record the runtime for the evidence artifact  success   (docker version / docker info / uname -a)
+Pull the container image                      success   (a setup action, never a tool side effect)
+Container isolation, conformance, composition success
+Assert no container leaked out of the suite   success   (greps `docker ps -a` for mycoder-*)
+```
+
+**One honest gap in this record.** The job's own log — which is where the printed
+`docker version`, `docker info` and `uname -a` values live — could not be read
+from the machine writing this document: GitHub serves job logs and artifacts from
+a blob host that is unreachable from here, and both `gh run view --log` and
+`gh run download` fail with an EOF on the transfer. That is the **same limitation
+alpha.4's status document recorded** for a different job, so it is a standing
+property of this environment rather than a new surprise. What is asserted above
+comes from the Actions API — job conclusion and per-step conclusions — which is
+sufficient to say the suites ran and passed on a native Linux engine, and
+insufficient to quote that engine's version string. The artifact
+`container-enforcement-log` is retained on the run for 14 days for anyone who can
+reach it.
 
 Tier B's numbers are below. Tier A runs the identical suites — same files, same
 assertions — and is the tier the release claim rests on, because it is the only
