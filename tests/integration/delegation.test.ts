@@ -751,3 +751,61 @@ describe('the prompt introduces delegation as a strategy (§4 of the utility exp
     }
   });
 });
+
+describe("the root's usage totals include the child's (§13, §14)", () => {
+  test('tokens roll up, not only requests and cost', async () => {
+    // Found against a live relay: a delegated task reported ~5k tokens for 4.3
+    // requests when each request was demonstrably ~4.4k. `recordDelegation` rolled
+    // up modelRequests, toolCalls and cost — and silently not tokens — so `/status`
+    // showed a request count that included the child beside a token count that did
+    // not, and the eval's tokens-per-task understated every delegated run.
+    let childCalls = 0;
+    const ws = await createTestWorkspace({
+      files: FILES,
+      responder: (request) => {
+        if (isChildRequest(request, 'reviewer')) {
+          childCalls += 1;
+          return childCalls === 1
+            ? { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'src/a.ts' } }] }
+            : { kind: 'final', text: 'nothing to flag' };
+        }
+        return request.messages.some((m) => m.parts.some((p) => p.type === 'tool_result'))
+          ? { kind: 'final', text: 'relayed' }
+          : delegateStep('reviewer', 'Review src/a.ts.');
+      },
+    });
+
+    try {
+      await ws.kernel.session.runTurn('Delegate a review.');
+
+      const root = ws.kernel.session.usageSnapshot;
+      const record = ws.kernel.session.delegationRecords()[0]!;
+
+      // The child really did spend tokens.
+      assert.ok(record.usage.inputTokens > 0, 'the delegation record carries no input tokens');
+      assert.ok(record.usage.outputTokens > 0, 'the delegation record carries no output tokens');
+
+      // And the root's totals contain them. Asserted as "at least the child's",
+      // because the parent spent its own on top.
+      assert.ok(
+        root.inputTokens > record.usage.inputTokens,
+        `root input ${root.inputTokens} does not include the child's ${record.usage.inputTokens}`,
+      );
+      assert.ok(
+        root.outputTokens >= record.usage.outputTokens,
+        `root output ${root.outputTokens} does not include the child's ${record.usage.outputTokens}`,
+      );
+
+      // The consistency that was broken: requests and tokens must describe the same
+      // set of requests. A root that counts the child's requests but not its tokens
+      // is internally contradictory wherever the two are shown together.
+      assert.equal(
+        root.modelRequests,
+        ws.fakeModel.callCount,
+        'the root request count does not match the requests actually made',
+      );
+    } finally {
+      await ws.cleanup();
+    }
+  });
+});

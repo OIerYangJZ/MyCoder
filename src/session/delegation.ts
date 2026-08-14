@@ -108,6 +108,19 @@ export interface DelegationUsage {
   modelRequests: number;
   toolCalls: number;
   wallTimeMs: number;
+  /**
+   * Tokens the child spent.
+   *
+   * Present for the same reason the request count is: §13 says root usage includes
+   * child usage, and a root that counted the child's *requests* but not its
+   * *tokens* was internally contradictory wherever the two appear together — which
+   * is `/status`, the eval artifact and any cost arithmetic derived from tokens.
+   * Found against a live relay whose per-request token count was large enough to
+   * make the omission obvious.
+   */
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
   /** Absent when no pricing is configured — never a fabricated zero (§18). */
   estimatedCostUsd?: number;
 }
@@ -343,7 +356,14 @@ export class DelegationService {
         agent: request.agent,
         status,
         summary: error.message,
-        usage: { modelRequests: 0, toolCalls: 0, wallTimeMs: this.opts.clock.now() - startedAt },
+        usage: {
+          modelRequests: 0,
+          toolCalls: 0,
+          wallTimeMs: this.opts.clock.now() - startedAt,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+        },
         error,
         notes,
         dirtyFiles: [],
@@ -543,6 +563,9 @@ export class DelegationService {
           modelRequests: usage.modelRequests,
           toolCalls: usage.toolCalls,
           wallTimeMs: this.opts.clock.now() - startedAt,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cachedInputTokens: usage.cachedInputTokens,
           ...(usage.costUsd > 0 ? { estimatedCostUsd: usage.costUsd } : {}),
         },
         ...(outcome.error ? { error: outcome.error } : {}),
@@ -589,6 +612,9 @@ export class DelegationService {
           modelRequests: child.session.usageSnapshot.modelRequests,
           toolCalls: child.session.usageSnapshot.toolCalls,
           wallTimeMs: this.opts.clock.now() - startedAt,
+          inputTokens: child.session.usageSnapshot.inputTokens,
+          outputTokens: child.session.usageSnapshot.outputTokens,
+          cachedInputTokens: child.session.usageSnapshot.cachedInputTokens,
         },
         error: err,
         grant,
