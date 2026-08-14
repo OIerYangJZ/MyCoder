@@ -666,3 +666,88 @@ describe('the delegation surface is absent when nothing can be delegated', () =>
     }
   });
 });
+
+describe('the prompt introduces delegation as a strategy (§4 of the utility experiment)', () => {
+  test('the guidance appears only when there is something to delegate to', async () => {
+    const withAgents = await createTestWorkspace({
+      files: FILES,
+      script: [{ kind: 'final', text: 'ok' }],
+    });
+    try {
+      await withAgents.kernel.session.runTurn('hello');
+      const system = withAgents.fakeModel.requests[0]!.system;
+      assert.match(system, /You have subagents available through the Delegate tool/);
+      assert.match(system, /keeps your own context on the main thread/);
+    } finally {
+      await withAgents.cleanup();
+    }
+
+    // NEGATIVE CONTROL: a project with no agents must not read about a tool the
+    // kernel will not register for it. Advertising it would cost a step to
+    // discover, and would change every alpha.3 trajectory.
+    const without = await createTestWorkspace({
+      files: { 'src/a.ts': 'export const a = 1;\n' },
+      script: [{ kind: 'final', text: 'ok' }],
+    });
+    try {
+      await without.kernel.session.runTurn('hello');
+      assert.ok(
+        !without.fakeModel.requests[0]!.system.includes('subagents available'),
+        'a session with no agents was told it had subagents',
+      );
+    } finally {
+      await without.cleanup();
+    }
+  });
+
+  test('a project can switch the guidance off without losing the tool', async () => {
+    const ws = await createTestWorkspace({
+      files: {
+        ...FILES,
+        '.mycoder/config.toml': '[loop]\ndelegation_guidance = false\n',
+      },
+      script: [{ kind: 'final', text: 'ok' }],
+    });
+    try {
+      await ws.kernel.session.runTurn('hello');
+      const request = ws.fakeModel.requests[0]!;
+
+      assert.ok(!request.system.includes('subagents available'), 'the nudge survived being switched off');
+      // The capability is untouched: what the flag removes is the advice, not the
+      // tool. A flag that quietly disabled delegation would be a different feature
+      // wearing the same name.
+      assert.ok(
+        request.tools.some((t) => t.name === 'Delegate'),
+        'switching off the guidance also removed the tool',
+      );
+      assert.ok(ws.kernel.delegation, 'switching off the guidance disabled the service');
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('a child is not told to delegate; its briefing says the opposite', async () => {
+    const childRequests: ModelRequest[] = [];
+    const ws = await createTestWorkspace({
+      files: FILES,
+      responder: (request) => {
+        if (isChildRequest(request, 'reviewer')) {
+          childRequests.push(request);
+          return { kind: 'final', text: 'done' };
+        }
+        return request.messages.some((m) => m.parts.some((p) => p.type === 'tool_result'))
+          ? { kind: 'final', text: 'ok' }
+          : delegateStep('reviewer', 'Review src/a.ts.');
+      },
+    });
+    try {
+      await ws.kernel.session.runTurn('Delegate a review.');
+      assert.ok(childRequests.length > 0, 'the child never sampled');
+      const system = childRequests[0]!.system;
+      assert.ok(!system.includes('You have subagents available'), 'a child was nudged to delegate');
+      assert.match(system, /You cannot delegate further/);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+});

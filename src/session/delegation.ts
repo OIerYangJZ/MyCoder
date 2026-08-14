@@ -805,6 +805,10 @@ export class DelegationService {
       permissionProfile: scope.policy.describeLayers().at(-1)?.profile ?? 'inherited',
       backendDescription: opts.environment.backendDescription,
       editJournal: opts.editJournal,
+      // Never for a child: at the default depth it cannot delegate, and its own
+      // briefing says so in the sentence right below. Two pieces of advice that
+      // contradict each other are worse than one.
+      delegationGuidance: false,
     });
 
     // Dirty paths *this child* produced. Read from the child's own tool records

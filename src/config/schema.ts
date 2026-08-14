@@ -96,6 +96,19 @@ export interface LoopConfig {
   maxWallTimeMs?: number;
   maxCostUsd?: number;
   /**
+   * Whether the kernel tells the model that delegation is a strategy it can use.
+   *
+   * Default on when the project defines agents. Off means the `Delegate` tool is
+   * still there and still described; what disappears is the kernel's own nudge in
+   * the system prompt. Someone who does not want the model encouraged to spend
+   * budget on subagents can say so, and the delegation-utility experiment uses it
+   * as the two arms of an A/B — which is only possible because it is a real
+   * option rather than a test hook.
+   *
+   * Merged so that **off wins**: a project may switch the nudge off, never on.
+   */
+  delegationGuidance?: boolean;
+  /**
    * How deep delegation may go (alpha.4 §12). Default 1: root → child only.
    *
    * Merged by `Math.min` like every other loop limit, so a project can lower it
@@ -152,6 +165,7 @@ export function defaultConfig(): KernelConfig {
       maxRepeatedFailures: 3,
       maxWallTimeMs: 10 * 60_000,
       maxDelegationDepth: 1,
+      delegationGuidance: true,
     },
     shell: { defaultNetwork: false, timeoutMs: 120_000 },
     telemetry: { enabled: true, content: false, traceUpload: false },
@@ -249,6 +263,8 @@ function mergeLoop(lower: LoopConfig, higher: LoopConfig): LoopConfig {
     maxRepeatedFailures: minDefined(lower.maxRepeatedFailures, higher.maxRepeatedFailures),
     maxWallTimeMs: minDefined(lower.maxWallTimeMs, higher.maxWallTimeMs),
     maxDelegationDepth: minDefined(lower.maxDelegationDepth, higher.maxDelegationDepth),
+    // `false` is the sticky value: a project can silence the nudge, not add one.
+    delegationGuidance: strictBoolean(lower.delegationGuidance, higher.delegationGuidance, false),
   };
   const cost = minDefined(lower.maxCostUsd, higher.maxCostUsd);
   if (cost !== undefined) out.maxCostUsd = cost;
@@ -479,6 +495,9 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
       ...(num(loop.max_cost_usd) !== undefined ? { maxCostUsd: num(loop.max_cost_usd)! } : {}),
       ...(num(loop.max_delegation_depth) !== undefined
         ? { maxDelegationDepth: num(loop.max_delegation_depth)! }
+        : {}),
+      ...(bool(loop.delegation_guidance) !== undefined
+        ? { delegationGuidance: bool(loop.delegation_guidance)! }
         : {}),
     };
   }
