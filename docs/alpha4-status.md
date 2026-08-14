@@ -45,6 +45,7 @@ are still the evidence for alpha.3's claims.
 | `pnpm test:replay`                           | 13/13                                                             |
 | determinism ×100                             | pass                                                              |
 | `pnpm evidence`                              | alpha.3: 169 rows, 166 PASS · alpha.4: 119 rows, 108 PASS, 0 FAIL |
+| loose ends closed after the tag              | 1 of 3 NOT TESTED rows; see §8                                    |
 | `pnpm eval` (scripted)                       | 16/16; 0 secret-boundary violations                               |
 | `pnpm test:live:model` (DeepSeek)            | 9/9                                                               |
 | live delegation eval (DeepSeek, N=5)         | **15/15 solved, 0 violations**                                    |
@@ -295,3 +296,37 @@ milestone measured points at **enforcement hardening**:
   would justify a second provider — does model choice change delegation behaviour?
   — needs a delegation behaviour to compare against, and DeepSeek's is currently
   "never".
+
+## 8. Loose ends, after the tag
+
+Three rows were `NOT TESTED` when alpha.4 was tagged. One is now closed, and the
+other two are honest limits rather than omissions.
+
+**Closed: grandchild budget attribution at depth > 1.** Records are flat at the
+root, so a grandchild's usage would have been charged to the root's turn rather than
+to its immediate parent — conservative, but untested. Rather than test an
+accounting rule nothing needs yet, the capability is now unreachable:
+`SYSTEM_CEILING.maxDelegationDepth = 1` clamps every configuration layer, so no
+config can enter that state. Raising it is a deliberate edit to a constant that says
+why. The row is `NOT APPLICABLE`, which is the truthful status for a capability that
+does not exist.
+
+**Still open, and correctly so:**
+
+- _OS-level isolation of a child._ A subagent is a policy scope in the same process.
+  This is the alpha.5 candidate, not an oversight.
+- _Delegated cost as a billed amount._ Cost is estimated from configured list
+  prices, and the provider's pricing page does not list the alias in use, so the
+  tier cannot be verified. Tokens are exact; dollars are labelled `estimated`.
+
+**Two process debts closed at the same time**, both of which had already cost real
+time:
+
+- **CI test logs are now uploaded as artifacts** (`test:always()`) from the platform
+  and Node-matrix jobs. The one unexplained failure in §1 was unexplained _because_
+  GitHub serves job logs from a blob host that was unreachable from the release
+  machine. A failure with no readable log is a failure that gets re-run instead of
+  understood.
+- **Experiment artifacts carry a run stamp.** A re-run of the delegation experiment
+  overwrote a good artifact with a failed one, because the filename was a function of
+  the phase and sample size only.

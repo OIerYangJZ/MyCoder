@@ -600,3 +600,31 @@ describe('the config parser and the capability list cannot drift apart', () => {
     assert.match(parsed.warnings.join(' '), /unknown capability/);
   });
 });
+
+describe('the system ceiling bounds delegation depth (ADR-0013)', () => {
+  test('a config asking for depth 3 is clamped to 1', () => {
+    // Not because deeper trees are conceptually wrong, but because alpha.4 validated
+    // exactly one level, and a grandchild's usage is charged to the root's turn
+    // rather than its immediate parent. Conservative, untested, and therefore not
+    // something to leave reachable: `docs/alpha4-evidence-matrix.md` had a NOT
+    // TESTED row for exactly this, and closing the capability closes the row.
+    const asked = mergeConfig(defaultConfig(), { loop: { maxDelegationDepth: 3 } });
+    assert.equal(asked.loop.maxDelegationDepth, 1, 'the merge let a deeper tree through');
+
+    const ceilinged = applySystemCeiling({
+      ...defaultConfig(),
+      loop: { ...defaultConfig().loop, maxDelegationDepth: 3 },
+    });
+    assert.equal(ceilinged.loop.maxDelegationDepth, 1, 'the system ceiling did not clamp depth');
+  });
+
+  test('a project may still make delegation shallower, or switch it off', () => {
+    // The ceiling is a maximum, not a fixed value. Zero is meaningful: it disables
+    // delegation entirely, which a project should be able to choose.
+    const off = applySystemCeiling({
+      ...defaultConfig(),
+      loop: { ...defaultConfig().loop, maxDelegationDepth: 0 },
+    });
+    assert.equal(off.loop.maxDelegationDepth, 0);
+  });
+});

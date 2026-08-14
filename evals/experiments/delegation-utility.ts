@@ -159,7 +159,12 @@ async function main(): Promise<number> {
 
   const dir = path.join(process.cwd(), 'evals', 'results', 'experiments');
   await mkdir(dir, { recursive: true });
-  const file = path.join(dir, `${artifact.experiment}-${artifact.model}-${RUNS}x.json`);
+  // The run stamp is not decoration: an earlier run of this experiment overwrote a
+  // good artifact with a failed one, because the name was a function of the phase and
+  // the sample size only. `docs/delegation-utility-experiment.md` §6 describes the
+  // incident; this is the line that stops it repeating.
+  const stamp = artifact.generatedAt.replace(/[:.]/g, '-');
+  const file = path.join(dir, `${artifact.experiment}-${artifact.model}-${RUNS}x-${stamp}.json`);
   await writeFile(file, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
 
   // --- report ------------------------------------------------------------
