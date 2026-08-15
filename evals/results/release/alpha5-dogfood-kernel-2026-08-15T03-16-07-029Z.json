@@ -1,0 +1,164 @@
+{
+  "artifact": "alpha5-dogfood-kernel",
+  "startedAt": "2026-08-15T03:16:07.029Z",
+  "finishedAt": "2026-08-15T03:17:26.448Z",
+  "environment": {
+    "kernelCommit": "b03f96fc601c2c3bafde5b4dd3eb66817fc9ae15",
+    "workspaceCommit": "b03f96fc601c2c3bafde5b4dd3eb66817fc9ae15",
+    "trackedFiles": 205,
+    "model": "deepseek",
+    "backend": "container node:22-bookworm (sha256:0557ac14e0d4…) via docker 29.7.2 on Docker Desktop",
+    "enforcement": {
+      "processFilesystem": "container-enforced",
+      "processNetwork": "container-enforced",
+      "processPrivileges": "container-enforced",
+      "environmentIsolation": "container-enforced",
+      "hostFileBroker": "policy-enforced",
+      "networkAllowlist": "best-effort",
+      "platformNotes": [
+        "Docker Desktop runs the daemon in a virtual machine (kernel 6.12.76-linuxkit), so the host boundary is mediated by that VM and its file-sharing layer. Container execution is validated here; native-Linux-equivalent isolation is not claimed.",
+        "Image: node:22-bookworm. Chosen by configuration, never by the model."
+      ]
+    },
+    "image": {
+      "configured": "node:22-bookworm",
+      "resolvedId": "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a",
+      "digest": "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
+    },
+    "runtime": {
+      "binary": "docker",
+      "clientVersion": "29.7.2",
+      "serverVersion": "29.7.2",
+      "serverPlatform": "linux/arm64",
+      "operatingSystem": "Docker Desktop",
+      "kernelVersion": "6.12.76-linuxkit",
+      "nativeLinux": false,
+      "rootless": false,
+      "securityOptions": [
+        "name=seccomp,profile=builtin",
+        "name=cgroupns"
+      ]
+    },
+    "platform": "darwin/arm64",
+    "configHash": "06fdbc83e766abb1"
+  },
+  "masking": {
+    "found": 1,
+    "entriesScanned": 254,
+    "truncated": false,
+    "scanMs": 7,
+    "foundDeepSecret": true
+  },
+  "sessionId": "ses_0mstt0iew_afacc179c155",
+  "turns": [
+    {
+      "prompt": "This is a TypeScript coding-agent kernel. Without reading every file, work out how its test suite is run, and tell me which command runs the unit tests. Then actually run the unit tests and report the result.",
+      "state": "completed",
+      "steps": 3,
+      "toolCalls": 3,
+      "modelRequests": 3,
+      "durationMs": 7778,
+      "tools": [
+        "Read",
+        "Read",
+        "Shell"
+      ],
+      "errors": [],
+      "finalText": "The unit tests ran successfully.\n\n## Answer\n\n**The unit tests are run with:**\n\n```bash\npnpm test:unit\n```\n\nwhich maps to the script in `package.json` (line 43):\n\n```\n\"test:unit\": \"node --test --experimental-strip-types \\\"tests/unit/**/*.test.ts\\\"\"\n```\n\nSince this repo has **zero runtime dependencies** and uses Node ≥22.6's native TypeScript type-stripping, the unit tests run without needing `pnpm install` first — you can run the underlying command directly.\n\n**Result:** All unit tests **passed** ✅\n\n```\n# tests 156\n# suites 35\n# pass 156\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 481.469875\n```\n\nThe suite covers 35 test suites across areas like model adapters (Anthropic/OpenAI/Chat/Responses), mount planning (§60), docker argv (§61), plan validation (§50), permission matrix, secret scanner/redactor, egress gate, glob, paths, text, TOML, JSON schema, frontmatter, SSE, diff, shell line parsing, and the SSH ControlPath fix — all 156 tests passing, exit code 0.\n\nFor reference, the related full-suite command is `pnpm test` (runs **all** `tests/**/*.test.ts`), but `test:unit` specifically targets `tests/unit/` as you asked."
+    },
+    {
+      "prompt": "Add one more test case to tests/unit/util.test.ts that covers a genuine edge case in an existing utility. Run only that test file to confirm it passes.",
+      "state": "completed",
+      "steps": 7,
+      "toolCalls": 7,
+      "modelRequests": 7,
+      "durationMs": 55704,
+      "tools": [
+        "Read",
+        "Read",
+        "Read",
+        "Read",
+        "Edit",
+        "Edit",
+        "Shell"
+      ],
+      "errors": [
+        "error: TOOL_INVALID_ARGS\nArguments for Edit did not match its schema: $.mode is required."
+      ],
+      "finalText": "Done. I added a new test case and it passes.\n\n## What I added\n\nA test in the **shell line parsing** suite (`tests/unit/util.test.ts`) covering a genuine edge case in `parseShellLine` from `src/cli/shell-parse.ts`:\n\n```ts\ntest('a backslash-escaped operator still escalates (conservative over-match)', () => {\n  const plan = parseShellLine('cat a \\\\| wc');\n  assert.equal(plan.kind, 'compound', `got kind ${plan.kind}`);\n  if (plan.kind === 'compound') {\n    assert.ok(plan.operators.includes('pipe'), `operators: ${plan.operators.join(', ')}`);\n    assert.deepEqual(plan.argv, ['bash', '-lc', 'cat a \\\\| wc']);\n  }\n});\n```\n\n## Why this is a genuine edge case\n\nIn a real POSIX shell, `cat a \\| wc` runs `cat` with the **literal** argument `|` — it is *not* a pipeline (the backslash escapes the pipe). But this parser behaves differently:\n\n1. The **tokenizer** (`tokenizeShell`) consumes the backslash escape and turns `\\|` into the literal character `|`, but it never flips the token's `bare` flag.\n2. **`detectOperators`** then sees a bare token containing `|` and flags it as a `pipe` operator.\n3. The plan escalates to `compound` → `bash -lc \"cat a \\| wc\"`.\n\nThis is a safe, deliberate over-escalation: per the module's own doc comment, making shell involvement *visible* in the plan, approval prompt, and audit event is the point — the parser never silently interprets an escaped character as a real operator. But it's a subtle behavior that wasn't locked in by any test, and it's on the security path (it affects whether a command is treated as `simple` argv or escalated to an explicit shell).\n\n## Result\n\nRan only `tests/unit/util.test.ts`:\n\n```\n# tests 35\n# suites 10\n# pass 35\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\nsuccess — exit code 0\n```\n\nAll 35 tests pass, including the new one."
+    },
+    {
+      "prompt": "Summarise what you added, and whether anything got in your way while running commands.",
+      "state": "completed",
+      "steps": 1,
+      "toolCalls": 0,
+      "modelRequests": 1,
+      "durationMs": 5906,
+      "tools": [],
+      "errors": [],
+      "finalText": "## What I added\n\nA new test case in `tests/unit/util.test.ts`, in the existing **\"shell line parsing\"** describe block:\n\n```ts\ntest('a backslash-escaped operator still escalates (conservative over-match)', () => {\n  const plan = parseShellLine('cat a \\\\| wc');\n  assert.equal(plan.kind, 'compound', `got kind ${plan.kind}`);\n  if (plan.kind === 'compound') {\n    assert.ok(plan.operators.includes('pipe'), `operators: ${plan.operators.join(', ')}`);\n    assert.deepEqual(plan.argv, ['bash', '-lc', 'cat a \\\\| wc']);\n  }\n});\n```\n\n**The edge case:** In a real POSIX shell, `cat a \\| wc` is **not** a pipeline — the `\\|` is a literal pipe argument to `cat`. But this kernel's `parseShellLine` consumes the backslash escape in `tokenizeShell` while leaving the resulting token `bare`, so `detectOperators` then flags the `|` as a pipe operator and escalates the command to an explicit `bash -lc` shell. This is a deliberate, security-safe over-escalation: the whole point of the shell-parse module (per its own doc comment) is that shell involvement is always *visible* in the plan, approval prompt, and audit event — never silently hidden. Writing it into a test locks in that behavior so a future refactor of the tokenizer or operator detector can't accidentally stop escalating escaped operators (which would silently reinterpret an escaped `\\|` as a real pipe).\n\n**Confirmation:** Ran `node --test --experimental-strip-types tests/unit/util.test.ts` — all **35 tests pass** (10 suites), exit code 0, including the new test.\n\n## Whether anything got in my way\n\nTwo minor things, both easy to work around:\n\n1. **One failed Edit invocation** — my first `Edit` call omitted the required `mode` parameter (the schema rejected it with `TOOL_INVALID_ARGS`). I repeated the call with `\"mode\": \"replace\"` and it succeeded.\n\n2. Nothing else blocked me. The commands themselves ran cleanly — both the full unit suite earlier and the single-file run just now completed with exit 0. No permission, path, or toolin"
+    },
+    {
+      "prompt": "From our earlier conversation only, tell me which file you edited and what the new test asserts. Then run that test file once more.",
+      "state": "completed",
+      "steps": 3,
+      "toolCalls": 2,
+      "modelRequests": 3,
+      "durationMs": 8267,
+      "tools": [
+        "Read",
+        "Shell"
+      ],
+      "errors": [],
+      "finalText": "**Which file I edited:** `tests/unit/util.test.ts`\n\n**What the new test asserts:** The test I added is `a backslash-escaped operator still escalates (conservative over-match)` (lines 304–316) in the `shell line parsing` suite. It asserts that parsing `cat a \\| wc` returns a `compound` plan (kind `compound`), that the operators include `pipe`, and that the argv is `['bash', '-lc', 'cat a \\\\| wc']`. This covers the genuine edge case where a pipe is escaped with a backslash: in a real POSIX shell, `cat a \\| wc` runs `cat` with a literal `|` argument rather than a pipeline — but the tokenizer consumes the escape, leaves the token bare, and the operator detector still flags the pipe, conservatively escalating to an explicit shell rather than silently mis-parsing it.\n\n**Run result:** All 35 tests pass (10 suites, 0 failures, exit code 0). The specific new test, `a backslash-escaped operator still escalates (conservative over-match)`, passed as test #6 in the \"shell line parsing\" suite."
+    }
+  ],
+  "approvals": [],
+  "containerCost": {
+    "shellExecutions": 3,
+    "medianMs": 267,
+    "minMs": 266,
+    "maxMs": 662,
+    "allMs": [
+      266,
+      267,
+      662
+    ]
+  },
+  "compactions": 0,
+  "outcome": {
+    "changedFiles": [
+      "M tests/unit/util.test.ts",
+      "?? src/config/local/"
+    ],
+    "toolErrors": [
+      "error: TOOL_INVALID_ARGS\nArguments for Edit did not match its schema: $.mode is required."
+    ],
+    "verifiedOnHost": {
+      "command": "node --test --experimental-strip-types tests/unit/util.test.ts",
+      "exitCode": 0,
+      "passed": true,
+      "summary": "pass 35",
+      "tail": "765208ms)\n▶ json schema\n  ✔ rejects an unknown property when additionalProperties is false (0.1385ms)\n  ✔ anyOf accepts either branch (0.037416ms)\n✔ json schema (0.198084ms)\n▶ frontmatter\n  ✔ scalars, inline arrays and block sequences (0.934708ms)\n  ✔ an unterminated block is reported, not silently accepted (0.053083ms)\n✔ frontmatter (1.019292ms)\n▶ sse\n  ✔ records split across chunk boundaries are reassembled (3.296709ms)\n✔ sse (3.3275ms)\n▶ diff\n  ✔ produces a unified diff with correct counts (0.384583ms)\n  ✔ identical inputs produce no diff (0.030667ms)\n  ✔ a very large change still produces a valid diff (2.805042ms)\n✔ diff (3.353333ms)\n▶ shell line parsing\n  ✔ a simple command becomes argv (0.407417ms)\n  ✔ quotes are honoured and a quoted pipe is not an operator (0.073959ms)\n  ✔ a real pipeline escalates to an explicit shell, visibly (0.042542ms)\n  ✔ command substitution is detected (0.022917ms)\n  ✔ an unterminated quote is an error, not a guess (0.020625ms)\n  ✔ a backslash-escaped operator still escalates (conservative over-match) (0.059459ms)\n✔ shell line parsing (0.693625ms)\n▶ ssh ControlPath length (alpha.3 defect 2)\n  ✔ a macOS-shaped temp path with a %C suffix does not fit (0.124708ms)\n  ✔ the short form the backend builds does fit (0.027625ms)\n  ✔ the boundary is the smaller of the two platform limits (0.043125ms)\n✔ ssh ControlPath length (alpha.3 defect 2) (0.2395ms)\nℹ tests 35\nℹ suites 10\nℹ pass 35\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 132.7265\n"
+    }
+  },
+  "safety": {
+    "canaryInEventLog": false,
+    "canaryInTranscript": false,
+    "containerIdInLog": false
+  },
+  "usage": {
+    "inputTokens": 277845,
+    "outputTokens": 7166,
+    "cachedInputTokens": 140800,
+    "costUsd": 0.021587020000000002,
+    "modelRequests": 14,
+    "toolCalls": 12,
+    "delegatedCostUsd": 0
+  },
+  "cost": {
+    "directUsd": 0.021587020000000002,
+    "delegatedUsd": 0,
+    "totalUsd": 0.021587020000000002
+  }
+}

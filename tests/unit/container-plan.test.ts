@@ -635,6 +635,21 @@ describe('docker error mapping — §62', () => {
   test('a container killed for memory is not reported as a start failure', () => {
     assert.equal(classifyDockerError({ stderr: '', exitCode: 137 }).code, 'CONTAINER_RESOURCE_LIMIT');
   });
+
+  test("a missing executable is the model's error, not the environment's (D-007)", () => {
+    // Docker's real message, verbatim from the dogfood run.
+    const classified = classifyDockerError({
+      stderr:
+        'docker: Error response from daemon: failed to create task for container: failed to create shim ' +
+        'task: OCI runtime create failed: runc create failed: unable to start container process: error ' +
+        'during container init: exec: "pnpm": executable file not found in $PATH',
+      exitCode: 127,
+    });
+    assert.equal(classified.code, 'TOOL_FAILED');
+    assert.equal(classified.blame, 'model');
+    assert.match(classified.detail, /pnpm/, 'the message must name the executable');
+    assert.ok(!/OCI|runc|shim/.test(classified.detail), 'and must not quote the runtime internals');
+  });
 });
 
 describe('workspace discovery helpers', () => {
@@ -666,6 +681,69 @@ describe('workspace discovery helpers', () => {
       workspace as CanonicalPath,
       (p) => protectedPaths.checkReadToModel(p).protected,
     );
-    assert.ok(found.some((p) => p.endsWith('.env')));
+    assert.ok(found.paths.some((p) => p.endsWith('.env')));
+    assert.equal(found.truncated, false);
+  });
+
+  /**
+   * D-006. The first version of this walk stopped at depth 3, so
+   * `packages/app/config/secrets/.env` was never masked — present inside the
+   * container and readable by any command, with only output redaction left in the
+   * way. That is precisely the defence this milestone exists to stop relying on.
+   */
+  test('a deeply nested protected file is still discovered (D-006)', async () => {
+    const deepBase = await mkdtemp(path.join(tmpdir(), 'mask-depth-'));
+    try {
+      const deep = path.join(deepBase, 'packages', 'app', 'config', 'secrets', 'nested', 'deeper');
+      await mkdir(deep, { recursive: true });
+      await writeFile(path.join(deep, '.env'), 'API_KEY=deep', 'utf8');
+      await writeFile(path.join(deep, 'id_rsa'), 'PRIVATE KEY', 'utf8');
+
+      const fs = new LocalExecutionBackend({
+        workspaceRoot: deepBase as CanonicalPath,
+        redactor: new Redactor(),
+      }).fs;
+      const protectedPaths = new ProtectedPaths({ home: deepBase });
+      const found = await discoverMaskPaths(
+        fs,
+        deepBase as CanonicalPath,
+        (p) => protectedPaths.checkReadToModel(p).protected,
+      );
+
+      assert.ok(
+        found.paths.some((p) => p.endsWith('.env')),
+        'a .env six directories down must be masked',
+      );
+      assert.ok(found.paths.some((p) => p.endsWith('id_rsa')));
+      assert.equal(found.truncated, false);
+    } finally {
+      await rm(deepBase, { recursive: true, force: true });
+    }
+  });
+
+  test('a truncated scan reports itself rather than looking complete (D-006)', async () => {
+    const fs = new LocalExecutionBackend({
+      workspaceRoot: workspace as CanonicalPath,
+      redactor: new Redactor(),
+    }).fs;
+    const protectedPaths = new ProtectedPaths({ home: base });
+
+    // Both limits, separately: each has to set the flag, because a scan that
+    // stopped early and said nothing is how the guarantee silently lapses.
+    const byEntries = await discoverMaskPaths(
+      fs,
+      workspace as CanonicalPath,
+      (p) => protectedPaths.checkReadToModel(p).protected,
+      { maxEntries: 1 },
+    );
+    assert.equal(byEntries.truncated, true);
+
+    const byDepth = await discoverMaskPaths(
+      fs,
+      workspace as CanonicalPath,
+      (p) => protectedPaths.checkReadToModel(p).protected,
+      { maxDepth: 0 },
+    );
+    assert.equal(byDepth.truncated, true, 'a depth cut-off is a truncated scan too');
   });
 });

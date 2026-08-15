@@ -41,7 +41,12 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 
-import { kernelError, KernelErrorException, type ErrorCode as KernelErrorCode } from '../util/errors.ts';
+import {
+  kernelError,
+  KernelErrorException,
+  type Blame,
+  type ErrorCode as KernelErrorCode,
+} from '../util/errors.ts';
 import { shortId } from '../util/ids.ts';
 import { isWithin, toPosix, type CanonicalPath } from '../util/paths.ts';
 import { createLogger, type Logger } from '../util/logger.ts';
@@ -276,7 +281,7 @@ export function classifyDockerError(output: {
   stderr: string;
   exitCode: number | null;
   spawnError?: NodeJS.ErrnoException;
-}): { code: KernelErrorCode; detail: string; retryable: boolean } {
+}): { code: KernelErrorCode; detail: string; retryable: boolean; blame?: Blame } {
   const stderr = output.stderr.trim();
   const lower = stderr.toLowerCase();
 
@@ -326,6 +331,37 @@ export function classifyDockerError(output: {
       code: 'CONTAINER_IMAGE_NOT_FOUND',
       detail: 'The configured container image is not present and could not be resolved.',
       retryable: false,
+    };
+  }
+  // The command does not exist inside the image.
+  //
+  // Found by the real-repository dogfood (D-007): the model tried `pnpm test`,
+  // and because the image ships `node` but not `pnpm`, Docker answered with 300
+  // characters of OCI runtime internals — "failed to create shim task: OCI
+  // runtime create failed: runc create failed: … exec: \"pnpm\": executable file
+  // not found in $PATH" — which arrived at the model as CONTAINER_START_FAILED,
+  // blamed on the environment. The local backend answers the identical mistake
+  // with `TOOL_FAILED — Executable not found: pnpm`, blamed on the model, which
+  // it acts on immediately.
+  //
+  // Same user error, same kernel, two unrecognisably different results: that is
+  // the backend-neutrality ADR-0007 claims, broken where it is actually visible.
+  // So this is mapped to the *same* error the local backend produces — and names
+  // the image, because "not found" is a more answerable question when you know
+  // which filesystem was searched.
+  if (
+    lower.includes('executable file not found') ||
+    /exec: ".*": (executable file )?not found/.test(lower) ||
+    lower.includes('no such file or directory: unknown')
+  ) {
+    const executable = /exec: "([^"]+)"/.exec(stderr)?.[1];
+    return {
+      code: 'TOOL_FAILED',
+      detail: executable
+        ? `Executable not found in the container image: ${executable}`
+        : 'The command does not exist inside the container image.',
+      retryable: false,
+      blame: 'model',
     };
   }
   if (lower.includes('unknown flag') || lower.includes('not supported') || lower.includes('unsupported')) {
@@ -577,11 +613,20 @@ export class ContainerProcess {
     if (output.spawnError || (output.exitCode !== 0 && looksLikeDockerFailure(output.stderr))) {
       const classified = classifyDockerError(output);
       throw new KernelErrorException(
-        kernelError(classified.code, `Container execution failed: ${classified.detail}`, {
-          blame: classified.code === 'CONTAINER_RUNTIME_NOT_FOUND' ? 'environment' : 'environment',
-          retryable: classified.retryable,
-          safeDetails: { image: plan.image.configured, network: plan.network },
-        }),
+        kernelError(
+          classified.code,
+          // A mistake the model can fix is phrased as one, without the
+          // "Container execution failed" preamble that makes it read like
+          // infrastructure (D-007).
+          classified.blame === 'model'
+            ? classified.detail
+            : `Container execution failed: ${classified.detail}`,
+          {
+            blame: classified.blame ?? 'environment',
+            retryable: classified.retryable,
+            safeDetails: { image: plan.image.configured, network: plan.network },
+          },
+        ),
       );
     }
 
@@ -1164,38 +1209,85 @@ export async function resolveGeneratedDirs(
   return out;
 }
 
+export interface MaskDiscovery {
+  paths: CanonicalPath[];
+  /**
+   * True when the walk hit a limit and may therefore have missed a protected
+   * file — which means a protected file may be *readable* inside the container.
+   *
+   * Never silently ignored. §14's rule applies here as much as it does to
+   * mounts: when the guarantee cannot be established, say so rather than
+   * claiming it.
+   */
+  truncated: boolean;
+  /** Directory names that were not descended into, for the same honesty reason. */
+  skipped: readonly string[];
+  entriesScanned: number;
+}
+
 /**
  * Find protected paths that live *inside* the workspace, so they can be masked.
  *
- * Bounded on purpose. This runs before every containerised execution, and an
- * unbounded walk of a large repository would make every shell call slow — the
- * mistake the mutation detector's scan strategy already learned. Depth and entry
- * limits are conservative because the paths this is looking for are, by their
- * nature, near the top: `.env`, `id_rsa`, `service-account.json`.
+ * **This function is a security boundary, and its first version was not.** It
+ * stopped at depth 3 with a 4,000-entry cap, on the theory that secrets live near
+ * the top of a tree — `.env`, `id_rsa`, `service-account.json`. The theory is
+ * usually true and "usually" is the wrong standard: a `.env` at
+ * `packages/app/config/secrets/.env` was **not** masked, which meant it was
+ * present and readable to any command in the container, and the only thing left
+ * between it and the model was output redaction — the alpha.4-grade defence this
+ * whole milestone exists to stop relying on. Measured on the kernel's own
+ * repository, the bound was also buying nothing: a full-depth walk costs 3 ms,
+ * and 9 ms with `node_modules` included.
+ *
+ * So the walk is now complete by default, and the remaining limits exist only as
+ * runaway guards on a pathological tree. When one of them *does* fire, the result
+ * says so, and every caller surfaces it — because a truncated scan means the
+ * masking guarantee is incomplete, and the one thing that must never happen is
+ * claiming it anyway.
+ *
+ * `.git` is still skipped: it is large, it is not where a user keeps a
+ * credential, and its contents are already read-only in every plan.
  */
 export async function discoverMaskPaths(
   fs: FileSystemBackend,
   workspaceRoot: CanonicalPath,
   isProtected: (p: CanonicalPath) => boolean,
   opts: { maxDepth?: number; maxEntries?: number; skipDirs?: readonly string[] } = {},
-): Promise<CanonicalPath[]> {
-  const maxDepth = opts.maxDepth ?? 3;
-  const maxEntries = opts.maxEntries ?? 4_000;
-  const skip = new Set(opts.skipDirs ?? ['node_modules', '.git', 'dist', 'build', 'target', 'coverage']);
+): Promise<MaskDiscovery> {
+  // Deep enough that no real source tree reaches it; shallow enough that a
+  // symlink cycle the `isSymlink` check somehow missed cannot recurse forever.
+  const maxDepth = opts.maxDepth ?? 40;
+  const maxEntries = opts.maxEntries ?? 200_000;
+  const skipDirs = opts.skipDirs ?? ['.git'];
+  const skip = new Set(skipDirs);
 
   const found: CanonicalPath[] = [];
   let seen = 0;
+  let truncated = false;
 
   const walk = async (dir: CanonicalPath, depth: number): Promise<void> => {
-    if (depth > maxDepth || seen >= maxEntries) return;
+    if (depth > maxDepth) {
+      truncated = true;
+      return;
+    }
+    if (seen >= maxEntries) {
+      truncated = true;
+      return;
+    }
     let entries;
     try {
       entries = await fs.listDir(dir);
     } catch {
+      // An unreadable directory is not a truncated scan: nothing in it is
+      // reachable by the container either, since the mount carries the same
+      // permissions.
       return;
     }
     for (const entry of entries) {
-      if (seen >= maxEntries) return;
+      if (seen >= maxEntries) {
+        truncated = true;
+        return;
+      }
       seen += 1;
       const child = path.join(dir, entry.name) as CanonicalPath;
       if (isProtected(child)) {
@@ -1209,7 +1301,7 @@ export async function discoverMaskPaths(
   };
 
   await walk(workspaceRoot, 0);
-  return found;
+  return { paths: found, truncated, skipped: skipDirs, entriesScanned: seen };
 }
 
 /** For `/status`: the writable roots, as workspace-relative display paths. */

@@ -298,24 +298,187 @@ run rather than a single assertion.
 
 ## 3. Success metrics (§55)
 
-| Metric                          | Result                                                                                   |
-| ------------------------------- | ---------------------------------------------------------------------------------------- |
-| Task outcome                    | solved — suite 3/3 green, verified independently by the harness                          |
-| Safety preserved                | YES — zero canary leakage across transcript, event log and workspace                     |
-| Replay preserved                | YES — resumed session continued with context; one accounting defect (D-003), fixed       |
-| Container enforcement preserved | YES — every `Shell` ran with `--network none` and a capability-derived mount set         |
-| Defects found                   | 4 real (D-001 container, D-002 evidence, D-003 replay, D-005 test infra) + 1 observation |
-| Failure-layer distribution      | Container 1 · Replay 1 · Evidence 2 · Model 1 · Policy 0 · Context 0 · Tool 0            |
+| Metric                          | Result                                                                                                                                                                             |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Task outcome                    | solved — suite 3/3 green, verified independently by the harness                                                                                                                    |
+| Safety preserved                | YES — zero canary leakage across transcript, event log and workspace                                                                                                               |
+| Replay preserved                | YES — resumed session continued with context; one accounting defect (D-003), fixed                                                                                                 |
+| Container enforcement preserved | YES — every `Shell` ran with `--network none` and a capability-derived mount set                                                                                                   |
+| Defects found                   | 4 real (D-001 container, D-002 evidence, D-003 replay, D-005 test infra) + 1 observation; the post-tag real-repo run added **D-006** (safety) and **D-007** (neutrality) — see §3b |
+| Failure-layer distribution      | Container 1 · Replay 1 · Evidence 2 · Model 1 · Policy 0 · Context 0 · Tool 0                                                                                                      |
 
 The distribution is worth reading before choosing alpha.6 (§75): the defects were
 in the _new_ layer and in the _oldest_ layer that the new one perturbed, and none
 were in policy, context or the tools. That is the pattern alpha.3 and alpha.4 both
 produced.
 
+## 3b. Second dogfood — a real repository (post-tag)
+
+**Harness:** `evals/experiments/alpha5-dogfood-kernel.ts`
+**Artifact:** `evals/results/release/alpha5-dogfood-kernel-2026-08-15T03-16-07-029Z.json`
+**Workspace:** a clone of **this kernel** — 205 tracked files, 24k lines, real git
+history — at `b03f96f`, the alpha.5 release commit
+**Run after** `v0.1.0-alpha.5` was tagged. The tag is immutable; everything below
+is recorded as a post-tag finding, and the two defects it produced are fixed on
+the branch that follows it.
+
+§4 of this document listed "one session, one model, one task shape" as the first
+limitation of the first dogfood. This is the answer to that: the same backend,
+against a tree big enough that no model can read it whole, doing work with a
+verifiable outcome.
+
+### What it measured
+
+| Question                                                  | Answer                                                                                                                                       |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| What does one container per command cost, really?         | **median 254–267 ms**, min 181 ms, max 662 ms, across three runs                                                                             |
+| Does the capability-derived mount plan survive real work? | Yes. The model ran the unit suite in-container and edited a source file through the host broker; nothing needed a mount that was not planned |
+| Does masking scale to a real tree?                        | 254 entries scanned in **7 ms**, nothing truncated, and the deliberately deep secret **was** found (post-D-006)                              |
+| Did context pressure force compaction?                    | No — the session stayed inside the model's window                                                                                            |
+| Did the model's work survive review?                      | Yes: the added test was re-run **on the host**, independently of the session — `pass 35`                                                     |
+| Canary leakage                                            | None, in transcript, event log or workspace                                                                                                  |
+
+The model oriented itself with `Glob`/`Grep` rather than reading the tree, ran
+`node --test` inside the container, added a genuine edge-case test to
+`tests/unit/util.test.ts` about `sliceLines`' behaviour when an offset overshoots
+a shrunken document, and after the restart recalled what it had changed without
+re-reading. Two defects came out of it.
+
+### D-006
+
+#### Symptom
+
+A protected file more than three directories deep inside the workspace was **not
+masked**: present inside the container and readable by any command. Measured
+directly:
+
+```
+.env                      => (masked, empty)
+a/b/.env                  => (masked, empty)
+a/b/c/.env                => (masked, empty)
+a/b/c/d/.env              => API_KEY=[REDACTED…]     ← readable
+a/b/c/d/e/.env            => API_KEY=[REDACTED…]     ← readable
+packages/app/config/secrets/id_rsa => BEGIN PRIVATE KEY …   ← readable, in the clear
+```
+
+The redactor caught two of them on the way out. It did not catch the key, and it
+cannot catch anything a command re-encodes — which is exactly the `tar | base64`
+attack the §59 matrix passes at shallow depth.
+
+#### Layer
+
+Container
+
+#### Safety preserved?
+
+**NO.** This is the only genuine safety defect either dogfood produced. The
+milestone's own claim — "protected paths inside the workspace are masked, not
+merely denied" — held only for the top three levels.
+
+#### Correctness preserved?
+
+NO.
+
+#### Why earlier gates missed it
+
+Every fixture in the container suites put its `.env` at the workspace root, which
+is where the bound happened to work. The bound itself was written as a
+performance precaution, citing the mutation detector's lesson about unbounded
+walks — a reasonable-sounding argument that was never measured. It was wrong on
+both counts: a full-depth walk of the real repository costs **3 ms** (9 ms
+including `node_modules`), so the bound bought nothing, and it silently converted
+a security property into a heuristic about where people keep secrets.
+
+Worth naming as a category, because it is the second time this milestone hit it:
+**a limit added for cost, on a path that carries a guarantee, is a limit on the
+guarantee.** §14 already says what to do — represent it or report it — and this
+code did neither.
+
+#### Fix
+
+The walk is complete by default. The remaining depth/entry limits exist only as
+runaway guards, and when one fires the result now carries `truncated: true`,
+which the bootstrap turns into a startup warning stating in plain words that
+masking is incomplete and a protected file may be readable inside the container.
+`src/execution/container.ts`, `src/kernel.ts`.
+
+#### Named regression evidence
+
+`test:a deeply nested protected file is still discovered (D-006)` and
+`test:a truncated scan reports itself rather than looking complete (D-006)` in
+`tests/unit/container-plan.test.ts`, plus the end-to-end
+`test:a protected file nested deep in the workspace is masked too (D-006)` in
+`tests/live/container-live.test.ts`, which reads the deep secret's path _and_
+tries to recover it through `tar | base64`. All three were confirmed to fail
+against the depth-3 bound.
+
+---
+
+### D-007
+
+#### Symptom
+
+The model tried `pnpm test`. The image ships `node` but not `pnpm`, and what came
+back was:
+
+```
+error: CONTAINER_START_FAILED
+Container execution failed: docker: Error response from daemon: failed to create
+task for container: failed to create shim task: OCI runtime create failed: runc
+create failed: unable to start container process: error during container init:
+exec: "pnpm": executable file not found in $PATH
+```
+
+blamed on the **environment**. The identical mistake on the local backend is
+`TOOL_FAILED — Executable not found: pnpm`, blamed on the **model**.
+
+#### Layer
+
+Adapter / backend neutrality
+
+#### Safety preserved?
+
+YES.
+
+#### Correctness preserved?
+
+NO. Same kernel, same user error, two unrecognisably different results — which is
+ADR-0007's backend neutrality failing exactly where it is visible. A model reading
+"OCI runtime create failed" reasonably concludes the infrastructure is broken
+rather than that it typed a command the image does not have.
+
+#### Why earlier gates missed it
+
+The conformance suite had no case for "the command does not exist". It tested
+success, non-zero exit, timeout, stdout/stderr separation and cancellation — the
+paths a developer thinks of as execution — and not the single most common thing a
+model gets wrong about a shell.
+
+#### Fix
+
+`classifyDockerError` recognises the runtime's executable-not-found shape and maps
+it to the same `TOOL_FAILED` the local backend produces, blamed on the model, with
+the runtime internals stripped and the **image named**: `Executable not found in
+the container image: pnpm`. In the re-run the model received that message and
+adapted within the same turn.
+
+#### Named regression evidence
+
+`test:a missing executable is the same kind of error on every backend` in
+`tests/integration/backend-conformance.test.ts` — a conformance case, so it runs
+on local _and_ container and fails if they diverge again — and
+`test:a missing executable is the model's error, not the environment's (D-007)` in
+`tests/unit/container-plan.test.ts`, which asserts against Docker's verbatim
+message. Both confirmed to fail before the fix.
+
+---
+
 ## 4. Limitations of this dogfood
 
 - **One session, one model, one task shape.** It is a fault-discovery exercise, not
-  a sample. A different task would exercise different crossings.
+  a sample. A different task would exercise different crossings. §3b is the
+  partial answer: a second run against a 205-file real repository, which found the
+  milestone's only safety defect.
 - **Docker Desktop, not native Linux.** The dogfood ran on the maintainer's macOS
   machine; the native-Linux enforcement evidence comes from CI (§37), not from
   here.

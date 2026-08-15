@@ -191,11 +191,12 @@ export async function createContainerFixture(opts: ContainerFixtureOptions = {})
   const { LocalExecutionBackend } = await import('../../src/execution/local.ts');
   const local = await LocalExecutionBackend.detect({ workspaceRoot: root, redactor });
   const generatedDirs = await resolveGeneratedDirs(local.fs, root, ['dist/**', ...(opts.generated ?? [])]);
-  const maskPaths = await discoverMaskPaths(
+  const maskScan = await discoverMaskPaths(
     local.fs,
     root,
     (p) => protectedPaths.checkReadToModel(p).protected,
   );
+  const maskPaths = maskScan.paths;
 
   const plans: ContainerPlan[] = [];
   const backend = await ContainerExecutionBackend.create({
