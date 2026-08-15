@@ -232,6 +232,37 @@ describe('container isolation', { ...skip, timeout: 600_000 }, () => {
       assert.match(r.stdout, /---\n---end/, 'the masked file must read as empty');
     });
 
+    test('a protected file nested deep in the workspace is masked too (D-006)', async () => {
+      // The regression for the defect the real-repo dogfood prep found: masking
+      // used to stop at depth 3, so this file was present and readable, and the
+      // only thing between it and the model was output redaction — which cannot
+      // see a secret that a command re-encodes.
+      const deep = await createContainerFixture({
+        files: {
+          'packages/app/config/secrets/.env': `API_KEY=${WORKSPACE_CANARY}\n`,
+          'packages/app/config/secrets/nested/id_rsa': `-----BEGIN PRIVATE KEY-----\n${WORKSPACE_CANARY}\n`,
+        },
+      });
+      try {
+        const r = await deep.run(
+          sh(
+            'cat packages/app/config/secrets/.env; echo "---"; ' +
+              'cat packages/app/config/secrets/nested/id_rsa; echo "---end"; ' +
+              // The re-encoding route, which redaction cannot follow.
+              'tar cf - packages 2>/dev/null | base64 -w0 | head -c 100000',
+          ),
+        );
+        assert.ok(!r.stdout.includes(WORKSPACE_CANARY), 'a deep secret must not be readable');
+        const decoded = Buffer.from(
+          (r.stdout.split('---end')[1] ?? '').replace(/\s+/g, ''),
+          'base64',
+        ).toString('latin1');
+        assert.ok(!decoded.includes(WORKSPACE_CANARY), 'nor recoverable by re-encoding it');
+      } finally {
+        await deep.cleanup();
+      }
+    });
+
     test('.git is present and read-only', async () => {
       const fx2 = await createContainerFixture({ files: { '.git/config': '[core]\n' } });
       try {

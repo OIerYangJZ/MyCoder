@@ -89,22 +89,23 @@ Every case runs a real command in a real container through the real backend.
 
 ### 3.1 Filesystem and secrets
 
-| Attempt                                                           | Expected mechanism           | Observed mechanism                                         | Sink result    |
-| ----------------------------------------------------------------- | ---------------------------- | ---------------------------------------------------------- | -------------- |
-| `cat <host canary path>`                                          | absent from mount namespace  | `No such file or directory`, non-zero exit                 | no canary      |
-| `cat ../host-secret.txt` and `ls ..`                              | `..` of `/workspace` is `/`  | listing is the **image** root (`usr`, `etc`); no host file | no canary      |
-| workspace symlink → host canary                                   | dangling link in container   | `No such file`                                             | no canary      |
-| workspace symlink → `/etc/passwd`                                 | resolves inside the image    | image's passwd; host username absent                       | no host data   |
-| `python3 -c "open(<canary>).read()"`                              | absent from mount namespace  | `FileNotFoundError` (python3 verified present first)       | no canary      |
-| `node -e fs.readFileSync(<canary>)`                               | absent from mount namespace  | `ENOENT`                                                   | no canary      |
-| `find / -name 'host-secret*' -o -name .ssh`                       | nothing to find              | empty                                                      | no canary      |
-| `tar cf - . \| base64` (exfiltration by re-encoding)              | masked bytes are not there   | archive decoded and searched: neither canary present       | no canary      |
-| `ls /Users /home /root`, `ls -a $HOME`                            | host home not mounted        | absent; `$HOME` is the tmpfs                               | no host data   |
-| `ls -d ~/.ssh ~/.aws ~/.kube ~/.docker ~/.config/gcloud ~/.gnupg` | credential dirs not mounted  | `No such file or directory` for every one                  | no credentials |
-| `cat .env` (protected, **inside** the workspace)                  | masked with an empty file    | file exists, reads empty, canary absent                    | no canary      |
-| `cat .git/config` then write to it                                | `.git` mounted read-only     | read succeeds; write fails `Read-only file system`         | —              |
-| write to an ungranted workspace path (`src/app.ts`)               | no writable mount there      | `Read-only file system`                                    | file unchanged |
-| write outside the workspace, and to `/etc`                        | not mounted / read-only root | both fail; host file verified unchanged afterwards         | —              |
+| Attempt                                                                 | Expected mechanism           | Observed mechanism                                         | Sink result    |
+| ----------------------------------------------------------------------- | ---------------------------- | ---------------------------------------------------------- | -------------- |
+| `cat <host canary path>`                                                | absent from mount namespace  | `No such file or directory`, non-zero exit                 | no canary      |
+| `cat ../host-secret.txt` and `ls ..`                                    | `..` of `/workspace` is `/`  | listing is the **image** root (`usr`, `etc`); no host file | no canary      |
+| workspace symlink → host canary                                         | dangling link in container   | `No such file`                                             | no canary      |
+| workspace symlink → `/etc/passwd`                                       | resolves inside the image    | image's passwd; host username absent                       | no host data   |
+| `python3 -c "open(<canary>).read()"`                                    | absent from mount namespace  | `FileNotFoundError` (python3 verified present first)       | no canary      |
+| `node -e fs.readFileSync(<canary>)`                                     | absent from mount namespace  | `ENOENT`                                                   | no canary      |
+| `find / -name 'host-secret*' -o -name .ssh`                             | nothing to find              | empty                                                      | no canary      |
+| `tar cf - . \| base64` (exfiltration by re-encoding)                    | masked bytes are not there   | archive decoded and searched: neither canary present       | no canary      |
+| `ls /Users /home /root`, `ls -a $HOME`                                  | host home not mounted        | absent; `$HOME` is the tmpfs                               | no host data   |
+| `ls -d ~/.ssh ~/.aws ~/.kube ~/.docker ~/.config/gcloud ~/.gnupg`       | credential dirs not mounted  | `No such file or directory` for every one                  | no credentials |
+| `cat .env` (protected, **inside** the workspace)                        | masked with an empty file    | file exists, reads empty, canary absent                    | no canary      |
+| `cat packages/app/config/secrets/.env` (protected, **six levels deep**) | masked with an empty file    | masked — **only after D-006**; see the correction below    | no canary      |
+| `cat .git/config` then write to it                                      | `.git` mounted read-only     | read succeeds; write fails `Read-only file system`         | —              |
+| write to an ungranted workspace path (`src/app.ts`)                     | no writable mount there      | `Read-only file system`                                    | file unchanged |
+| write outside the workspace, and to `/etc`                              | not mounted / read-only root | both fail; host file verified unchanged afterwards         | —              |
 
 ### 3.2 Sockets and privileges
 
@@ -227,6 +228,27 @@ container's internal `/workspace` path).
 
 SSH is covered by its own live matrix (`pnpm test:ssh`), unchanged by this
 milestone and re-run as a regression.
+
+---
+
+## 6b. Correction, recorded after the tag (D-006)
+
+Row 11 of §3.1 above — "a protected file inside the workspace is masked" — was
+true when written and **narrower than it read**. The scan that finds those files
+stopped at depth 3, so a protected file deeper than that was present inside the
+container and readable by any command; the fixtures all happened to put `.env` at
+the workspace root, which is where the bound worked.
+
+Found while preparing the second dogfood, after `v0.1.0-alpha.5` was tagged. The
+tag is immutable and stays where it is. The fix, the three regressions and the
+full account are in `docs/alpha5-dogfood.md` §3b, and the corrected behaviour is
+now asserted end to end — including recovery through `tar | base64`, which is the
+route output redaction cannot cover.
+
+What this means for the release as tagged: the claim "protected host resources
+are absent" held for everything **outside** the workspace, which is where the
+credential directories, the host home and the sockets are. The gap was confined
+to protected files **inside** the workspace nested more than three levels deep.
 
 ---
 

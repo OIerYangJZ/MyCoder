@@ -325,11 +325,12 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     await probeFs.mkdirp(containerAgentTmp);
 
     const generatedDirs = await resolveGeneratedDirs(probeFs, projectRoot, config.generatedPaths);
-    const maskPaths = await discoverMaskPaths(
+    const maskScan = await discoverMaskPaths(
       probeFs,
       projectRoot,
       (p) => protectedPaths.checkReadToModel(p).protected,
     );
+    const maskPaths = maskScan.paths;
 
     const containerConfig: ContainerConfig = {
       ...defaultContainerConfig(),
@@ -366,6 +367,18 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       config.warnings.push(
         `${maskPaths.length} protected path(s) inside the workspace are masked out of the container ` +
           '(present on the host, absent to any command that runs).',
+      );
+    }
+    // A truncated scan means the masking guarantee is incomplete: a protected
+    // file the walk never reached is a protected file a command in the container
+    // can read. Saying so is not optional — the alternative is claiming a
+    // boundary that was not established (§14, and D-006 in the dogfood ledger).
+    if (maskScan.truncated) {
+      config.warnings.push(
+        `The scan for protected files inside the workspace was truncated after ` +
+          `${maskScan.entriesScanned.toLocaleString()} entries. Masking is INCOMPLETE: a protected file ` +
+          'beyond that point is present inside the container and readable by any command that runs. ' +
+          'Narrow the workspace, or treat this session as policy-enforced for in-workspace secrets.',
       );
     }
   } else {

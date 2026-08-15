@@ -211,6 +211,40 @@ const CASES: ConformanceCase[] = [
     },
   },
   {
+    /**
+     * D-007. The real-repository dogfood watched the model try `pnpm test`, which
+     * the container image does not ship. Locally that is
+     * `TOOL_FAILED — Executable not found: pnpm`, blamed on the model, and it
+     * adapts immediately. In the container it was `CONTAINER_START_FAILED` plus
+     * 300 characters of OCI runtime internals, blamed on the environment — the
+     * same user mistake, unrecognisably different, which is ADR-0007's neutrality
+     * failing exactly where a user can see it.
+     */
+    name: 'a missing executable is the same kind of error on every backend',
+    // An unrecognised binary is an untrusted executable, so it needs approval
+    // before it can fail. Granting it is what puts the *execution* under test
+    // rather than the policy engine — without this the case measures a denial on
+    // both backends and passes while proving nothing.
+    approvals: [{ decision: 'allow', scope: 'once' }],
+    script: [
+      {
+        kind: 'tools',
+        calls: [{ name: 'Shell', arguments: { argv: ['definitely-not-a-real-binary-xyz', '--help'] } }],
+      },
+      { kind: 'final', text: 'done' },
+    ],
+    expect: (results) => {
+      const text = results.join('\n');
+      assert.match(text, /error:/);
+      assert.match(text, /not found/i, `the failure must say what was not found: ${text}`);
+      assert.match(text, /definitely-not-a-real-binary-xyz/, 'and name it');
+      assert.ok(
+        !/CONTAINER_START_FAILED|OCI runtime|runc create|shim task/.test(text),
+        `a missing command must not surface as an infrastructure failure: ${text}`,
+      );
+    },
+  },
+  {
     name: 'Shell separates stdout from stderr',
     script: [
       {

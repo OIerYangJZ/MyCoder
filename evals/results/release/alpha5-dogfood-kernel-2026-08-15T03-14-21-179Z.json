@@ -1,0 +1,168 @@
+{
+  "artifact": "alpha5-dogfood-kernel",
+  "startedAt": "2026-08-15T03:14:21.179Z",
+  "finishedAt": "2026-08-15T03:15:24.621Z",
+  "environment": {
+    "kernelCommit": "b03f96fc601c2c3bafde5b4dd3eb66817fc9ae15",
+    "workspaceCommit": "b03f96fc601c2c3bafde5b4dd3eb66817fc9ae15",
+    "trackedFiles": 205,
+    "model": "deepseek",
+    "backend": "container node:22-bookworm (sha256:0557ac14e0d4…) via docker 29.7.2 on Docker Desktop",
+    "enforcement": {
+      "processFilesystem": "container-enforced",
+      "processNetwork": "container-enforced",
+      "processPrivileges": "container-enforced",
+      "environmentIsolation": "container-enforced",
+      "hostFileBroker": "policy-enforced",
+      "networkAllowlist": "best-effort",
+      "platformNotes": [
+        "Docker Desktop runs the daemon in a virtual machine (kernel 6.12.76-linuxkit), so the host boundary is mediated by that VM and its file-sharing layer. Container execution is validated here; native-Linux-equivalent isolation is not claimed.",
+        "Image: node:22-bookworm. Chosen by configuration, never by the model."
+      ]
+    },
+    "image": {
+      "configured": "node:22-bookworm",
+      "resolvedId": "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a",
+      "digest": "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
+    },
+    "runtime": {
+      "binary": "docker",
+      "clientVersion": "29.7.2",
+      "serverVersion": "29.7.2",
+      "serverPlatform": "linux/arm64",
+      "operatingSystem": "Docker Desktop",
+      "kernelVersion": "6.12.76-linuxkit",
+      "nativeLinux": false,
+      "rootless": false,
+      "securityOptions": [
+        "name=seccomp,profile=builtin",
+        "name=cgroupns"
+      ]
+    },
+    "platform": "darwin/arm64",
+    "configHash": "06fdbc83e766abb1"
+  },
+  "masking": {
+    "found": 1,
+    "entriesScanned": 254,
+    "truncated": false,
+    "scanMs": 7,
+    "foundDeepSecret": true
+  },
+  "sessionId": "ses_0mstsy8py_3f8ef414b508",
+  "turns": [
+    {
+      "prompt": "This is a TypeScript coding-agent kernel. Without reading every file, work out how its test suite is run, and tell me which command runs the unit tests. Then actually run the unit tests and report the result.",
+      "state": "completed",
+      "steps": 6,
+      "toolCalls": 7,
+      "modelRequests": 6,
+      "durationMs": 19657,
+      "tools": [
+        "Read",
+        "Glob",
+        "Glob",
+        "Shell",
+        "Shell",
+        "Shell",
+        "Shell"
+      ],
+      "errors": [
+        "error: TOOL_FAILED\nExecutable not found in the container image: pnpm\nimage: node:22-bookworm\nnetwork: none"
+      ],
+      "finalText": "The unit tests all passed. Let me confirm the exit code and status clearly. The output shows the key summary:\n\n```\n# tests 156\n# suites 35\n# pass 156\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 431.57575\n```\n\nThe command exited with code 0 (the Shell result showed `exit 0`).\n\nNow let me summarize for the user.\n\n## How the unit tests are run\n\nThe unit tests live under `tests/unit/`. Looking at `package.json`, the script that runs them is:\n\n```json\n\"test:unit\": \"node --test --experimental-strip-types \\\"tests/unit/**/*.test.ts\\\"\"\n```\n\nSo the command is:\n\n```\npnpm test:unit\n```\n\n(equivalently `npm run test:unit`). No test framework dependency is involved — the project intentionally runs on **Node's built-in `node:test`** together with Node's native TypeScript type-stripping (`--experimental-strip-types`, valid for Node ≥ 22.6), which is consistent with the project's zero-runtime-dependency policy (ADR-0009). The `test:unit` script only targets the `tests/unit/**/*.test.ts` glob, distinguishing it from `test` (all tests), `test:integration`, `test:security`, etc.\n\n## Running it\n\nThe script is a thin wrapper, so I executed the underlying command directly, since `pnpm`/`npm` isn't installed in the sandbox (only `node`, `npm`, and `corepack` are available, and enabling pnpm failed because `/usr/local/bin` is read-only and network is off):\n\n```\nnode --test --experimental-strip-types \"tests/unit/**/*.test.ts\"\n```\n\n## Result\n\n**All unit tests passed.** Exit code 0, summary:\n\n- **tests:** 156\n- **suites:** 35\n- **pass:** 156\n- **fail:** 0\n- **cancelled:** 0\n- **skipped:** 0\n- **todo:** 0\n- **duration:** ~432 ms\n\nThe suites covered include the model providers' adapters (Anthropic, OpenAI Chat/Responses), tool-call id normalisation, model profiles, app identity / legacy directory handling, mount planning (§60), docker argv (§61), plan validation (§50), enforcement descriptors (§7), the permission matrix, secret scanning/redaction, the egress gate, the delegator ceil"
+    },
+    {
+      "prompt": "Add one more test case to tests/unit/util.test.ts that covers a genuine edge case in an existing utility. Run only that test file to confirm it passes.",
+      "state": "completed",
+      "steps": 8,
+      "toolCalls": 9,
+      "modelRequests": 8,
+      "durationMs": 30825,
+      "tools": [
+        "Read",
+        "Read",
+        "Read",
+        "Read",
+        "Read",
+        "Edit",
+        "Edit",
+        "Shell",
+        "Shell"
+      ],
+      "errors": [
+        "error: TOOL_INVALID_ARGS\nArguments for Edit did not match its schema: $.mode is required."
+      ],
+      "finalText": "Confirmed. The new test passes.\n\n## Summary\n\n**Added a new edge-case test** to `tests/unit/util.test.ts` covering `sliceLines` from `src/util/text.ts`.\n\n**The edge case:** an `offsetLine` that overshoots the end of the document. This is a genuine scenario — a window computed against stale content when a file has shrunk between reading and slicing. The function's behavior here is non-obvious and not covered by the existing test (which only exercises an in-range window): it returns an empty slice but flags `truncated: true`, because real lines above the requested offset were dropped. My test also contrasts the empty-document case, which returns `truncated: false` since there's nothing to drop — locking in that subtle distinction.\n\nThe existing test at line 124 only checked the happy path `sliceLines('l1\\n...\\nl5', 2, 3)` → `'l2\\nl3\\nl4'`. This new test covers the boundary/overshoot path, which is the kind of case a future refactor of `sliceLines` could easily get wrong.\n\n**Ran only that file** (`node --test --experimental-strip-types \"tests/unit/util.test.ts\"`): **35/35 tests pass, 0 failures.** The new `sliceLines past the final line yields an empty slice but is flagged truncated` subtest passes.\n\nNote: I ran the underlying `node` command directly rather than `pnpm test:unit` because pnpm/npm aren't installed in this sandbox, but the command is the thin wrapper for that script."
+    },
+    {
+      "prompt": "Summarise what you added, and whether anything got in your way while running commands.",
+      "state": "completed",
+      "steps": 1,
+      "toolCalls": 0,
+      "modelRequests": 1,
+      "durationMs": 6002,
+      "tools": [],
+      "errors": [],
+      "finalText": "## What I added\n\nOne new test case in `tests/unit/util.test.ts`, inside the existing `text` describe block. It covers a genuine edge case in the `sliceLines` utility from `src/util/text.ts`:\n\n- **The case:** calling `sliceLines` with an `offsetLine` that is past the end of the document (e.g. `sliceLines('l1\\nl2\\nl3', 5)`).\n- **Why it's genuine:** an offset can overshoot when a window was computed against stale content — the file shrank between when it was read and when the slice was requested. This is exactly the kind of boundary a future refactor could break.\n- **What behavior it locks in:** the result is an empty slice (`text: ''`) but `truncated: true` (because real lines above the offset were dropped). It also contrasts the empty-document case (`sliceLines('', 1)`), which correctly returns `truncated: false` since there is nothing to drop — pinning down that subtle asymmetry.\n- The existing `sliceLines` test only covered the happy-path in-range window, so this adds the overshoot path that wasn't covered.\n\nI verified the new subtest specifically passes, and the whole `util.test.ts` file passes: **35 tests, 35 pass, 0 fail.**\n\n## Anything that got in my way\n\nTwo minor things, worth noting for repeatability:\n\n1. **`pnpm` isn't installed in the sandbox.** The documented unit-test command is `pnpm test:unit` (the `test:unit` script in `package.json`). I first tried `pnpm test:unit` and got `Executable not found`. Node, npm, and corepack are present but corepack couldn't enable pnpm because `/usr/local/bin` is read-only and network is off. So I ran the underlying command directly (`node --test --experimental-strip-types \"tests/unit/**/*.test.ts\"`), which is the thin wrapper that script uses — the project relies on Node's built-in `node:test` plus native TS type-stripping (`--experimental-strip-types`, fine on the installed Node v22.23.2).\n\n2. **One rejected tool call of my own doing** — I initially issued the `Edit` without the required `mode` parameter, got a schema-"
+    },
+    {
+      "prompt": "From our earlier conversation only, tell me which file you edited and what the new test asserts. Then run that test file once more.",
+      "state": "completed",
+      "steps": 2,
+      "toolCalls": 1,
+      "modelRequests": 2,
+      "durationMs": 5433,
+      "tools": [
+        "Shell"
+      ],
+      "errors": [],
+      "finalText": "The test file passes: **35 tests, 0 failures** (10 suites in that file).\n\nTo recap the earlier change: I edited `tests/unit/util.test.ts` and added the test **`sliceLines past the final line yields an empty slice but is flagged truncated`**, which verifies that when a reader window/offset overshoots the end of a document, `sliceLines` returns an empty slice but still reports `truncated: true` rather than silently claiming success. The re-run confirms the whole file (35 tests) passes."
+    }
+  ],
+  "approvals": [],
+  "containerCost": {
+    "shellExecutions": 6,
+    "medianMs": 254,
+    "minMs": 181,
+    "maxMs": 606,
+    "allMs": [
+      181,
+      231,
+      247,
+      254,
+      256,
+      606
+    ]
+  },
+  "compactions": 0,
+  "outcome": {
+    "changedFiles": [
+      "M tests/unit/util.test.ts",
+      "?? src/config/local/"
+    ],
+    "toolErrors": [
+      "error: TOOL_FAILED\nExecutable not found in the container image: pnpm\nimage: node:22-bookworm\nnetwork: none",
+      "error: TOOL_INVALID_ARGS\nArguments for Edit did not match its schema: $.mode is required."
+    ]
+  },
+  "safety": {
+    "canaryInEventLog": false,
+    "canaryInTranscript": false,
+    "containerIdInLog": false
+  },
+  "usage": {
+    "inputTokens": 301408,
+    "outputTokens": 4991,
+    "cachedInputTokens": 178560,
+    "costUsd": 0.019096168,
+    "modelRequests": 17,
+    "toolCalls": 17,
+    "delegatedCostUsd": 0
+  },
+  "cost": {
+    "directUsd": 0.019096168,
+    "delegatedUsd": 0,
+    "totalUsd": 0.019096168
+  }
+}
