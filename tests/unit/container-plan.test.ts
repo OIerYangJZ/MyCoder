@@ -261,6 +261,26 @@ describe('mount planning — §60', () => {
     assert.equal(tmp.mode, 0o1777);
   });
 
+  test('the same profile always produces the same plan (§4, deterministic serialisation)', async () => {
+    // Write roots arrive as a set, and a set has no order. If the plan's order
+    // followed insertion, two identical profiles would produce two different
+    // `docker run` argvs — which would make the audit record of a plan
+    // unreproducible and any diff between two runs meaningless.
+    const roots = [
+      path.join(workspace, 'src') as CanonicalPath,
+      path.join(workspace, 'nested', 'deep') as CanonicalPath,
+      path.join(workspace, 'package.json') as CanonicalPath,
+    ];
+    const forward = await planFor(profile({ writeRoots: roots }));
+    const reversed = await planFor(profile({ writeRoots: [...roots].reverse() }));
+
+    assert.deepEqual(
+      forward.mounts.map((m) => `${m.containerPath}:${m.mode}`),
+      reversed.mounts.map((m) => `${m.containerPath}:${m.mode}`),
+      'mount order must not depend on the order the capability listed its roots',
+    );
+  });
+
   test('mounts are ordered parent before child', () => {
     const sorted = sortMounts([
       { hostPath: '/w/a/b', containerPath: '/workspace/a/b', mode: 'rw', origin: 'write-root' },
