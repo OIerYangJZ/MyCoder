@@ -409,14 +409,23 @@ describe('container isolation', { ...skip, timeout: 600_000 }, () => {
       assert.equal((routes ?? '').trim(), '0', 'there must be no route out');
     });
 
-    test('granting network changes the plan from none to bridge, and says so honestly', async () => {
+    test('granting hosts builds a scoped-egress plan, not an open bridge (alpha.6 §12)', async () => {
+      // The alpha.5 version of this test asserted `plan.network === 'bridge'`
+      // and `networkAllowlist === 'best-effort'` — an accurate description of a
+      // host list that nothing imposed. alpha.6 (ADR-0015) replaces both facts,
+      // and this is where that replacement is visible at the plan level.
       await fx.run(sh('true'), { profile: { network: { hosts: ['registry.npmjs.org'] } } });
       const plan = fx.plans.at(-1)!;
-      assert.equal(plan.network, 'bridge');
-      // §23: bridge networking does not enforce the hostname. The descriptor and
-      // the approval text both have to say that, and the test asserts the
-      // descriptor rather than trusting the prose.
-      assert.equal(fx.backend.environment.enforcement.networkAllowlist, 'best-effort');
+      assert.equal(plan.network.kind, 'scoped');
+      const network = plan.network as Extract<typeof plan.network, { kind: 'scoped' }>;
+      assert.deepEqual(network.allowedHosts, ['registry.npmjs.org']);
+      assert.match(network.dockerNetwork, /^mycoder-egress-/);
+      assert.equal(fx.backend.environment.enforcement.networkAllowlist, 'container-enforced');
+    });
+
+    test('asking for broad networking is a separate, explicit mode (§40)', async () => {
+      await fx.run(sh('true'), { profile: { network: { unrestricted: true } } });
+      assert.equal(fx.plans.at(-1)!.network.kind, 'unrestricted');
     });
   });
 
@@ -581,7 +590,12 @@ describe('container isolation', { ...skip, timeout: 600_000 }, () => {
       assert.equal(e.processPrivileges, 'container-enforced');
       assert.equal(e.environmentIsolation, 'container-enforced');
       assert.equal(e.hostFileBroker, 'policy-enforced');
-      assert.equal(e.networkAllowlist, 'best-effort');
+      // alpha.6: the one dimension this milestone moved. It was `best-effort`
+      // through alpha.5 because nothing imposed a host list; ADR-0015 gives the
+      // container backend a topology that does, so the honest level is now
+      // `container-enforced` — and the broker above stays `policy-enforced`,
+      // which is the pairing that proves the descriptor still refuses to round up.
+      assert.equal(e.networkAllowlist, 'container-enforced');
       assert.equal(fx.backend.environment.sandboxStrength, 'container-enforced');
     });
 

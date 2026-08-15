@@ -199,9 +199,100 @@ const FIXTURES: RuleFixtures[] = [
       { why: 'spawning something else', source: "spawn('git', ['status', '--porcelain']);" },
     ],
     exceptions: [
+      { why: 'the shared docker transport', file: 'src/execution/docker-cli.ts' },
       { why: 'the container backend owns the transport', file: 'src/execution/container.ts' },
       { why: 'the plan module builds the argv it never runs', file: 'src/execution/container-plan.ts' },
+      { why: 'the sidecar manager builds the proxy topology', file: 'src/execution/egress-sidecar.ts' },
     ],
+  },
+
+  {
+    rule: 'no-scoped-egress-bridge-fallback',
+    file: 'src/execution/container.ts',
+    mustFail: [
+      {
+        why: 'the Fallback Stop: answering a setup failure with bridge networking',
+        source: "if (!sidecar) { plan.network = 'bridge'; }",
+      },
+      { why: 'emitting the flag directly', source: "args.push('--network bridge');" },
+    ],
+    mustPass: [
+      {
+        why: 'describing the bridge in prose is not selecting it',
+        source: 'const note = "an ordinary bridge network confines nothing";',
+      },
+      {
+        why: 'the scoped network is a kernel-owned name',
+        source: "args.push('--network', network.dockerNetwork);",
+      },
+    ],
+    exceptions: [
+      {
+        why: 'the plan builder emits it for approved unrestricted mode',
+        file: 'src/execution/container-plan.ts',
+      },
+      { why: 'the sidecar attaches its own egress leg', file: 'src/execution/egress-sidecar.ts' },
+    ],
+  },
+
+  {
+    rule: 'no-egress-proxy-workspace-mount',
+    file: 'src/execution/egress-sidecar.ts',
+    mustFail: [
+      {
+        why: 'mounting the workspace into the one container that can reach the internet',
+        source: "args.push('--mount', `type=bind,source=${opts.workspaceRoot},target=/workspace`);",
+      },
+      { why: 'giving the proxy a home directory', source: 'const env = { HOME: homedir() };' },
+    ],
+    mustPass: [
+      {
+        why: 'mounting the proxy source and its frozen policy is the whole point',
+        source: "args.push('--mount', `type=bind,source=${policyFile},target=/opt/policy.json,readonly`);",
+      },
+    ],
+    exceptions: [
+      { why: 'the container backend legitimately mounts the workspace', file: 'src/execution/container.ts' },
+    ],
+  },
+
+  {
+    rule: 'no-egress-proxy-secret-env',
+    file: 'src/security/egress-proxy/proxy.ts',
+    mustFail: [
+      {
+        why: 'a lease in the proxy is a credential next to the internet',
+        source: 'lease.injectInto(env, name);',
+      },
+      { why: 'importing the broker at all', source: "import { SecretBroker } from '../secret-broker.ts';" },
+    ],
+    mustPass: [
+      {
+        why: 'the proxy deals in destinations',
+        source: 'const decision = decideDestination(policy, host, port, protocol);',
+      },
+    ],
+    exceptions: [{ why: 'the container backend does inject leases', file: 'src/execution/container.ts' }],
+  },
+
+  {
+    rule: 'no-egress-content-logging',
+    file: 'src/security/egress-proxy/proxy.ts',
+    mustFail: [
+      {
+        why: 'a URL in a log line is a token in a log line',
+        source: 'logger.debug("proxying " + target.pathAndQuery);',
+      },
+      { why: 'echoing a credential header', source: 'process.stdout.write(headers.authorization);' },
+    ],
+    mustPass: [
+      {
+        why: 'the safe vocabulary is host, port, reason',
+        source: 'audit({ host, port, reason, durationMs });',
+      },
+      { why: 'forwarding the path is not logging it', source: 'upstream.write(target.pathAndQuery);' },
+    ],
+    exceptions: [{ why: 'the rule is scoped to the proxy', file: 'src/execution/container.ts' }],
   },
 
   {

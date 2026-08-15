@@ -334,7 +334,7 @@ describe('docker argv — §61', () => {
         env: { PATH: '/usr/bin', HOME: '/tmp' },
         argv: ['sh', '-c', 'echo hi'],
         timeoutMs: 30_000,
-        network: 'none',
+        network: { kind: 'none' },
         user: '1000:1000',
         limits: { pids: 256, memoryBytes: 1024, cpus: 1 },
         name: 'mycoder-test',
@@ -419,7 +419,7 @@ describe('plan validation — §50', () => {
       env: {},
       argv: ['sh'],
       timeoutMs: 1_000,
-      network: 'none',
+      network: { kind: 'none' },
       name: 'mycoder-test',
     });
     mutate(plan);
@@ -540,7 +540,7 @@ describe('plan validation — §50', () => {
       env: {},
       argv: ['sh'],
       timeoutMs: 1_000,
-      network: 'none',
+      network: { kind: 'none' },
       name: 'mycoder-test',
     });
     const result = validateContainerPlan(plan, {
@@ -587,10 +587,42 @@ describe('enforcement descriptor — §7', () => {
     // §28: Read/Edit are trusted kernel operations on the host filesystem, and
     // saying otherwise would be the exact overclaim the descriptor exists to stop.
     assert.equal(d.hostFileBroker, 'policy-enforced');
-    // §23: this is release-critical and stays best-effort until there is an
-    // egress proxy inside the network namespace.
-    assert.equal(d.networkAllowlist, 'best-effort');
+    // alpha.5 §23 asserted `best-effort` here, and said so in as many words:
+    // "stays best-effort until there is an egress proxy inside the network
+    // namespace". alpha.6 built that proxy (ADR-0015), so the level moves — and
+    // this line moving is the *point* of the milestone, not an incidental
+    // update. It may only ever be raised alongside the mechanism.
+    assert.equal(d.networkAllowlist, 'container-enforced');
     assert.equal(summarizeEnforcement(d), 'container-enforced');
+  });
+
+  test('scoped egress names the hosts it is enforcing, and its own limit (§37, §42)', () => {
+    const d = containerEnforcement({
+      networkDenied: true,
+      networkPosture: 'scoped-egress',
+      allowedHosts: ['api.github.com', 'registry.npmjs.org'],
+      privilegesRestricted: true,
+      readOnlyRoot: true,
+      platformNotes: [],
+    });
+    const notes = (d.platformNotes ?? []).join(' ');
+    assert.match(notes, /Scoped egress is in force/);
+    assert.match(notes, /api\.github\.com/);
+    // §42: the guarantee and its boundary are stated together, so a reader
+    // cannot take away "the container cannot exfiltrate".
+    assert.match(notes, /destinations, not payloads/);
+  });
+
+  test('unrestricted mode says it has no allowlist rather than implying one (§40)', () => {
+    const d = containerEnforcement({
+      networkDenied: false,
+      networkPosture: 'unrestricted',
+      privilegesRestricted: true,
+      readOnlyRoot: true,
+      platformNotes: [],
+    });
+    assert.match((d.platformNotes ?? []).join(' '), /explicitly approved broad egress/);
+    assert.equal(d.processNetwork, 'none');
   });
 
   test('a container with network enabled does not claim network enforcement', () => {
@@ -618,8 +650,26 @@ describe('enforcement descriptor — §7', () => {
     );
     assert.equal(summary.lines.length, 6);
     assert.ok(summary.lines.some((l) => l.startsWith('trusted file broker: policy-enforced')));
-    assert.ok(summary.caveat.includes('host allowlist is not enforced'));
+    // alpha.6: the allowlist sentence flipped, and it is emitted only because
+    // the descriptor says the mechanism is present. `describeEnforcement` reads
+    // the levels rather than being written per backend, so a backend cannot
+    // acquire this sentence without acquiring the proxy that justifies it.
+    assert.ok(summary.caveat.includes('The approved host list is enforced'));
+    assert.ok(!summary.caveat.includes('host allowlist is not enforced'));
     assert.ok(summary.caveat.includes('Docker Desktop runs the daemon in a VM.'));
+  });
+
+  test('a backend without the mechanism still gets the old, honest sentence', () => {
+    // The negative control for the assertion above: local and ssh have no egress
+    // proxy, so they must keep saying so. If this ever starts passing with the
+    // enforced wording, the claim has been copied across backends — which is
+    // exactly what §53 and §54 forbid.
+    for (const d of [localEnforcement(), sshEnforcement('build-01')]) {
+      const summary = describeEnforcement(d);
+      assert.equal(d.networkAllowlist, 'best-effort');
+      assert.ok(summary.caveat.includes('host allowlist is not enforced'));
+      assert.ok(!summary.caveat.includes('The approved host list is enforced'));
+    }
   });
 });
 

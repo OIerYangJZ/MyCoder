@@ -13,6 +13,7 @@
  */
 
 import type { CanonicalPath } from '../util/paths.ts';
+import { normalizeHostOrUndefined } from '../security/egress/host.ts';
 
 export type Capability =
   | 'file.read'
@@ -74,6 +75,25 @@ export interface NetworkAccess {
   display: string;
   /** The channel this connection belongs to, mirroring EgressKind. */
   via: 'shell' | 'model' | 'hook' | 'plugin' | 'mcp' | 'web' | 'telemetry' | 'update';
+  /**
+   * Which of alpha.6's two network approvals this is (§37, §40).
+   *
+   * `scoped` is an approval for this host and nothing else, enforced by the
+   * egress proxy on a container backend. `unrestricted` is an approval to reach
+   * the entire internet, and it exists so that a workflow which genuinely needs
+   * one has somewhere to go other than "widen the allowlist until it works".
+   *
+   * They are different subjects (see `subjectKeyOf`) and different prompts. A
+   * session that approved twenty scoped hosts has still never approved broad
+   * egress, which is the whole point of §36.
+   */
+  scope?: 'scoped' | 'unrestricted';
+  /**
+   * Set when the destination is a private/loopback/link-local address that the
+   * default §23 policy would refuse. Surfaced in the prompt because "connect to
+   * 169.254.169.254" and "connect to api.example.com" should not read alike.
+   */
+  privateAddress?: boolean;
 }
 
 export interface SecretAccess {
@@ -201,8 +221,24 @@ export function subjectKeyOf(access: AccessRequest): string {
       // argv[0..1] captures `npm install` vs `npm test` without pinning the
       // package name, which would make every install a fresh prompt.
       return `process.exec:${access.executable}:${access.argv.slice(1, 2).join(' ')}`;
-    case 'network.connect':
-      return `network.connect:${access.via}:${access.host}:${access.port}`;
+    // alpha.6 §36. Three things changed here, all for the same reason: a cached
+    // approval must not be spendable on a destination the user did not see.
+    //
+    //   the host is normalised, so `Registry.NPMJS.org.` cannot be a second
+    //   subject that the user approves without realising they already had it —
+    //   and, in the other direction, so the string the proxy enforces and the
+    //   string the cache remembers are produced by one function (§20);
+    //   the scope is part of the key, so an `unrestricted` approval and a
+    //   `scoped` one for the same host are never interchangeable;
+    //   a host that does not normalise gets a subject that cannot match a
+    //   normalised one, so an unparseable destination can never be silently
+    //   covered by an approval granted for a parseable one.
+    case 'network.connect': {
+      const host = normalizeHostOrUndefined(access.host) ?? `unnormalizable:${access.host}`;
+      const scope = access.scope ?? 'scoped';
+      const priv = access.privateAddress === true ? ':private' : '';
+      return `network.connect:${access.via}:${scope}:${host}:${access.port}${priv}`;
+    }
     case 'secret.use':
       return `secret.use:${access.secretRef}`;
     case 'env.read':
@@ -229,7 +265,9 @@ export function describeAccess(access: AccessRequest): string {
     case 'process.exec':
       return `run ${access.display}`;
     case 'network.connect':
-      return `connect to ${access.host}:${access.port} (${access.via})`;
+      return access.scope === 'unrestricted'
+        ? `reach the entire internet from ${access.via} (unrestricted network)`
+        : `connect to ${access.host}:${access.port} (${access.via})`;
     case 'secret.use':
       return `use secret_ref://${access.secretRef}`;
     case 'env.read':

@@ -157,9 +157,26 @@ export function sshEnforcement(host: string): EnforcementDescriptor {
   };
 }
 
+/**
+ * How the container backend's network grant is being imposed *right now*.
+ *
+ * alpha.5 had a boolean here, and a boolean was enough while there were only two
+ * outcomes worth distinguishing. alpha.6 has three, and the middle one is the
+ * whole milestone: an approved host list is now imposed by a topology rather
+ * than recorded in a policy note.
+ */
+export type ContainerNetworkPosture = 'deny-all' | 'scoped-egress' | 'unrestricted';
+
 export interface ContainerEnforcementInput {
   /** True when `--network none` is in force for this session's default. */
   networkDenied: boolean;
+  /**
+   * The posture this descriptor should describe. Defaults to deriving it from
+   * `networkDenied`, so every existing caller keeps its alpha.5 meaning.
+   */
+  networkPosture?: ContainerNetworkPosture;
+  /** Approved hosts, for the `/status` line. Only meaningful under scoped egress. */
+  allowedHosts?: readonly string[];
   /** True when the plan drops capabilities and sets no-new-privileges. */
   privilegesRestricted: boolean;
   /** True when the container's rootfs is read-only. */
@@ -176,15 +193,31 @@ export interface ContainerEnforcementInput {
  * not mounted is not reachable. `readOnlyRoot` and `privilegesRestricted` move
  * `processPrivileges`, which is the dimension they actually describe.
  *
- * `networkAllowlist` is `best-effort` even here, and that is not a placeholder
- * for work not done — see §23. Without an egress proxy in the container's
- * network namespace, `hosts = ["registry.npmjs.org"]` is a note in a policy
- * record, not a rule anything imposes.
+ * `networkAllowlist` was `best-effort` in alpha.5, and that was not a
+ * placeholder — without an egress proxy in the container's network namespace,
+ * `hosts = ["registry.npmjs.org"]` was a note in a policy record rather than a
+ * rule anything imposed. alpha.6 (ADR-0015) builds that topology, so the level
+ * moves to `container-enforced` — but only for the posture that actually has it:
+ *
+ *   deny-all      the allowlist question does not arise; there is no network.
+ *   scoped-egress the workload has no route except a kernel-owned proxy whose
+ *                 policy is frozen from the capability decision. Enforced.
+ *   unrestricted  the user explicitly approved broad egress. There is no
+ *                 allowlist to enforce, and saying `best-effort` would imply one
+ *                 exists, so this is `none`.
+ *
+ * The level is never asserted by a caller; it is derived here from the posture,
+ * which is derived from the mode the plan actually ran with.
  */
 export function containerEnforcement(input: ContainerEnforcementInput): EnforcementDescriptor {
+  const posture: ContainerNetworkPosture =
+    input.networkPosture ?? (input.networkDenied ? 'deny-all' : 'unrestricted');
   return {
     processFilesystem: 'container-enforced',
-    processNetwork: input.networkDenied ? 'container-enforced' : 'none',
+    // Scoped egress is still a container-enforced network boundary: the workload
+    // is in a namespace attached to an `--internal` network, so "which packets
+    // can leave" is a runtime fact either way.
+    processNetwork: posture === 'deny-all' || posture === 'scoped-egress' ? 'container-enforced' : 'none',
     processPrivileges:
       input.privilegesRestricted && input.readOnlyRoot
         ? 'container-enforced'
@@ -197,9 +230,41 @@ export function containerEnforcement(input: ContainerEnforcementInput): Enforcem
     // filesystem. Reporting them as container-enforced would be the exact
     // overclaim §7's invariant forbids.
     hostFileBroker: 'policy-enforced',
-    networkAllowlist: 'best-effort',
-    platformNotes: input.platformNotes,
+    // The dimension's question is "is `network = { hosts: [...] }` imposed on the
+    // process?", and on this backend the answer is now yes *whenever there is a
+    // host list*, whatever the current execution happens to be doing. Reporting
+    // it per-posture would make `/status` say "not enforced" during a deny-all
+    // session — true of that moment and false of the backend, and a user reading
+    // `/status` is asking about the backend.
+    //
+    // Deliberately not conditional on `scopedEgress`: there is no configuration
+    // that turns the proxy off. A container backend that could not build the
+    // topology fails the execution (§39) rather than running without it, so
+    // there is no state in which this claim is made and not honoured.
+    networkAllowlist: 'container-enforced',
+    platformNotes: [
+      ...input.platformNotes,
+      posture === 'scoped-egress'
+        ? 'Scoped egress is in force: the container has no route to the internet. Its only external path is a ' +
+          `kernel-owned proxy that permits HTTP/HTTPS to ${describeHosts(input.allowedHosts ?? [])} and nothing ` +
+          'else — checked by destination host, resolved address, HTTP authority and TLS SNI.'
+        : posture === 'unrestricted'
+          ? 'Unrestricted network: this session explicitly approved broad egress, so no host allowlist is in force.'
+          : 'When a command is granted specific hosts, it runs on a private network whose only exit is a ' +
+            'kernel-owned proxy enforcing that host set over HTTP and HTTPS. Ports other than 80 and 443, and ' +
+            'protocols other than HTTP/HTTPS, are denied rather than tunnelled.',
+      // The limit, stated wherever the guarantee is stated (§42). Destination
+      // enforcement says where bytes may go; it does not inspect what bytes an
+      // approved destination receives.
+      'Scoped egress governs destinations, not payloads: a host the user approved can still be sent anything.',
+    ],
   };
+}
+
+function describeHosts(hosts: readonly string[]): string {
+  if (hosts.length === 0) return 'no hosts';
+  if (hosts.length <= 3) return hosts.join(', ');
+  return `${hosts.slice(0, 3).join(', ')} and ${hosts.length - 3} more`;
 }
 
 export interface EnforcementSummary {
@@ -251,7 +316,17 @@ export function describeEnforcement(d: EnforcementDescriptor): EnforcementSummar
   } else {
     parts.push('Network denial for subprocesses is best-effort: policy declines to help, the OS does not.');
   }
-  if (!atLeast(d.networkAllowlist, 'container-enforced')) {
+  if (atLeast(d.networkAllowlist, 'container-enforced')) {
+    // The sentence alpha.5 could not write. It is emitted only when the
+    // descriptor says the mechanism is there, so it cannot be acquired by
+    // wording.
+    parts.push(
+      'The approved host list is enforced: the process reaches the network only through a proxy that ' +
+        'checks the destination host, the resolved address, the HTTP authority and the TLS server name.',
+    );
+  } else if (d.networkAllowlist === 'none') {
+    parts.push('No host allowlist is in force for subprocesses in this session.');
+  } else {
     parts.push(
       'A host allowlist is not enforced on subprocesses: enabling network is broader than the hostnames named.',
     );

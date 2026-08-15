@@ -14,11 +14,13 @@
 
 import type { CanonicalPath } from '../util/paths.ts';
 import type { SecretLease } from '../security/secret-broker.ts';
+import type { ProfileNetwork } from '../security/egress/network-mode.ts';
 import type { EnforcementDescriptor, SandboxStrength } from './enforcement.ts';
 
 export type BackendKind = 'local' | 'ssh' | 'container';
 
 export type { EnforcementDescriptor, SandboxStrength };
+export type { ProfileNetwork };
 
 export interface FileStat {
   path: CanonicalPath;
@@ -138,8 +140,16 @@ export interface CapabilityProfile {
   readRoots: readonly CanonicalPath[];
   writeRoots: readonly CanonicalPath[];
   allowExec: boolean;
-  /** `false` means no network at all; otherwise the permitted hosts. */
-  network: false | { hosts: readonly string[] };
+  /**
+   * The process's network grant (alpha.6 §9, ADR-0015).
+   *
+   * Three states, not two. `false` is deny-all, `{ hosts }` is an exact-host
+   * allowlist that the container backend enforces through an egress proxy, and
+   * `{ unrestricted: true }` is explicitly approved broad egress. `{ hosts: [] }`
+   * is none of them and is refused by `normalizeNetworkMode` rather than being
+   * read as either extreme.
+   */
+  network: ProfileNetwork;
   /** Extra environment names permitted beyond the default allowlist. */
   envAllow: readonly string[];
   /** Credentials to inject, as `{ envName, lease }`. */

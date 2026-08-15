@@ -476,10 +476,20 @@ export const RULES: Rule[] = [
       "ADR-0007 / alpha.5 §8: the container runtime is one backend's business. A second place that shells out " +
       'to `docker` is a second place that decides mounts, network mode and privileges — and none of it would go ' +
       'through the plan validator.',
-    // `container.ts` owns the transport; the plan module builds the argv but
-    // never runs anything; the tests are allowed to inspect a real daemon.
+    // `docker-cli.ts` owns the transport; `container.ts` and `egress-sidecar.ts`
+    // build argv for the two things the backend runs (workload, proxy); the plan
+    // module builds argv but never runs anything. alpha.6 extended this list
+    // rather than relaxing the rule — the sidecar manager decides network
+    // topology, which is exactly the kind of decision the rule exists to keep in
+    // one reviewable place.
     applies: (f) =>
-      under(f, 'src/') && !['src/execution/container.ts', 'src/execution/container-plan.ts'].includes(f),
+      under(f, 'src/') &&
+      ![
+        'src/execution/docker-cli.ts',
+        'src/execution/container.ts',
+        'src/execution/container-plan.ts',
+        'src/execution/egress-sidecar.ts',
+      ].includes(f),
     check: ({ file, text }) => [
       ...scan(
         file,
@@ -522,6 +532,101 @@ export const RULES: Rule[] = [
         /docker\.sock|containerd\.sock/,
         'no-container-escape-flags',
         'names a container runtime socket, which must never be mounted or reachable',
+      ),
+    ],
+  },
+
+  {
+    name: 'no-scoped-egress-bridge-fallback',
+    rationale:
+      'alpha.6 §39 / ADR-0015 §10 ("Fallback Stop"): if the private network or the proxy cannot be built, the ' +
+      'execution fails. A code path that answers a setup failure with ordinary bridge networking would turn the ' +
+      'whole milestone into a warning nobody reads, so no module outside the plan builder may name the bridge as ' +
+      'a network at all — the two legitimate mentions are the sidecar attaching its own egress leg and the plan ' +
+      'builder emitting `--network bridge` for an explicitly approved unrestricted execution.',
+    applies: (f) =>
+      under(f, 'src/') && !['src/execution/container-plan.ts', 'src/execution/egress-sidecar.ts'].includes(f),
+    check: ({ file, text }) => [
+      ...scan(
+        file,
+        text,
+        // The quoted form needs no trailing context: `= 'bridge';`, `('bridge')`
+        // and `'bridge',` are all the same defect, and requiring a comma or a
+        // paren after it missed the assignment form — which is the one an actual
+        // fallback would be written as.
+        /--network[= ]bridge|['"]bridge['"]/,
+        'no-scoped-egress-bridge-fallback',
+        'names the docker bridge network outside the plan builder and the sidecar manager',
+      ),
+    ],
+  },
+
+  {
+    name: 'no-egress-proxy-workspace-mount',
+    rationale:
+      'alpha.6 §18 / ADR-0015 §3: the egress proxy is the one component with a route to the internet, so it is ' +
+      'the one component that must have nothing worth taking. It gets the proxy source and its frozen policy, ' +
+      'read-only, and nothing else — no workspace, no home, no credential directory. A mount naming the ' +
+      'workspace in the sidecar would put the repository on the far side of the boundary.',
+    applies: (f) => f === 'src/execution/egress-sidecar.ts',
+    check: ({ file, text }) => [
+      ...scan(
+        file,
+        text,
+        /workspaceRoot|CONTAINER_WORKSPACE|\/workspace/,
+        'no-egress-proxy-workspace-mount',
+        'the egress proxy sidecar must never reference the workspace',
+      ),
+      ...scan(
+        file,
+        text,
+        /homedir\(\)|process\.env\.HOME/,
+        'no-egress-proxy-workspace-mount',
+        'the egress proxy sidecar must never reference a home directory',
+      ),
+    ],
+  },
+
+  {
+    name: 'no-egress-proxy-secret-env',
+    rationale:
+      'alpha.6 §18: a credential in the proxy is a credential one process away from the internet. The sidecar is ' +
+      'started with no secret injection and no lease, and the proxy source itself must never touch the secret ' +
+      'broker — its whole job is destinations, and it cannot leak what it was never given.',
+    applies: (f) =>
+      under(f, 'src/security/egress-proxy/', 'src/security/egress/') ||
+      f === 'src/execution/egress-sidecar.ts',
+    check: ({ file, text }) => [
+      ...scan(
+        file,
+        text,
+        /secret-broker|SecretLease|SecretBroker|secretInjections|injectInto/,
+        'no-egress-proxy-secret-env',
+        'the egress proxy path must never touch the secret broker',
+      ),
+    ],
+  },
+
+  {
+    name: 'no-egress-content-logging',
+    rationale:
+      'alpha.6 §44: the proxy sees every URL and header of every approved request. Logging one would make it a ' +
+      'credential collector, because query strings and Authorization headers carry tokens. The audit vocabulary ' +
+      'is execution id, decision, normalised host, port, protocol, reason, byte counts and duration — a log call ' +
+      'naming a path, a query or a header body is the defect.',
+    applies: (f) => under(f, 'src/security/egress-proxy/'),
+    check: ({ file, code }) => [
+      ...scan(
+        file,
+        code,
+        // Only *sinks*, and named ones. The first version matched a bare
+        // `write(`, which flagged `upstream.write(target.pathAndQuery)` —
+        // forwarding the request to the origin server, which is the proxy's
+        // entire job. A rule that fires on the correct implementation of the
+        // thing it guards gets suppressed, and a suppressed rule guards nothing.
+        /(?:stdout\.write|stderr\.write|console\.\w+|logger\.\w+|log\.\w+|audit)\s*\([^)]*\b(?:pathAndQuery|authorization|cookie|payload|requestBody)\b/i,
+        'no-egress-content-logging',
+        'writes request content to a log or audit channel',
       ),
     ],
   },
