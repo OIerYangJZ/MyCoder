@@ -367,6 +367,11 @@ export const RULES: Rule[] = [
         'src/util/platform.ts', // XDG / Application Support resolution
         'src/execution/local.ts', // PATH lookup for optional tooling
         'src/kernel.ts', // registers provider credentials by reference at boot
+        // Locates the native launcher binary, which is the same kind of question
+        // `platform.ts` answers for config directories: where does this
+        // installation keep its own files. It reads one override name and no
+        // credential can be one.
+        'src/execution/linux-native/paths.ts',
       ].includes(f),
     check: ({ file, code }) => scan(file, code, /\bprocess\.env\b/, 'no-host-env-read', 'reads process.env'),
   },

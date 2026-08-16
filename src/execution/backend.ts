@@ -17,7 +17,7 @@ import type { SecretLease } from '../security/secret-broker.ts';
 import type { ProfileNetwork } from '../security/egress/network-mode.ts';
 import type { EnforcementDescriptor, SandboxStrength } from './enforcement.ts';
 
-export type BackendKind = 'local' | 'ssh' | 'container';
+export type BackendKind = 'local' | 'ssh' | 'container' | 'linux-native';
 
 export type { EnforcementDescriptor, SandboxStrength };
 export type { ProfileNetwork };

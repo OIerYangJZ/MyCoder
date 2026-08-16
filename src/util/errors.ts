@@ -64,6 +64,19 @@ export const ERROR_CODES = [
   'NETWORK_IDENTITY_MISMATCH',
   'NETWORK_PROXY_UNAVAILABLE',
   'NETWORK_ENFORCEMENT_SETUP_FAILED',
+  // alpha.7. Kept apart from the network family because they answer a different
+  // question: not "where may this go" but "can this machine impose the boundary
+  // the user asked for at all".
+  //
+  //   UNSUPPORTED    the platform cannot provide the requested guarantee — a
+  //                  kernel without Landlock, a host allowlist on a backend
+  //                  whose primitive has no notion of hostnames. Never a
+  //                  fallback (§9).
+  //   SETUP_FAILED   the guarantee is supported and could not be applied.
+  //   SYSCALL_DENIED the sandbox refused a syscall the workload attempted.
+  'SANDBOX_UNSUPPORTED',
+  'SANDBOX_SETUP_FAILED',
+  'SANDBOX_SYSCALL_DENIED',
   'LOOP_BUDGET_EXCEEDED',
   'REPEATED_FAILURE',
   'DELEGATION_DENIED',
@@ -146,6 +159,9 @@ const DEFAULT_BLAME: Record<ErrorCode, Blame> = {
   NETWORK_IDENTITY_MISMATCH: 'model',
   NETWORK_PROXY_UNAVAILABLE: 'environment',
   NETWORK_ENFORCEMENT_SETUP_FAILED: 'environment',
+  SANDBOX_UNSUPPORTED: 'environment',
+  SANDBOX_SETUP_FAILED: 'kernel',
+  SANDBOX_SYSCALL_DENIED: 'model',
   LOOP_BUDGET_EXCEEDED: 'kernel',
   REPEATED_FAILURE: 'model',
   // A refused delegation is the configuration speaking, the same as TOOL_DENIED.

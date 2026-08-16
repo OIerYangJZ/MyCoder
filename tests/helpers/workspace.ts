@@ -109,7 +109,7 @@ export interface TestWorkspaceOptions {
    * is none — see `containerAvailable()`, which is how the suites skip rather than
    * fail on a machine without one.
    */
-  backend?: 'local' | 'container';
+  backend?: 'local' | 'container' | 'linux-native';
 }
 
 export interface TestWorkspace {

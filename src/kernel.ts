@@ -49,6 +49,8 @@ import {
   resolveGeneratedDirs,
   type ContainerConfig,
 } from './execution/container.ts';
+import { LinuxNativeExecutionBackend } from './execution/linux-native/backend.ts';
+import { resolveLauncherPath } from './execution/linux-native/paths.ts';
 import { MutationDetector } from './execution/mutation-detector.ts';
 import { describeEnforcement, networkEnforcementLabel } from './execution/enforcement.ts';
 import type { ExecutionBackend } from './execution/backend.ts';
@@ -122,7 +124,7 @@ export interface CreateKernelOptions {
    * unusable rather than starting a session with weaker isolation than the caller
    * asked for.
    */
-  backend?: 'local' | 'container';
+  backend?: 'local' | 'container' | 'linux-native';
   telemetryDisabled?: boolean;
   logLevel?: LogLevel;
   json?: boolean;
@@ -394,6 +396,33 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
           'Narrow the workspace, or treat this session as policy-enforced for in-workspace secrets.',
       );
     }
+  } else if (opts.backend === 'linux-native') {
+    // alpha.7 §9: selected means applied or refused. The same protected-path
+    // traversal the container backend uses decides whether a plan can be built
+    // at all — Landlock grants subtrees and cannot carve a leaf out of one, so a
+    // credential inside the workspace is a refusal rather than a masked mount.
+    const probeFs = (
+      await LocalExecutionBackend.detect({
+        workspaceRoot: projectRoot,
+        redactor,
+        logger: logger.child('local'),
+      })
+    ).fs;
+    const nativeScan = await discoverMaskPaths(
+      probeFs,
+      projectRoot,
+      (p) => protectedPaths.checkReadToModel(p).protected,
+    );
+
+    backend = await LinuxNativeExecutionBackend.create({
+      workspaceRoot: projectRoot,
+      redactor,
+      launcherPath: resolveLauncherPath(),
+      logger: logger.child('linux-native'),
+      protectedInsideRoots: nativeScan.paths,
+      discoveryTruncated: nativeScan.truncated,
+      sandboxHome: path.join(projectDir(projectRoot), 'sandbox-home') as CanonicalPath,
+    });
   } else {
     backend = await LocalExecutionBackend.detect({
       workspaceRoot: projectRoot,

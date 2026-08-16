@@ -35,7 +35,7 @@ export interface CliArgs {
    * `--backend auto`, because "try the container and fall back" is the silent
    * degradation of a security decision.
    */
-  backend?: 'local' | 'container';
+  backend?: 'local' | 'container' | 'linux-native';
   readOnly: boolean;
   noTelemetry: boolean;
   json: boolean;
@@ -117,11 +117,11 @@ export function parseArgs(argv: readonly string[]): CliArgs {
 
       case '--backend': {
         const v = takeValue(arg);
-        if (v === 'local' || v === 'container') args.backend = v;
+        if (v === 'local' || v === 'container' || v === 'linux-native') args.backend = v;
         else if (v === 'ssh') {
           args.errors.push('--backend ssh is selected with --remote <name>, which names the host.');
         } else if (v !== undefined) {
-          args.errors.push(`--backend must be local or container, not "${v}"`);
+          args.errors.push(`--backend must be local, container or linux-native, not "${v}"`);
         }
         break;
       }

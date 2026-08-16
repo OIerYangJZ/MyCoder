@@ -49,6 +49,7 @@ const MATRICES = [
   'docs/alpha4-evidence-matrix.md',
   'docs/alpha5-evidence-matrix.md',
   'docs/tool-surface-evidence-matrix.md',
+  'docs/alpha7-evidence-matrix.md',
 ];
 
 export const STATUSES = ['PASS', 'FAIL', 'NOT TESTED', 'NOT APPLICABLE'] as const;

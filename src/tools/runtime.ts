@@ -26,6 +26,8 @@ import { describeAccess } from '../policy/access.ts';
 import { PolicyEngine, decisionToError, type PolicyDecision } from '../policy/policy-engine.ts';
 import type { ExecutionBackend } from '../execution/backend.ts';
 import { SandboxPlanner } from '../execution/sandbox.ts';
+import { diagnose, renderDiagnosis } from '../execution/diagnosis.ts';
+import { isUnrestricted } from '../security/egress/network-mode.ts';
 import type { SecretBroker, SecretLease } from '../security/secret-broker.ts';
 import type { Redactor } from '../security/redactor.ts';
 import type { FreshnessLedger } from '../context/freshness.ts';
@@ -489,8 +491,37 @@ export class ToolRuntime {
     } catch (e) {
       const err = toKernelError(e);
       this.opts.logger.debug('tool execution failed', { tool: call.name, code: err.code });
+
+      // alpha.7 Closure C: say which capability was the *first* blocker, rather
+      // than handing the model the last thing that went wrong. The diagnosis
+      // explains and never acts — see `src/execution/diagnosis.ts` §47/§53.
+      const diagnosis = diagnose({
+        error: err,
+        granted: {
+          writeRoots: plan.profile.writeRoots,
+          network:
+            plan.profile.network === false
+              ? 'deny'
+              : isUnrestricted(plan.profile.network)
+                ? 'unrestricted'
+                : 'scoped',
+          allowExec: plan.profile.allowExec,
+        },
+        backend: this.opts.backend.environment.enforcement,
+      });
+
+      const explained =
+        diagnosis.category === 'unknown'
+          ? renderErrorForModel(err)
+          : `${renderErrorForModel(err)}\n\n${renderDiagnosis(diagnosis)}`;
+
       return {
-        result: { content: renderErrorForModel(err), isError: true, errorCode: err.code },
+        result: {
+          content: explained,
+          isError: true,
+          errorCode: err.code,
+          metadata: { diagnosis: diagnosis.category, diagnosisConfidence: diagnosis.confidence },
+        },
         decisions,
       };
     } finally {

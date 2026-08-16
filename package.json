@@ -16,6 +16,7 @@
   },
   "scripts": {
     "agent": "node src/cli/main.ts",
+    "build:sandbox": "node scripts/build-sandbox.ts",
     "eval": "node evals/runners/run.ts",
     "eval:delegation-utility": "node evals/experiments/delegation-utility.ts",
     "eval:tool-utility": "node evals/experiments/tool-utility.ts",

@@ -267,6 +267,57 @@ function describeHosts(hosts: readonly string[]): string {
   return `${hosts.slice(0, 3).join(', ')} and ${hosts.length - 3} more`;
 }
 
+export interface LinuxNativeEnforcementInput {
+  /** Landlock ABI 4+ carries TCP rules; below that a denial cannot be imposed. */
+  networkTcp: boolean;
+  abi: number;
+  notes: readonly string[];
+}
+
+/**
+ * The native Linux backend (alpha.7, ADR-0018).
+ *
+ * The first descriptor in this file that reaches `os-enforced`, and only in the
+ * dimensions the kernel actually covers:
+ *
+ *   `processFilesystem`  Landlock. The host kernel refuses the open; there is no
+ *                        runtime in between to trust, which is the difference
+ *                        between this and `container-enforced`.
+ *   `processNetwork`     Landlock TCP rules — **when the ABI has them**, and
+ *                        `none` when it does not, so a kernel too old to deny
+ *                        network cannot be described as denying it.
+ *   `processPrivileges`  `no_new_privs` plus the seccomp filter.
+ *   `hostFileBroker`     unchanged at `policy-enforced`: Read and Edit are
+ *                        kernel-side operations on the host filesystem, exactly
+ *                        as on the container backend. Landlock governs the
+ *                        subprocess, not us.
+ *   `networkAllowlist`   `none`. Landlock has no notion of a hostname and this
+ *                        backend refuses the request rather than pretending
+ *                        (§27); `none` is what "we do not do this at all" looks
+ *                        like, as against the container backend's proxy.
+ *
+ * The TCP-only caveat is a note rather than a level because it does not fit on
+ * the scale: the denial that *is* imposed is imposed by the kernel, and what is
+ * missing is a whole protocol family. §28 requires that to be said out loud.
+ */
+export function linuxNativeEnforcement(input: LinuxNativeEnforcementInput): EnforcementDescriptor {
+  return {
+    processFilesystem: 'os-enforced',
+    processNetwork: input.networkTcp ? 'os-enforced' : 'none',
+    processPrivileges: 'os-enforced',
+    environmentIsolation: 'policy-enforced',
+    hostFileBroker: 'policy-enforced',
+    networkAllowlist: 'none',
+    platformNotes: [
+      `Landlock ABI ${input.abi} with seccomp and no_new_privs; no container runtime is involved.`,
+      'Network denial covers TCP. Landlock has no UDP or raw-socket rules, so "no network" here means ' +
+        '"no TCP" — the container backend is the one that can deny a network namespace outright.',
+      'A host-scoped egress allowlist is not supported and is refused rather than approximated.',
+      ...input.notes,
+    ],
+  };
+}
+
 export interface EnforcementSummary {
   label: SandboxStrength;
   /** One line per dimension, in a fixed order, for `/status`. */
