@@ -270,8 +270,8 @@ the product_, not merely to be true. See `docs/alpha9-status.md`.
 | typecheck / format | clean                                                    |
 | release gate       | green at `c701a31` (run `31935882150`), tagged alpha.8.1 |
 
-The release gate was also dispatched against this branch's head, `a5b7046`
-(run `31941937804`), and every tier passed — offline on both tier-1 platforms,
+The release gate was also dispatched against this branch's head, `90c5d61`
+(run `31942517679`), and every tier passed — offline on both tier-1 platforms,
 container and native each under their `_REQUIRED` variable, and the artifact
 packed, installed into a clean prefix and driven.
 
