@@ -87,6 +87,15 @@ export interface TestWorkspaceOptions {
   captureLog?: string[];
   /** Slows the fake stream, so a cancellation has something to interrupt. */
   chunkDelayMs?: number;
+  /**
+   * Resolver for the `WebFetch` address check.
+   *
+   * Defaulted to a fixed global address rather than the real DNS: the check under
+   * test is "what does the kernel do with the answer", and using the machine's
+   * resolver would make the suite assert something about the developer's network
+   * — on this one, every public name resolves into RFC 2544 space.
+   */
+  webLookup?: (host: string) => Promise<Array<{ address: string; family: number }>>;
   /** Extra CLI-level overrides, for tests that need a resumed session. */
   resumeSessionId?: string;
   store?: import('../../src/session/store.ts').SessionStore;
@@ -175,6 +184,7 @@ export async function createTestWorkspace(opts: TestWorkspaceOptions = {}): Prom
     logLevel: opts.logLevel ?? 'silent',
     ...(opts.captureLog ? { logSink: (line: string) => opts.captureLog!.push(line) } : {}),
     ...(opts.store ? { store: opts.store } : {}),
+    webLookup: opts.webLookup ?? (async () => [{ address: '93.184.216.34', family: 4 }]),
     ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
     ...(opts.backend ? { backend: opts.backend } : {}),
   });

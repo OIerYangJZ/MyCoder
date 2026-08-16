@@ -72,6 +72,12 @@ export class SandboxPlanner {
           writeRoots.add(path.dirname(decision.access.path));
           readRoots.add(decision.access.path);
           break;
+        case 'file.delete':
+          // The path itself, not its directory: a granted delete of `src/old.ts`
+          // must not become write access to `src/`.
+          writeRoots.add(decision.access.path);
+          readRoots.add(decision.access.path);
+          break;
         case 'process.exec':
           allowExec = true;
           readRoots.add(decision.access.cwd);

@@ -18,14 +18,25 @@ import type { EolStyle } from '../util/text.ts';
 export interface RollbackMetadata {
   path: CanonicalPath;
   displayPath: string;
-  kind: 'replace' | 'create';
+  kind: 'replace' | 'create' | 'overwrite' | 'delete' | 'move';
   oldHash: string;
   newHash: string;
-  /** Unified diff, redacted. Reversing it restores the previous content. */
+  /**
+   * Unified diff, redacted. Reversing it restores the previous content.
+   *
+   * For a `delete` that means the diff carries the whole file, which is the one
+   * place the "no full copies" rule above bends — and it bends for the same
+   * reason it exists: reversing a deletion needs the content, and the diff is
+   * where the content already is.
+   */
   diff: string;
   eol: EolStyle;
   /** Present for creates, so an undo knows to delete rather than restore. */
   createdFile: boolean;
+  /** Present for deletes, so an undo knows to restore rather than reverse. */
+  deletedFile?: boolean;
+  /** Present for moves: the path the file came from. */
+  movedFrom?: string;
   toolCallId: ToolCallId;
   turnId: TurnId;
   stepId: StepId;

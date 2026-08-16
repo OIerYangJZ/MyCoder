@@ -186,6 +186,62 @@ const CASES: ConformanceCase[] = [
     },
   },
   {
+    // ADR-0016 added two operations to `FileSystemBackend`, which means two more
+    // things every backend has to agree about. `remove` is the interesting one:
+    // it is the first backend call whose success is the *absence* of a file, so a
+    // backend that silently did nothing would look identical to one that worked
+    // until the next Read.
+    name: 'Write then Delete removes the file, on every backend',
+    responder: (request, callIndex) => {
+      if (callIndex === 0) {
+        return {
+          kind: 'tools',
+          calls: [{ name: 'Write', arguments: { path: 'src/scratch.ts', content: 'export const s = 1;\n' } }],
+        };
+      }
+      if (callIndex === 1) {
+        return { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'src/scratch.ts' } }] };
+      }
+      if (callIndex === 2) {
+        return {
+          kind: 'tools',
+          calls: [
+            {
+              name: 'Delete',
+              arguments: { path: 'src/scratch.ts', receiptId: latestReceiptId(request) ?? 'missing' },
+            },
+          ],
+        };
+      }
+      if (callIndex === 3) {
+        return { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'src/scratch.ts' } }] };
+      }
+      return { kind: 'final', text: 'done' };
+    },
+    approvals: [{ decision: 'allow', scope: 'session' }],
+    expect: (results) => {
+      const text = results.join('\n');
+      assert.match(text, /Deleted .*scratch\.ts/);
+      // The read *after* the delete must fail: the file is really gone, not just
+      // reported gone.
+      assert.match(text, /No such file/);
+    },
+  },
+  {
+    name: 'Move renames a file, on every backend',
+    script: [
+      { kind: 'tools', calls: [{ name: 'Move', arguments: { from: 'README.md', to: 'GUIDE.md' } }] },
+      { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'GUIDE.md' } }] },
+      { kind: 'final', text: 'done' },
+    ],
+    approvals: [{ decision: 'allow', scope: 'session' }],
+    expect: (results) => {
+      const text = results.join('\n');
+      assert.match(text, /Moved file/);
+      assert.match(text, /conformance fixture/);
+    },
+  },
+  {
     name: 'Shell success reports exit 0 and its stdout',
     script: [
       { kind: 'tools', calls: [{ name: 'Shell', arguments: { argv: ['echo', 'conformance-ok'] } }] },

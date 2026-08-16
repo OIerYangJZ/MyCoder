@@ -218,7 +218,10 @@ export const RECOMMENDED_AGENTS: ReadonlyArray<{
   {
     name: 'implementation-worker',
     profile: 'workspace-dev',
-    tools: ['Read', 'Grep', 'Glob', 'Edit', 'Shell', 'GitDiff'],
+    // `Write` but not `Delete`/`Move`: a worker that can create and rewrite files
+    // can do the job, and a delegated deletion is an approval the user would be
+    // answering on behalf of an agent they did not watch (ADR-0016).
+    tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Shell', 'GitDiff'],
     purpose: 'Implements against the spec. May edit src/** and tests/**; reference/** stays read-only.',
   },
   {

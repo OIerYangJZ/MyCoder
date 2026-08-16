@@ -32,16 +32,26 @@ import {
   type ToolResolveContext,
 } from '../contract.ts';
 
+/**
+ * `mode` is optional, and that is a measured decision (§B).
+ *
+ * It was required, and the tool-utility experiment found the model omitting it
+ * in 10 of 20 Edit calls once `Write` existed alongside — `Write` has no `mode`,
+ * so the two argument shapes blur, and every omission cost a step to a schema
+ * rejection that taught the model nothing about what to do instead. The
+ * discriminator is now inferred where the arguments are unambiguous, and the
+ * error names `Write` where they are not.
+ */
 export type EditArgs =
   | {
-      mode: 'replace';
+      mode?: 'replace';
       path: string;
       oldString: string;
       newString: string;
       receiptId: string;
       replaceAll?: boolean;
     }
-  | { mode: 'create'; path: string; content: string };
+  | { mode?: 'create'; path: string; content: string };
 
 const SCHEMA: JsonSchema = {
   type: 'object',
@@ -49,7 +59,9 @@ const SCHEMA: JsonSchema = {
     mode: {
       type: 'string',
       enum: ['replace', 'create'],
-      description: 'replace an exact string, or create a new file',
+      description:
+        'Optional. "replace" an exact string, or "create" a new file. Inferred from the other ' +
+        'arguments when omitted: oldString means replace, content means create.',
     },
     path: { type: 'string', description: 'File to edit or create.', minLength: 1 },
     oldString: {
@@ -69,7 +81,7 @@ const SCHEMA: JsonSchema = {
     },
     content: { type: 'string', description: 'create mode: full contents of the new file.' },
   },
-  required: ['mode', 'path'],
+  required: ['path'],
   additionalProperties: false,
 };
 
@@ -86,6 +98,8 @@ export function createEditTool(opts: EditToolOptions): ToolDefinition<EditArgs> 
     name: 'Edit',
     description:
       'Modify a file by exact string replacement, or create a new file. ' +
+      'Pass oldString/newString/receiptId to replace, or content to create a new file; ' +
+      'to overwrite an existing file in full, use Write instead. ' +
       'For mode "replace" you must first Read the file and pass the receiptId from that result: ' +
       'edits against stale or unread content are rejected. oldString must match the file byte for ' +
       'byte (excluding the line-number prefixes Read adds) and must be unique unless replaceAll is set. ' +
@@ -94,9 +108,32 @@ export function createEditTool(opts: EditToolOptions): ToolDefinition<EditArgs> 
     disclosure: 'eager',
     readOnly: false,
 
-    async resolve(args: EditArgs, ctx: ToolResolveContext): Promise<ToolExecution> {
-      const { path: canonical, existed } = await ctx.canonicalize(args.path);
+    async resolve(rawArgs: EditArgs, ctx: ToolResolveContext): Promise<ToolExecution> {
+      const { path: canonical, existed } = await ctx.canonicalize(rawArgs.path);
       const displayPath = ctx.display(canonical);
+
+      // Infer the mode when it was not given. Only from arguments that can mean
+      // one thing: `oldString` is replace, `content` is create, and anything
+      // else is refused below rather than guessed.
+      const inferred: 'replace' | 'create' | undefined =
+        rawArgs.mode ??
+        (typeof (rawArgs as { oldString?: unknown }).oldString === 'string'
+          ? 'replace'
+          : typeof (rawArgs as { content?: unknown }).content === 'string'
+            ? 'create'
+            : undefined);
+      // Flattened on purpose: the union is the *model-facing* contract, and the
+      // per-mode requirements below are checked one field at a time rather than
+      // trusted from a discriminator the caller may have omitted.
+      const args = { ...rawArgs, mode: inferred } as {
+        mode?: 'replace' | 'create';
+        path: string;
+        oldString?: string;
+        newString?: string;
+        receiptId?: string;
+        replaceAll?: boolean;
+        content?: string;
+      };
 
       const baseSubject = {
         key: `Edit:${canonical}`,
@@ -108,6 +145,19 @@ export function createEditTool(opts: EditToolOptions): ToolDefinition<EditArgs> 
 
       // Argument shape is validated by the registry against SCHEMA, but the
       // per-mode requirements are conditional and checked here.
+      if (args.mode === undefined) {
+        return refusedExecution(
+          baseSubject,
+          baseDisplay,
+          errorResult(
+            'TOOL_INVALID_ARGS',
+            'Edit needs either oldString/newString/receiptId (to replace text) or content (to create a ' +
+              'new file). To replace the whole contents of a file that already exists, use Write with the ' +
+              'receiptId from a full Read.',
+          ),
+        );
+      }
+
       if (args.mode === 'replace') {
         if (typeof args.oldString !== 'string' || args.oldString === '') {
           return refusedExecution(
@@ -157,21 +207,22 @@ export function createEditTool(opts: EditToolOptions): ToolDefinition<EditArgs> 
           baseDisplay,
           errorResult(
             'TOOL_INVALID_ARGS',
-            `${displayPath} already exists. Read it and use mode "replace" instead.`,
+            `${displayPath} already exists. Use Edit with oldString/newString to change part of it, ` +
+              'or Write with a full-read receiptId to replace it entirely.',
           ),
         );
       }
 
       const proposal: EditProposal =
         args.mode === 'create'
-          ? { mode: 'create', path: canonical, displayPath, content: args.content }
+          ? { mode: 'create', path: canonical, displayPath, content: args.content! }
           : {
               mode: 'replace',
               path: canonical,
               displayPath,
-              oldString: args.oldString,
-              newString: args.newString,
-              receiptId: args.receiptId,
+              oldString: args.oldString!,
+              newString: args.newString!,
+              receiptId: args.receiptId!,
               replaceAll: args.replaceAll ?? false,
             };
 
@@ -184,8 +235,8 @@ export function createEditTool(opts: EditToolOptions): ToolDefinition<EditArgs> 
             display: displayPath,
             estimatedBytes:
               args.mode === 'create'
-                ? Buffer.byteLength(args.content, 'utf8')
-                : Buffer.byteLength(args.newString, 'utf8'),
+                ? Buffer.byteLength(args.content!, 'utf8')
+                : Buffer.byteLength(args.newString!, 'utf8'),
           },
           // Replacing requires reading the current bytes; that read stays inside
           // the kernel (hashing, diffing), so it is not a to-model read.

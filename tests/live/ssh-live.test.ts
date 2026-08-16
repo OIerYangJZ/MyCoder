@@ -474,6 +474,43 @@ describe('SSH file system (§14)', () => {
     assert.deepEqual(names, ['.hidden', 'plain']);
   });
 
+  test('removes a remote file, and an empty directory, but not a full one', async (t) => {
+    if (guard(t)) return;
+    await fixture.raw(
+      `cd ${shq(fixture.workspace)} && printf 'x' > remove-me.txt && mkdir -p empty-dir full-dir && touch full-dir/keep`,
+    );
+
+    await backend.fs.remove(remotePath('remove-me.txt'));
+    const gone = await fixture.raw(`test -e ${shq(`${fixture.workspace}/remove-me.txt`)}; echo $?`);
+    assert.equal(gone.stdout.trim(), '1', 'the remote file was not removed');
+
+    await backend.fs.remove(remotePath('empty-dir'), { directory: true });
+
+    // ADR-0016 refuses recursive removal, and the remote side must not be able
+    // to do something the local backend cannot: `rmdir` on a full directory
+    // fails rather than taking its contents with it.
+    await assert.rejects(() => backend.fs.remove(remotePath('full-dir'), { directory: true }));
+    const kept = await fixture.raw(`test -e ${shq(`${fixture.workspace}/full-dir/keep`)}; echo $?`);
+    assert.equal(kept.stdout.trim(), '0', 'a non-empty remote directory was destroyed');
+  });
+
+  test('renames a remote file, and refuses to clobber an existing destination', async (t) => {
+    if (guard(t)) return;
+    await fixture.raw(
+      `cd ${shq(fixture.workspace)} && printf 'move me\\n' > move-src.txt && printf 'occupied\\n' > move-taken.txt`,
+    );
+
+    await backend.fs.rename(remotePath('move-src.txt'), remotePath('move-dst.txt'));
+    const moved = await fixture.raw(`cat ${shq(`${fixture.workspace}/move-dst.txt`)}`);
+    assert.equal(moved.stdout, 'move me\n');
+
+    // The one behaviour a move tool must not have: `mv` replaces silently, so
+    // the backend tests first and fails instead.
+    await assert.rejects(() => backend.fs.rename(remotePath('move-dst.txt'), remotePath('move-taken.txt')));
+    const untouched = await fixture.raw(`cat ${shq(`${fixture.workspace}/move-taken.txt`)}`);
+    assert.equal(untouched.stdout, 'occupied\n', 'the destination was overwritten');
+  });
+
   test('detects external mutation, so freshness can be invalidated', async (t) => {
     if (guard(t)) return;
     await fixture.raw(`printf 'v1\\n' > ${shq(`${fixture.workspace}/mutating.txt`)}`);

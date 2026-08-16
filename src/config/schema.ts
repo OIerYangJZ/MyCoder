@@ -159,6 +159,17 @@ export interface TelemetryConfig {
 export interface EgressConfig {
   /** kind → allowed host globs. Intersected across layers. */
   allowedHosts?: Record<string, string[]>;
+  /**
+   * Treat RFC 2544 benchmarking space (`198.18.0.0/15`) as reachable for web
+   * reads (ADR-0017, §23).
+   *
+   * A weakening, so it merges with `strictBoolean`: a project config can turn it
+   * off and can never turn it on. It exists because some resolvers map *public*
+   * names into that range and NAT them onward, which makes the address check
+   * deny the entire internet on that machine — an explicit, auditable opt-in is
+   * the alternative to quietly dropping the check for everyone.
+   */
+  allowBenchmarkRange?: boolean;
 }
 
 export interface KernelConfig {
@@ -282,7 +293,14 @@ export function mergeConfig(lower: KernelConfig, higher: Partial<KernelConfig>):
         ? { endpoint: higher.telemetry?.endpoint ?? lower.telemetry.endpoint }
         : {}),
     },
-    egress: { allowedHosts: intersectHosts(lower.egress.allowedHosts, higher.egress?.allowedHosts) },
+    egress: {
+      allowedHosts: intersectHosts(lower.egress.allowedHosts, higher.egress?.allowedHosts),
+      allowBenchmarkRange: strictBoolean(
+        lower.egress.allowBenchmarkRange,
+        higher.egress?.allowBenchmarkRange,
+        false,
+      ),
+    },
     generatedPaths: [...new Set([...lower.generatedPaths, ...(higher.generatedPaths ?? [])])],
     warnings: [...lower.warnings, ...(higher.warnings ?? [])],
   };
@@ -630,10 +648,17 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
   if (egress) {
     const allowedHosts: Record<string, string[]> = {};
     for (const [kind, value] of Object.entries(egress)) {
+      // Not a host list: the one scalar this table carries.
+      if (kind === 'allow_benchmark_range') continue;
       const hosts = strList(value);
       if (hosts) allowedHosts[kind] = hosts;
     }
-    out.egress = { allowedHosts };
+    out.egress = {
+      allowedHosts,
+      ...(bool(egress.allow_benchmark_range) !== undefined
+        ? { allowBenchmarkRange: bool(egress.allow_benchmark_range)! }
+        : {}),
+    };
   }
 
   const generated = tableAt(table, 'generated_paths');

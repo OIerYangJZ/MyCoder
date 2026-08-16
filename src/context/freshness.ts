@@ -168,6 +168,93 @@ export class FreshnessLedger {
   }
 
   /**
+   * The whole-file variant of `check`, for operations with no `oldString`.
+   *
+   * `Write` (overwrite) and `Delete` destroy content rather than transform it,
+   * so uniqueness and match offsets are meaningless — but the other three
+   * questions are sharper, not softer. In particular **coverage must be `full`**:
+   * an exact replace against a partially-read file can only damage the region the
+   * model actually saw, whereas replacing or removing the whole file destroys the
+   * part it never looked at. That is the ADR-0006 hallucination case with the
+   * safety rail removed, so it is refused here (ADR-0016).
+   */
+  checkWhole(input: {
+    receiptId: string;
+    path: CanonicalPath;
+    currentContent: string;
+    operation: 'overwrite' | 'delete';
+  }): { ok: true; receipt: SourceReceipt } | { ok: false; failure: FreshnessFailure } {
+    const receipt = this.byId.get(input.receiptId);
+    if (!receipt) {
+      const latest = this.latestFor(input.path);
+      return {
+        ok: false,
+        failure: {
+          code: 'TOOL_INVALID_ARGS',
+          message:
+            `No read receipt "${input.receiptId}" is on file. Read the file first and pass the ` +
+            'receiptId from that result.' +
+            (latest ? ` The most recent receipt for this path is "${latest.receiptId}".` : ''),
+        },
+      };
+    }
+
+    if (receipt.path !== input.path) {
+      return {
+        ok: false,
+        failure: {
+          code: 'TOOL_INVALID_ARGS',
+          message: `Receipt "${input.receiptId}" is for a different file. Read the target file and use its receipt.`,
+        },
+      };
+    }
+
+    const currentHash = sha256Hex(input.currentContent);
+    if (currentHash !== receipt.contentHash) {
+      return {
+        ok: false,
+        failure: {
+          code: 'STALE_FILE',
+          message:
+            `The file changed after it was read, so this ${input.operation} would act on content that no ` +
+            'longer exists. Read the file again and reissue the call.',
+          currentHash: currentHash.slice(0, 12),
+          receiptHash: receipt.contentHash.slice(0, 12),
+        },
+      };
+    }
+
+    if (this.writesInFlight.has(input.path)) {
+      return {
+        ok: false,
+        failure: {
+          code: 'CONCURRENT_MODIFICATION',
+          message:
+            'Another tool call in this step is already modifying this file. Finish that one, then re-read ' +
+            'before this call.',
+        },
+      };
+    }
+
+    if (receipt.coverage.kind !== 'full') {
+      const { start, end } = receipt.coverage;
+      return {
+        ok: false,
+        failure: {
+          code: 'INSUFFICIENT_READ_COVERAGE',
+          message:
+            `This would ${input.operation} the whole file, but only lines ${start}-${end} were read. ` +
+            'Read the file in full first, or use Edit to change the region you have seen.',
+          sawLines: `${start}-${end}`,
+          neededLines: 'the whole file',
+        },
+      };
+    }
+
+    return { ok: true, receipt };
+  }
+
+  /**
    * The full pre-edit check.
    *
    * Returns match offsets on success so the edit engine does not have to search
