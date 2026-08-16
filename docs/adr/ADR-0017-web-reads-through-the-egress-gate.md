@@ -58,6 +58,41 @@ connects, and nothing in a zero-dependency HTTP client lets us pin the socket to
 the address we validated. It closes the accidental and the lazy case; it does not
 close a resolver that answers differently twice on purpose.
 
+### The address check has never been positively demonstrated on this project's infrastructure
+
+**Status: NOT APPLICABLE, decided in alpha.10 §15 after three milestones of
+restatement.** This paragraph is the downgrade, and it is here rather than in a
+status document because a reader of the ADR is the person entitled to know.
+
+Every negative control passes: four scopes — `loopback`, `metadata`, `private`,
+`link-local` — are refused, and the refusal names the scope. What has never been
+produced is the **positive** control: an approved host whose resolved address is
+genuinely global, reached under the strict default with no opt-in.
+
+The reason is infrastructural and unchanged since alpha.6. Both hosts available
+to this project answer every public name inside `198.18.0.0/15` (RFC 2544
+benchmarking space), which is genuinely non-global, so the check correctly
+refuses all of them. Re-verified on 2026-08-16, on both hosts:
+
+```text
+github.com   → 198.18.1.168
+example.com  → 198.18.2.134
+```
+
+`[egress] allow_benchmark_range` is the operator's explicit opt-in for exactly
+this network, and it is off by default and off in CI. A test that switched it on
+would be asserting that the _exception_ works, which is not the claim.
+
+Three milestones carried this as `NOT TESTED`, and `NOT TESTED` implies "we will
+get to it". After three restatements that implication is false, so the row is now
+`NOT APPLICABLE` with this reason attached. **A claim restated for the fourth
+time is not being tracked; it is being avoided.** The claim this project makes
+about `resolveHostScope` is therefore: it refuses four non-global scopes, each
+demonstrated, and its behaviour on a globally-routable answer is asserted by unit
+tests over the classifier and by no end-to-end run anywhere. One Linux host with
+an ordinary resolver closes it in about half an hour, and if one becomes
+available this paragraph should be deleted rather than amended.
+
 **Redirects are not followed.** The transport is asked for `redirect: 'manual'`
 and a 3xx comes back to the model as an error naming the `Location` host, with an
 instruction to re-issue the call against it if that is what it wanted. Following

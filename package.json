@@ -21,6 +21,7 @@
     "eval": "node evals/runners/run.ts",
     "eval:delegation-utility": "node evals/experiments/delegation-utility.ts",
     "eval:tool-utility": "node evals/experiments/tool-utility.ts",
+    "eval:undo-utility": "node evals/experiments/undo-utility.ts",
     "evidence": "node scripts/evidence.ts",
     "format": "prettier --write \"**/*.{ts,json,md,yml}\"",
     "format:check": "prettier --check \"**/*.{ts,json,md,yml}\"",

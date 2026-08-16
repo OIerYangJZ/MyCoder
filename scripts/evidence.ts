@@ -52,6 +52,7 @@ const MATRICES = [
   'docs/alpha7-evidence-matrix.md',
   'docs/alpha8-evidence-matrix.md',
   'docs/alpha9-evidence-matrix.md',
+  'docs/alpha10-evidence-matrix.md',
 ];
 
 /**

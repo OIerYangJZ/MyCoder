@@ -97,10 +97,17 @@ is the only step that verifies types. Run it before opening a PR — CI does.
   region it is changing.
 - Atomic writes with unified diffs, rollback metadata and line-ending
   preservation.
-- An append-only session event log, and resume that synthesises results for
-  interrupted tool calls.
+- **Undo** — reverse an edit, a turn's edits, or a file's, restoring the exact
+  prior bytes. It refuses rather than guessing when a file has changed since, it
+  reverses all of a set or none of it, and every result enumerates what it did
+  **not** cover: a foreign tool's writes, a shell command's side effects, and
+  anything from before the journal starts.
+- An append-only session event log that carries every mutation, and resume that
+  rebuilds the edit journal from it — so an undo survives a crash — and
+  synthesises results for interrupted tool calls.
 - Control commands (`/model`, `/goal`, `/loop`, `/permissions`, `/status`,
-  `/compact`, `/remote`) that change kernel state directly, never via the model.
+  `/compact`, `/remote`, `/undo`) that change kernel state directly, never via
+  the model.
 - Local, SSH and container execution backends behind one interface.
 - Skill / agent / hook discovery, where a definition can only narrow.
 

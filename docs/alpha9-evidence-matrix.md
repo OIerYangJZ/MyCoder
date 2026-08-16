@@ -11,10 +11,15 @@ and any matrix with no `Model provenance` section.
 
 Evidence prefixes: `test:` `suite:` `ci:` `eval:` `artifact:` `live:` `manual:`.
 
-> **Read §0 first.** One row is `NOT TESTED` and it is CLOSURE C's positive
+> **Read §0 first.** One row was `NOT TESTED` and it is CLOSURE C's positive
 > control, which needs a host that does not exist here. It is recorded rather
 > than omitted, because a matrix that only lists what was finished is the exact
 > failure mode alpha.8 was about.
+>
+> **Amended 2026-08-16 (alpha.10 §15).** That row is now `NOT APPLICABLE`. The
+> claim has not become true and nothing was tested to make it so — the status
+> changed because `NOT TESTED` was promising a fourth attempt this project has no
+> way to make. The reason travels with the row and with ADR-0017.
 
 ## Model provenance
 
@@ -236,16 +241,16 @@ the product_, not merely to be true. See `docs/alpha9-status.md`.
 
 ## 8. CLOSURE B and CLOSURE C
 
-| Requirement                                              | Status     | Evidence                                                                    | Notes                                                                                    |
-| -------------------------------------------------------- | ---------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| **CLOSURE B — a scripted arm that forces the hard-deny** | PASS       | artifact:docs/alpha9-status.md                                              | `runTask({forceScripted})`; runs for every requiresAttempt task in a live run            |
-| both arms are reported, neither substituting             | PASS       | artifact:docs/alpha9-status.md                                              | Separate section; the scripted arm is never folded into the live totals                  |
-| the scripted arm is a gate, not a measurement            | PASS       | artifact:evals/runners/run.ts                                               | A failure there returns 1 even in live mode: it is a fact about the kernel               |
-| every requiresAttempt task can be forced                 | PASS       | test:every requiresAttempt check belongs to a task with a script            | A task the arm silently skips looks exactly like one that passed                         |
-| NEGATIVE CONTROL: the arm is not vacuous                 | PASS       | test:NEGATIVE CONTROL: there is at least one such task                      | Deleting requiresAttempt everywhere would satisfy the row above                          |
-| **CLOSURE C — strict egress on a clean resolver**        | NOT TESTED | artifact:docs/alpha9-status.md                                              | Third milestone. No clean-resolver host exists; restated, not closed                     |
-| the negative direction of section 23 is tested           | PASS       | test:a host that resolves to a private address is refused before connecting | Loopback, private, metadata, benchmarking                                                |
-| CLOSURE C is restated rather than forgotten              | PASS       | artifact:docs/alpha9-status.md                                              | The plan's explicit instruction: "do not let a third milestone quietly forget it exists" |
+| Requirement                                              | Status         | Evidence                                                                    | Notes                                                                                                                                                                                                                  |
+| -------------------------------------------------------- | -------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **CLOSURE B — a scripted arm that forces the hard-deny** | PASS           | artifact:docs/alpha9-status.md                                              | `runTask({forceScripted})`; runs for every requiresAttempt task in a live run                                                                                                                                          |
+| both arms are reported, neither substituting             | PASS           | artifact:docs/alpha9-status.md                                              | Separate section; the scripted arm is never folded into the live totals                                                                                                                                                |
+| the scripted arm is a gate, not a measurement            | PASS           | artifact:evals/runners/run.ts                                               | A failure there returns 1 even in live mode: it is a fact about the kernel                                                                                                                                             |
+| every requiresAttempt task can be forced                 | PASS           | test:every requiresAttempt check belongs to a task with a script            | A task the arm silently skips looks exactly like one that passed                                                                                                                                                       |
+| NEGATIVE CONTROL: the arm is not vacuous                 | PASS           | test:NEGATIVE CONTROL: there is at least one such task                      | Deleting requiresAttempt everywhere would satisfy the row above                                                                                                                                                        |
+| **CLOSURE C — strict egress on a clean resolver**        | NOT APPLICABLE | artifact:docs/alpha9-status.md                                              | Third milestone at the time. **Downgraded to NOT APPLICABLE by alpha.10 §15** — both hosts NAT public names into 198.18/15, re-verified 2026-08-16, and a fourth restatement was declined. Reason recorded in ADR-0017 |
+| the negative direction of section 23 is tested           | PASS           | test:a host that resolves to a private address is refused before connecting | Loopback, private, metadata, benchmarking                                                                                                                                                                              |
+| CLOSURE C is restated rather than forgotten              | PASS           | artifact:docs/alpha9-status.md                                              | The plan's explicit instruction: "do not let a third milestone quietly forget it exists"                                                                                                                               |
 
 ---
 

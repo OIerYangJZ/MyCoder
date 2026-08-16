@@ -15,7 +15,13 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createTestWorkspace, type TestWorkspace } from '../helpers/workspace.ts';
+import {
+  agentFile,
+  createTestWorkspace,
+  delegateStep,
+  isChildRequest,
+  type TestWorkspace,
+} from '../helpers/workspace.ts';
 import { FakeModel, type FakeStep } from '../../src/model/adapters/fake.ts';
 import type { Kernel } from '../../src/kernel.ts';
 import type { KernelEvent } from '../../src/session/events.ts';
@@ -269,6 +275,74 @@ describe('every mutating tool reaches the event log', () => {
         const edited = await events(ws, 'file.edited');
         assert.equal(edited.length, expected, `${name} changed the workspace without appending file.edited`);
       }
+    } finally {
+      await ws.cleanup();
+    }
+  });
+});
+
+/**
+ * ADR-0025 §7 — a child's edits enter the parent's journal, attributed.
+ *
+ * The answer was already in the code and had never been stated: parent and child
+ * share one `ToolRegistry`, so they share the tool instances that hold the
+ * journal. What was missing is the *attribution* — without a `delegationId` on
+ * the entry the parent cannot tell its own edits from a subagent's, which
+ * matters most in the case alpha.4 §29 already worried about: a child
+ * interrupted mid-task may have edited files and reported none of them, and the
+ * parent is the only thing left that can reverse them.
+ */
+describe("a delegated child's edits are the parent's to see", () => {
+  test("a child's edits are journalled under its delegation id", async () => {
+    let childStep = 0;
+    let parentStep = 0;
+    let ws: TestWorkspace | undefined;
+
+    ws = await createTestWorkspace({
+      files: {
+        'src/a.ts': 'export const a = 1;\n',
+        '.mycoder/agents/worker.md': agentFile({
+          name: 'worker',
+          description: 'Implements small changes.',
+          profile: 'workspace-dev',
+          tools: ['Read', 'Write'],
+          instructions: 'WORKER_MARKER: make the smallest change that works.',
+        }),
+      },
+      approvals: Array.from({ length: 8 }, () => ({ decision: 'allow' as const, scope: 'once' as const })),
+      responder: (request) => {
+        if (isChildRequest(request, 'worker')) {
+          childStep += 1;
+          if (childStep === 1) {
+            // A create, not a replace: the child has its own `FreshnessLedger`
+            // (delegation gives it one, deliberately), so a receipt taken from the
+            // parent's would not be the child's. What is under test is where the
+            // journal entry lands, not the receipt discipline.
+            return {
+              kind: 'tools',
+              calls: [{ name: 'Write', arguments: { path: 'src/b.ts', content: 'export const b = 2;\n' } }],
+            };
+          }
+          return { kind: 'final', text: 'changed it' };
+        }
+        parentStep += 1;
+        return parentStep === 1
+          ? delegateStep('worker', 'Create src/b.ts exporting b = 2.')
+          : { kind: 'final', text: 'the worker did it' };
+      },
+    });
+
+    try {
+      await ws.kernel.session.runTurn('have the worker change it');
+      assert.equal(await ws.file('src/b.ts'), 'export const b = 2;\n', 'the child made the edit');
+
+      const entries = ws.kernel.editJournal.all().filter((e) => e.delegationId !== undefined);
+      assert.equal(entries.length, 1, "the child's edit is in the parent's journal, attributed");
+      assert.equal(entries[0]!.displayPath, 'src/b.ts');
+
+      const edited = await events(ws, 'file.edited');
+      assert.equal(edited.length, 1);
+      assert.equal(typeof edited[0]!.delegationId, 'string', 'the event is tagged with the delegation');
     } finally {
       await ws.cleanup();
     }

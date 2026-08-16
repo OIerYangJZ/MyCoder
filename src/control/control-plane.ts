@@ -862,6 +862,8 @@ function handleHelp(args: string[], commands: readonly string[]): ControlResult 
       '  /remote [list|connect <name>|status|disconnect]',
       '  /skills [list|use <name> [--turn|--run]]  activate a skill; it can only narrow',
       '  /agents, /hooks                         what is discovered and how it is constrained',
+      '  /undo [last <n>|path <f>|turn|list]     reverse edits; all of them or none, and it',
+      '                                          always says what it could not reach',
       '  /cancel                                 stop the current turn',
       '',
       `Registered: ${commands.map((c) => `/${c}`).join(' ')}`,
