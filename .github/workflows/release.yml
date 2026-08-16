@@ -270,8 +270,17 @@ jobs:
           fi
 
           # And it must say what to do, not merely that something is wrong.
-          mycoder doctor 2>&1 | grep -q 'config.toml' || {
-            echo "doctor did not name the file to create"; exit 1; }
+          #
+          # Captured into a variable rather than piped into grep. Under
+          # `set -o pipefail` — which this step sets, deliberately — a pipeline
+          # takes the last non-zero status in it, so `mycoder doctor | grep -q`
+          # inherits doctor's exit 3 and reports a failure even when grep matched.
+          # The assertion would have been unfalsifiable in the useful direction:
+          # it could only ever fail.
+          doctor_output=$(mycoder doctor 2>&1 || true)
+          echo "$doctor_output" | grep -q 'config.toml' || {
+            echo "doctor did not name the file to create"; echo "$doctor_output"; exit 1; }
+          echo "doctor blocked with exit 3 and named the file to create"
 
       - uses: actions/upload-artifact@v4
         with:
