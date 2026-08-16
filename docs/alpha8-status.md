@@ -89,7 +89,7 @@ dogfoods, ran from a git checkout, where the same code works perfectly.
 
 The ADR was re-decided in place, with the refuted reasoning kept: `tsc` emits
 `dist/` at pack time, the package ships both `dist/` (what runs) and `src/` (what
-a reader audits), and `pnpm pack` rebuilds `dist/` every time so a stale one cannot
+a reader audits), and `pnpm release:pack` rebuilds `dist/` every time so a stale one cannot
 ship.
 
 **Defect 3 — the installed command did nothing and reported success.** `npm
@@ -165,10 +165,10 @@ test-methodology           2   (a suite passing for the wrong reason; a security
                                task that stopped exercising the boundary)
 boundary failures          0
 
-Thirteen, not ten. Three more arrived *after* the tag — placing a real credential,
-running the eval gate, and running the release workflow — all from doing the real
-thing rather than testing it, which is the same pattern as the two that justified
-the milestone in the first place.
+Fourteen, not ten. Four more arrived *after* the tag — placing a real credential,
+running the eval gate, and two from running the release workflow — all from doing
+the real thing rather than testing it, which is the same pattern as the two that
+justified the milestone in the first place.
 ```
 
 §30 says: "If alpha.8 finds mostly install/config defects, that is evidence the

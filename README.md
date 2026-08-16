@@ -38,7 +38,7 @@ Node **22.18 or newer**, and nothing else — **zero runtime dependencies**
 first-run walkthrough.
 
 ```bash
-pnpm pack                            # build the artifact
+pnpm release:pack                    # build the artifact
 npm install -g ./mycoder-0.1.0.tgz
 mycoder doctor                       # ready, or blocked with the exact remedy
 ```

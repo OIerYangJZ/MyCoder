@@ -216,7 +216,7 @@ jobs:
       # not describe its contents is worse than one with no commit at all,
       # because it looks checkable (ADR-0019 §6).
       - name: Pack
-        run: pnpm pack --release | tee pack.txt
+        run: pnpm release:pack --release | tee pack.txt
 
       # The install path a real user takes, on a machine with no checkout of this
       # repository — §25's shape, as far as CI can carry it.

@@ -2,8 +2,14 @@
 /**
  * Build the distribution artifact (ADR-0019 §6).
  *
- *   pnpm pack              build a tarball from the current tree
- *   pnpm pack --release    the same, but refuse if the tree is dirty
+ *   pnpm release:pack              build a tarball from the current tree
+ *   pnpm release:pack --release    the same, but refuse if the tree is dirty
+ *
+ * Named `release:pack` and not `pack`, because pnpm has a **builtin** `pnpm pack`
+ * that shadows a script of that name and consumes the flags before the script
+ * sees them — `pnpm pack --release` fails with `Unknown option: 'release'`. That
+ * was invisible until the release workflow ran it for real; every local run had
+ * been `node scripts/pack.ts`.
  *
  * The interesting part is not the tarball — `npm pack` makes that. It is
  * `build-info.json`, which is what binds evidence to code.

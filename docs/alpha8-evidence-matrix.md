@@ -56,18 +56,18 @@ code was written.
 
 ## 1. Distribution artifact (§8, §9, ADR-0019)
 
-| Requirement                                         | Status | Evidence                                                                                        | Notes                                                           |
-| --------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| ADR-0019 accepted, all six questions answered       | PASS   | artifact:docs/adr/ADR-0019-distribution-and-runtime-version-policy.md                           | §1 was decided, refuted by the dogfood, and re-decided in place |
-| an installable artifact exists                      | PASS   | manual:pnpm pack produced mycoder-0.1.0.tgz, installed with npm install -g on the evidence host | 360 files                                                       |
-| **the published form actually runs when installed** | PASS   | manual:npm install -g on a host with no checkout, then mycoder --version and a full session     | Defect 2 — see §8 below; this row was FAIL before it            |
-| package contains nothing forbidden                  | PASS   | test:contains nothing forbidden and nothing is missing                                          | A content assertion on `npm pack`, not an `.npmignore` review   |
-| every forbidden rule can actually reject something  | PASS   | test:NEGATIVE CONTROL: every forbidden rule rejects something                                   | Nine rules, nine planted paths                                  |
-| a missing required file is detected                 | PASS   | test:NEGATIVE CONTROL: a missing required file is reported                                      |                                                                 |
-| `reference/**` and `research/**` never ship         | PASS   | test:NEGATIVE CONTROL: every forbidden rule rejects something                                   | spec §23 on a consumer's disk                                   |
-| `tests/**` never ships                              | PASS   | test:NEGATIVE CONTROL: every forbidden rule rejects something                                   | The canary fixtures are deliberately credential-shaped          |
-| the artifact records the commit it was built from   | PASS   | artifact:scripts/pack.ts                                                                        | `build-info.json`; `--release` refuses a dirty tree             |
-| a supported-platform matrix is documented           | PASS   | artifact:docs/installing.md                                                                     | Tier 1 Linux/macOS, tier 2 Windows, with what "supported" means |
+| Requirement                                         | Status | Evidence                                                                                                | Notes                                                           |
+| --------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| ADR-0019 accepted, all six questions answered       | PASS   | artifact:docs/adr/ADR-0019-distribution-and-runtime-version-policy.md                                   | §1 was decided, refuted by the dogfood, and re-decided in place |
+| an installable artifact exists                      | PASS   | manual:pnpm release:pack produced mycoder-0.1.0.tgz, installed with npm install -g on the evidence host | 360 files                                                       |
+| **the published form actually runs when installed** | PASS   | manual:npm install -g on a host with no checkout, then mycoder --version and a full session             | Defect 2 — see §8 below; this row was FAIL before it            |
+| package contains nothing forbidden                  | PASS   | test:contains nothing forbidden and nothing is missing                                                  | A content assertion on `npm pack`, not an `.npmignore` review   |
+| every forbidden rule can actually reject something  | PASS   | test:NEGATIVE CONTROL: every forbidden rule rejects something                                           | Nine rules, nine planted paths                                  |
+| a missing required file is detected                 | PASS   | test:NEGATIVE CONTROL: a missing required file is reported                                              |                                                                 |
+| `reference/**` and `research/**` never ship         | PASS   | test:NEGATIVE CONTROL: every forbidden rule rejects something                                           | spec §23 on a consumer's disk                                   |
+| `tests/**` never ships                              | PASS   | test:NEGATIVE CONTROL: every forbidden rule rejects something                                           | The canary fixtures are deliberately credential-shaped          |
+| the artifact records the commit it was built from   | PASS   | artifact:scripts/pack.ts                                                                                | `build-info.json`; `--release` refuses a dirty tree             |
+| a supported-platform matrix is documented           | PASS   | artifact:docs/installing.md                                                                             | Tier 1 Linux/macOS, tier 2 Windows, with what "supported" means |
 
 ---
 

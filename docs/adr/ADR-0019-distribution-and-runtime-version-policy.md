@@ -69,7 +69,7 @@ The package ships **both** `dist/` and `src/`. That is not indecision:
   what you ran" is worth the megabyte.
 
 The original objection is answered rather than abandoned. `dist/` is derived
-mechanically from `src/` at a commit that `build-info.json` records; `pnpm pack`
+mechanically from `src/` at a commit that `build-info.json` records; `pnpm release:pack`
 deletes and rebuilds it every time, so a stale `dist/` cannot ship; and the
 release workflow rebuilds it at the checked-out commit and compares. ADR-0009 is
 untouched — `typescript` was already a devDependency, and the _runtime_ dependency
@@ -185,7 +185,13 @@ artifact" checkable by someone holding only the artifact: they read the commit,
 and every matrix row is re-runnable at it.
 
 A packed tree with uncommitted changes records `"commit": "<sha>-dirty"` and
-`pnpm pack` refuses outright when `--release` is passed. A release artifact from
+`pnpm release:pack --release` refuses outright on a dirty tree.
+
+The script is **not** called `pack`: pnpm has a builtin `pnpm pack`, which shadows
+a script of that name and swallows the flags before they reach it. The first real
+run of the release workflow failed with `Unknown option: 'release'` for exactly
+that reason — invisible locally, where it had only ever been run as
+`node scripts/pack.ts`. A release artifact from
 a dirty tree is the same failure as a tag on a working tree.
 
 ### 7. Supported-platform matrix, and what "supported" means
