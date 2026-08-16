@@ -16,7 +16,7 @@ import * as path from 'node:path';
 
 import { PROJECT_DIR, projectDir } from './app.ts';
 import { canonicalize, displayPath, type CanonicalPath } from './util/paths.ts';
-import { toKernelError } from './util/errors.ts';
+import { kernelError, KernelErrorException, toKernelError } from './util/errors.ts';
 import { newSessionId, type SessionId } from './util/ids.ts';
 import { createLogger, installLogSanitizer, type Logger, type LogLevel } from './util/logger.ts';
 import { systemClock, type Clock } from './util/clock.ts';
@@ -92,6 +92,8 @@ import { replayTerminalState, type SessionTerminalState } from './session/termin
 import { DelegationService, ROOT_SCOPE, type DelegateFn } from './session/delegation.ts';
 
 import { loadConfig, projectRulesProfile } from './config/config.ts';
+import { disclosures } from './config/weakening.ts';
+import { assessReadiness } from './config/first-run.ts';
 import { loadRemotes } from './config/remotes.ts';
 import type { KernelConfig, ProviderEndpointConfig } from './config/schema.ts';
 
@@ -254,6 +256,48 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   });
   const config = loaded.config;
 
+  // alpha.8 §10. Refuse before building anything else, because the two failures
+  // this prevents both happen *later* and both look like something other than
+  // what they are: a fresh install answering its first task from `FakeModel` and
+  // exiting 0, and an alias typo surfacing as a model error mid-turn.
+  //
+  // Deliberately before the backend is constructed. Starting a container, probing
+  // Landlock or opening an SSH connection for a session that has nothing to talk
+  // to is work whose only possible outcome is a slower error message.
+  const readiness = assessReadiness({
+    config,
+    sources: loaded.sources,
+    explicitModelDefault: loaded.explicitModelDefault,
+    userConfigDir: dirs.config,
+    ...(opts.fakeModel ? { injectedFakeModel: true } : {}),
+    ...(opts.modelOverride ? { aliasOverride: opts.modelOverride } : {}),
+  });
+  if (!readiness.ready) {
+    throw new KernelErrorException(
+      kernelError(
+        readiness.problem === 'no-provider-configured' || readiness.problem === 'ambiguous-default'
+          ? 'PROVIDER_NOT_CONFIGURED'
+          : 'CONFIG_INVALID',
+        readiness.message,
+        {
+          blame: 'user',
+          retryable: false,
+          safeDetails: { problem: readiness.problem, remedy: readiness.remedy },
+        },
+      ),
+    );
+  }
+  if (readiness.inferred) {
+    // Inferred, not assumed: the session says which alias it picked and why,
+    // because "it used the only one you configured" is obvious in hindsight and
+    // invisible in the moment.
+    config.model.default = readiness.inferred;
+    config.warnings.push(
+      `No [model] default is set, so the only configured alias "${readiness.inferred}" is being used. ` +
+        'Set [model] default to choose explicitly.',
+    );
+  }
+
   // Provider ids the *user* declared. Only these may open an egress destination.
   const userProviders = new Set(loaded.userProviderIds);
 
@@ -298,6 +342,62 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     configDir: dirs.config,
     warnings: config.warnings,
   });
+
+  // alpha.8 §10: the credential for the model this session will *use* must work,
+  // or the session does not start.
+  //
+  // Until alpha.8 every credential problem was a warning and the session started
+  // anyway, on the reasoning that "the user might have wanted to fix the file"
+  // from inside it. That reasoning has expired: `mycoder doctor` and
+  // `--print-config` now answer without building a kernel, so the case it was
+  // protecting is served without the failure mode it produced — a session that
+  // prints a status screen, accepts a task, and fails on the first turn with
+  // `MODEL_AUTH_ERROR`. That is §10's "an empty prompt that fails on the first
+  // turn", listed there as a thing that must never happen.
+  //
+  // Scoped to the *selected* provider on purpose. A config with three providers,
+  // one of which has a bad key file, should still let you work with the other
+  // two; blocking on any broken credential anywhere would punish people for
+  // keeping configuration around.
+  const activeAlias = config.model.default ?? 'fake';
+  const activeProvider = config.model.aliases?.[activeAlias]?.provider;
+  if (activeProvider) {
+    const credential = credentials.byProvider.get(activeProvider);
+    if (!credential?.source) {
+      // The specific reason is already in `config.warnings`, put there by
+      // `resolveProviderCredentials` with the remedy attached — the mode, the
+      // `chmod` line, or the variable that is not set. Repeating it here would
+      // mean two places to keep true, so it is quoted rather than rewritten.
+      // Trim the "requests will fail" tail: it is accurate in the warning, which
+      // also covers providers this session is not using, and misleading here,
+      // where there will be no requests because there will be no session.
+      const detail = config.warnings
+        .find((w) => w.includes(`provider "${activeProvider}"`))
+        ?.replace(
+          /\s*(Requests to it will fail with MODEL_AUTH_ERROR\.?|requests to it will fail with MODEL_AUTH_ERROR)\s*$/,
+          '',
+        );
+      throw new KernelErrorException(
+        kernelError(
+          'PROVIDER_NOT_CONFIGURED',
+          `The model "${activeAlias}" uses provider "${activeProvider}", which has no usable credential.`,
+          {
+            blame: 'user',
+            retryable: false,
+            safeDetails: {
+              problem: 'credential-unusable',
+              provider: activeProvider,
+              remedy:
+                (detail ? `${detail}\n\n` : '') +
+                'Run `mycoder doctor` for the full picture. Nothing was changed: the kernel never\n' +
+                'repairs a credential file, because a tool that silently fixes a permission problem\n' +
+                'trains people not to look at it.',
+            },
+          },
+        ),
+      );
+    }
+  }
 
   const protectedPaths = new ProtectedPaths({
     home: dirs.home,
@@ -504,18 +604,17 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       };
     }
   }
-  // alpha.7 §44: a configured relaxation of the address classifier is disclosed,
-  // not left to be discovered. It reaches the startup warnings (and therefore
-  // `/status`), so a session running with a weakened check says so before it does
-  // anything. §43 keeps it user-config-only — `strictBoolean` in the merge means a
-  // repository can turn it off and can never turn it on.
-  if (config.egress.allowBenchmarkRange === true) {
-    config.warnings.push(
-      'Web reads accept RFC 2544 benchmarking addresses (198.18.0.0/15) because ' +
-        '[egress] allow_benchmark_range is enabled in your user config. Loopback, RFC1918, link-local ' +
-        'and cloud-metadata addresses remain denied.',
-    );
-  }
+  // alpha.7 §44 generalised by alpha.8 §12: *every* configured relaxation is
+  // disclosed, not left to be discovered. These reach the startup warnings — and
+  // therefore `/status` — so a session running with a weakened boundary says so
+  // before it does anything.
+  //
+  // The list lives in `config/weakening.ts` rather than here because §12 asks for
+  // an audit of every key recorded as evidence, and a table can be asserted
+  // against the merge function while a series of `if` statements cannot. Adding a
+  // weakening key without adding its row is what
+  // `tests/unit/config-weakening.test.ts` fails on.
+  config.warnings.push(...disclosures(config));
 
   const egress = new DefaultEgressGate({
     policy: egressPolicy,

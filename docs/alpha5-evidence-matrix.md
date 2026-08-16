@@ -31,6 +31,22 @@ Evidence prefixes: `test:` `suite:` `ci:` `eval:` `artifact:` `live:` `manual:`.
 > isolation on macOS or Windows, host-scoped network allowlist enforcement, and
 > anything about container or kernel zero-days.
 
+## Model provenance
+
+**This matrix is almost entirely about enforcement, not behaviour**, and
+enforcement rows do not depend on which model is driving: a container either has
+a route table or it does not.
+
+The exceptions, and their model:
+
+- the long-session dogfood rows — **`deepseek-chat` (DeepSeek, `openai-chat`)**,
+  single-model;
+- the eval rows carried over from alpha.3 — the same.
+
+Host tiers are already distinguished in the "what live means" note above: macOS
+Docker Desktop for the maintainer's runs, and a **native Linux Docker Engine** in
+CI, which is the only tier the §37 isolation claim rests on.
+
 ---
 
 ## 0. Preflight (§58)

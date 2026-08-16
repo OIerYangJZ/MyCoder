@@ -87,6 +87,39 @@ jobs:
             console.log("no provider credentials in the CI environment");
           '
 
+  packaging:
+    name: Distribution Artifact
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.8 §9. A *content* assertion on what `npm pack` produces, not a
+      # review of `files` — the two answers diverge exactly when a rule is subtly
+      # wrong, which is the only case worth a CI job. A packaging bug that ships
+      # `reference/**` violates spec §23 on a consumer's disk, and one that ships
+      # `tests/**` puts our canary secrets into every secret scanner's index.
+      - run: pnpm install --frozen-lockfile
+
+      # `dist/` is what an installed package runs (ADR-0019 §1, revised), so the
+      # content assertion has to run against a built tree — checking an unbuilt
+      # one would assert something about a tarball nobody can install.
+      - run: pnpm build
+
+      - run: pnpm package:check
+
+      # ADR-0019 §3: the entry shim has to parse on a runtime that cannot strip
+      # types, which is the whole reason it is not TypeScript.
+      - run: pnpm test:packaging
+
   lint-selftest:
     name: Linter Self-Tests
     runs-on: ubuntu-latest
@@ -247,6 +280,60 @@ jobs:
         with:
           name: container-enforcement-log
           path: container-test.log
+          retention-days: 14
+
+  native-sandbox:
+    name: Native Linux Sandbox (Landlock + seccomp)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # alpha.7's headline claim, and alpha.8 §18's second `_REQUIRED` tier. The
+      # runner is a native Linux kernel, which is the only place Landlock can be
+      # measured rather than assumed — `probeLauncher` asks the machine and the
+      # backend claims exactly what it answers.
+      - name: Record the kernel and Landlock state for the artifact
+        run: |
+          uname -a
+          cat /sys/kernel/security/lsm 2>/dev/null || echo "no /sys/kernel/security/lsm"
+          sysctl kernel.yama.ptrace_scope 2>/dev/null || true
+
+      # ADR-0020: an explicit build step, never a postinstall. The manifest it
+      # writes is what the backend verifies at startup.
+      - run: pnpm build:sandbox
+
+      # And the identity check, from the outside, before anything trusts it.
+      - run: node bin/mycoder.mjs --sandbox-status
+
+      # KERNEL_NATIVE_REQUIRED=1 is the §65/§18 rule in one variable: if Landlock
+      # is unavailable these suites **fail** instead of skipping. A green CI whose
+      # native evidence silently skipped is how an unearned claim reaches a
+      # release note — the same reason the container job sets its own.
+      - name: Native sandbox, composition and cross-backend conformance
+        env:
+          KERNEL_NATIVE: '1'
+          KERNEL_NATIVE_REQUIRED: '1'
+        run: |
+          node --test --experimental-strip-types \
+            "tests/live/native-sandbox.test.ts" \
+            "tests/live/native-composition.test.ts" \
+            "tests/integration/backend-conformance.test.ts" 2>&1 | tee native-test.log
+
+      - name: Upload the native test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-enforcement-log
+          path: native-test.log
           retention-days: 14
 
   delegation:

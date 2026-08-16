@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 
 import { AnthropicMessagesAdapter } from '../../src/model/adapters/anthropic.ts';
 import { OpenAiChatAdapter } from '../../src/model/adapters/openai-chat.ts';
-import { OpenAiResponsesAdapter } from '../../src/model/adapters/openai-responses.ts';
+import { OpenAiResponsesAdapter, streamError } from '../../src/model/adapters/openai-responses.ts';
 import { newAdapterState, type ProtocolAdapter } from '../../src/model/runtime.ts';
 import { collectModelEvents, type ModelEvent, type ModelRequest } from '../../src/model/ir.ts';
 import { ModelRegistry } from '../../src/model/profiles.ts';
@@ -443,5 +443,98 @@ describe('model profiles are separate from provider endpoints', () => {
     const usable = ModelRegistry.usableContextTokens(resolved.profile);
     assert.ok(usable < resolved.profile.contextWindow);
     assert.ok(usable > 0);
+  });
+});
+
+describe('a streamed provider error is attributable (alpha.8 §20, §23)', () => {
+  /**
+   * The defect the second provider found, and the reason §23 asks that every
+   * failure be attributable to ADAPTER_BUG / MODEL_* / ENVIRONMENT_ERROR.
+   *
+   * An OpenAI account with no credit streams a well-formed
+   * `event: error` frame carrying `insufficient_quota`. The adapter read
+   * `payload.message` — one level above where the API puts it — found nothing,
+   * and reported `MODEL_INVALID_RESPONSE: Provider stream error.` with
+   * `blame: 'provider'`. Every part of that sends the reader somewhere wrong: the
+   * provider is working, the account is unpaid, and "invalid response" is an
+   * invitation to go and debug a parser.
+   *
+   * No fixture caught it because no fixture had ever contained a streamed error,
+   * and no live run had reached one: alpha.2's live validation of this protocol
+   * used a funded account. It took a *second* provider — specifically, a second
+   * provider that failed — to reach the path at all.
+   */
+  const cases: Array<{ name: string; payload: Record<string, unknown>; code: string; blame: string }> = [
+    {
+      name: 'an unpaid account is the account holder, not the provider',
+      payload: {
+        type: 'error',
+        error: {
+          type: 'insufficient_quota',
+          code: 'insufficient_quota',
+          message: 'You exceeded your current quota, please check your plan and billing details.',
+        },
+      },
+      code: 'MODEL_AUTH_ERROR',
+      blame: 'user',
+    },
+    {
+      name: 'a rate limit is the provider, and is retryable',
+      payload: { type: 'error', error: { code: 'rate_limit_exceeded', message: 'Rate limit reached' } },
+      code: 'MODEL_RATE_LIMIT',
+      blame: 'provider',
+    },
+    {
+      name: 'an overflow is ours: the kernel packed the request',
+      payload: {
+        type: 'error',
+        error: { code: 'context_length_exceeded', message: 'maximum context length is 400000 tokens' },
+      },
+      code: 'MODEL_CONTEXT_OVERFLOW',
+      blame: 'kernel',
+    },
+    {
+      name: 'a rejected key is the user, and not retryable',
+      payload: { type: 'error', error: { code: 'invalid_api_key', message: 'Incorrect API key provided' } },
+      code: 'MODEL_AUTH_ERROR',
+      blame: 'user',
+    },
+  ];
+
+  for (const testCase of cases) {
+    test(testCase.name, () => {
+      const err = streamError(testCase.payload);
+      assert.equal(err.code, testCase.code);
+      assert.equal(err.blame, testCase.blame);
+      assert.notEqual(err.message, 'Provider stream error.', 'the provider said why; say it');
+    });
+  }
+
+  test('an unrecognised code keeps the message and records the code', () => {
+    // Unattributable is a legitimate outcome — §23's `UNKNOWN` — but it must
+    // carry what the provider said so the next reader can classify it.
+    const err = streamError({ type: 'error', error: { code: 'something_new', message: 'a novel failure' } });
+    assert.equal(err.code, 'MODEL_INVALID_RESPONSE');
+    assert.equal(err.message, 'a novel failure');
+    assert.equal(err.safeDetails?.providerCode, 'something_new');
+  });
+
+  test('NEGATIVE CONTROL: reading the old, wrong nesting level finds nothing', () => {
+    // The assertion that makes the fix meaningful rather than incidental. If
+    // `payload.message` had ever been populated, the original code would have
+    // worked and this whole section would be describing a problem that did not
+    // exist.
+    const payload = {
+      type: 'error',
+      error: { code: 'insufficient_quota', message: 'You exceeded your current quota' },
+    };
+    assert.equal((payload as Record<string, unknown>).message, undefined);
+    assert.match(streamError(payload).message, /exceeded your current quota/);
+  });
+
+  test('a completely empty error frame still produces something actionable', () => {
+    const err = streamError({ type: 'error' });
+    assert.equal(err.code, 'MODEL_INVALID_RESPONSE');
+    assert.ok(err.message.length > 0);
   });
 });

@@ -27,6 +27,21 @@ Evidence prefixes: `test:` `suite:` `ci:` `eval:` `artifact:` `live:` `manual:`.
 > — the workspace jail is a path check, not a boundary — and hostile-network
 > behaviour. See `docs/alpha3-ssh-validation.md`.
 
+## Model provenance
+
+**Every behavioural number in this matrix was measured on a single model:
+`deepseek-chat` (DeepSeek, `openai-chat` protocol), N=5.** That includes the
+live golden-set row (10/15 solved, 35/35 kernel-correct) and every `manual:` row
+describing a real turn.
+
+They are **single-model claims**. alpha.8 §22 is explicit that earlier claims must
+not be retro-fitted as multi-model, so nothing here is asserted to replicate —
+alpha.8 re-ran three suites on a second model and reports them side by side in
+`docs/alpha8-evidence-matrix.md` rather than merging them into these numbers.
+
+Live SSH rows were produced on the `linux-vm` host (Ubuntu 26.04 aarch64); the
+loopback `sshd` fixture rows are marked as such in their notes.
+
 ---
 
 ## 1. Credential persistence (§3.1, §9, §45)

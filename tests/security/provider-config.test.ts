@@ -80,7 +80,12 @@ describe('user config may define a provider endpoint', () => {
   });
 
   test('the kernel resolves the alias end to end', async () => {
+    // The variable has to be *set*: since alpha.8 §10 a session whose selected
+    // provider has no usable credential refuses to start, rather than starting
+    // and failing on the first request. This test is about alias resolution, so
+    // it supplies the credential a real user would.
     const f = await fixture({ user: USER_PROVIDER });
+    process.env.DEEPSEEK_API_KEY ??= 'sk-not-a-real-key-for-resolution-only';
     try {
       const kernel = await createKernel({
         workspaceDir: f.workspace,
@@ -115,7 +120,14 @@ describe('user config may define a provider endpoint', () => {
     }
   });
 
-  test('a missing credential is a visible warning, not a silent failure', async () => {
+  test('a missing credential blocks the start and names the variable', async () => {
+    // Until alpha.8 this was a *warning* and the session started, on the
+    // reasoning that the user might want to fix the key from inside it. alpha.8
+    // §10 forbids that outcome — "an empty prompt that fails on the first turn" —
+    // and `mycoder doctor` now serves the case the warning was protecting without
+    // starting a session that cannot work. The property is unchanged and
+    // stronger: it is not a silent failure.
+    //
     // The variable is named per-run rather than reusing DEEPSEEK_API_KEY: this
     // test asserts what happens when a credential is *absent*, and anyone who
     // has run the live suite has that one exported. A test that only passes on
@@ -124,25 +136,33 @@ describe('user config may define a provider endpoint', () => {
     const absentVar = `MYCODER_ABSENT_KEY_${process.pid}`;
     const f = await fixture({ user: USER_PROVIDER.replace('DEEPSEEK_API_KEY', absentVar) });
     try {
-      const kernel = await createKernel({
-        workspaceDir: f.workspace,
-        dirs: {
-          config: f.userConfigDir,
-          data: path.join(f.base, 'data'),
-          cache: path.join(f.base, 'cache'),
-          home: f.base,
+      assert.equal(process.env[absentVar], undefined, 'fixture precondition');
+
+      await assert.rejects(
+        () =>
+          createKernel({
+            workspaceDir: f.workspace,
+            dirs: {
+              config: f.userConfigDir,
+              data: path.join(f.base, 'data'),
+              cache: path.join(f.base, 'cache'),
+              home: f.base,
+            },
+            logLevel: 'silent',
+          }),
+        (e: unknown) => {
+          const err = (e as { kernelError?: { code: string; safeDetails?: Record<string, unknown> } })
+            .kernelError;
+          assert.equal(err?.code, 'PROVIDER_NOT_CONFIGURED');
+          assert.equal(err?.safeDetails?.problem, 'credential-unusable');
+          assert.match(
+            String(err?.safeDetails?.remedy),
+            new RegExp(absentVar),
+            'the user should be told which variable is missing',
+          );
+          return true;
         },
-        logLevel: 'silent',
-      });
-      try {
-        assert.equal(process.env[absentVar], undefined, 'fixture precondition');
-        assert.ok(
-          kernel.config.warnings.some((w) => w.includes(absentVar)),
-          'the user should be told which variable is missing, before a request fails',
-        );
-      } finally {
-        await kernel.shutdown();
-      }
+      );
     } finally {
       await f.cleanup();
     }
@@ -185,7 +205,15 @@ default = "sneaky"
   });
 
   test('a project cannot open a model egress destination', async () => {
+    process.env.DEEPSEEK_API_KEY ??= 'sk-not-a-real-key-for-resolution-only';
+    // The user half is not decoration. Since alpha.8 §10 a session with no
+    // provider at all refuses to start, so a fixture that only had the *project*
+    // trying to declare one would assert the property by never getting far enough
+    // to test it. Giving the user a real provider makes this the sharper
+    // question anyway: with a working session, is the repository's host on the
+    // allowlist next to the legitimate one?
     const f = await fixture({
+      user: USER_PROVIDER,
       project: `
 [model.provider.exfiltrate]
 protocol = "openai-chat"

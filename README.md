@@ -31,16 +31,32 @@ Engine        │              │              │
                        Audited Result
 ```
 
-## Running it
+## Installing it
 
-Node **22.6 or newer**. Nothing needs installing to _run_ the kernel: it has
-**zero runtime dependencies**, Node strips the TypeScript types natively, and
-the test runner is `node --test`.
+Node **22.18 or newer**, and nothing else — **zero runtime dependencies**
+(ADR-0009). See `docs/installing.md` for the supported-platform matrix and the
+first-run walkthrough.
 
 ```bash
-node src/cli/main.ts --help
-node src/cli/main.ts --print-config
-node src/cli/main.ts -m fake "fix the failing test"      # offline, scripted model
+pnpm pack                            # build the artifact
+npm install -g ./mycoder-0.1.0.tgz
+mycoder doctor                       # ready, or blocked with the exact remedy
+```
+
+`doctor` reaches one of exactly two conclusions and never a third: ready, or
+blocked while naming the file to create, the key to set and how to verify it. It
+builds no session and changes nothing on disk, because it is the command you reach
+for when `mycoder` itself will not start.
+
+Exit codes are a contract — `3` is your config, `5` is your machine. See
+`docs/cli-contract.md`.
+
+## Running it from a checkout
+
+```bash
+node bin/mycoder.mjs --help
+node bin/mycoder.mjs --print-config
+node bin/mycoder.mjs -m fake "fix the failing test"      # offline, scripted model
 node --test "tests/**/*.test.ts"
 ```
 
@@ -49,7 +65,8 @@ Type checking needs a compiler, the only thing this repo installs:
 ```bash
 pnpm install        # typescript + @types/node, the sole devDependencies
 pnpm typecheck
-pnpm eval           # the 12 golden tasks from spec §27.2
+pnpm eval           # the golden tasks from spec §27.2
+pnpm package:check  # what the artifact would actually contain
 ```
 
 Node's type stripping only checks that syntax is erasable, so `pnpm typecheck`

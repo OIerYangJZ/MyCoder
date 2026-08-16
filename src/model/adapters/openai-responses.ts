@@ -175,14 +175,25 @@ export class OpenAiResponsesAdapter implements ProtocolAdapter {
 
       case 'error': {
         state.finished = true;
-        yield {
-          type: 'error',
-          error: kernelError('MODEL_INVALID_RESPONSE', String(payload.message ?? 'Provider stream error.'), {
-            blame: 'provider',
-          }),
-        };
+        // `{"type":"error","error":{"code":…,"message":…}}` — the detail is one
+        // level down, and reading `payload.message` found nothing.
+        //
+        // Found by alpha.8's second provider (§20), and it is the reason §23
+        // insists a failure be attributable: an OpenAI account with no credit
+        // streams a perfectly well-formed `insufficient_quota` and the kernel
+        // reported `MODEL_INVALID_RESPONSE: Provider stream error.` with
+        // `blame: provider`. Every part of that is wrong — the provider is fine,
+        // the account is unpaid, and the operator is sent to debug a parser.
+        // alpha.4 fixed the same confusion on the chat protocol's HTTP 402 path;
+        // this is the streaming half, which no live run had ever reached.
+        yield { type: 'error', error: streamError(payload) };
         return;
       }
+
+      // A `response.failed` carries its reason in the same nested shape, and is
+      // what the API sends *after* the `error` event. Handled above by the
+      // shared `response.*` case for usage and tool-call closing; the error
+      // itself has already been yielded, so nothing is lost by not repeating it.
 
       default:
         return;
@@ -213,6 +224,52 @@ export class OpenAiResponsesAdapter implements ProtocolAdapter {
     }
     return undefined;
   }
+}
+
+/**
+ * Classify a streamed `event: error`.
+ *
+ * The same vocabulary `mapHttpError` uses for the non-streaming path, because
+ * the provider sends the *same* error codes down both — an account with no
+ * credit is `insufficient_quota` whether it arrives as an HTTP body or as an SSE
+ * frame, and a kernel that classified one and not the other would tell an
+ * operator two different stories about one fact.
+ */
+export function streamError(payload: Record<string, unknown>): KernelError {
+  const nested = (payload.error ?? {}) as { code?: string; type?: string; message?: string };
+  const code = String(nested.code ?? nested.type ?? '');
+  const message = String(nested.message ?? payload.message ?? 'Provider stream error.');
+
+  // Blame `user`, not `provider`: the provider is working exactly as documented,
+  // and the only person who can fix it is the account holder. Not retryable, so
+  // a wrapper does not sit in a loop re-billing a card that has no credit.
+  if (code === 'insufficient_quota' || /exceeded your current quota/i.test(message)) {
+    return kernelError('MODEL_AUTH_ERROR', `The provider account cannot serve this request: ${message}`, {
+      blame: 'user',
+      retryable: false,
+      safeDetails: { providerCode: code || 'insufficient_quota' },
+    });
+  }
+  if (code === 'rate_limit_exceeded' || /rate limit/i.test(message)) {
+    return kernelError('MODEL_RATE_LIMIT', message, { blame: 'provider', retryable: true });
+  }
+  if (code === 'context_length_exceeded' || /maximum context length|too many tokens/i.test(message)) {
+    return kernelError('MODEL_CONTEXT_OVERFLOW', 'The request exceeded the model context window.', {
+      blame: 'kernel',
+      retryable: false,
+    });
+  }
+  if (code === 'invalid_api_key' || /invalid.*api key|incorrect api key/i.test(message)) {
+    return kernelError('MODEL_AUTH_ERROR', 'The provider credential was rejected.', {
+      blame: 'user',
+      retryable: false,
+    });
+  }
+
+  return kernelError('MODEL_INVALID_RESPONSE', message, {
+    blame: 'provider',
+    ...(code ? { safeDetails: { providerCode: code } } : {}),
+  });
 }
 
 function getItemIndex(state: AdapterState): Map<string, { id: string; name: string }> {

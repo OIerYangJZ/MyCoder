@@ -77,6 +77,18 @@ export const ERROR_CODES = [
   'SANDBOX_UNSUPPORTED',
   'SANDBOX_SETUP_FAILED',
   'SANDBOX_SYSCALL_DENIED',
+  // alpha.8, ADR-0019/ADR-0021. Three failures that happen *before* a session
+  // exists, which is why they are not in any family above: nothing has been
+  // asked of a model, a tool or a boundary yet. They are the ones a first run on
+  // a machine that was never set up will actually hit, and each maps to its own
+  // exit code so a wrapper can tell "install something" from "edit something".
+  //
+  //   RUNTIME_UNSUPPORTED     the Node running this is below the ADR-0019 floor
+  //   CONFIG_INVALID          a config file exists and cannot be honoured
+  //   PROVIDER_NOT_CONFIGURED no provider is reachable; nothing to talk to
+  'RUNTIME_UNSUPPORTED',
+  'CONFIG_INVALID',
+  'PROVIDER_NOT_CONFIGURED',
   'LOOP_BUDGET_EXCEEDED',
   'REPEATED_FAILURE',
   'DELEGATION_DENIED',
@@ -162,6 +174,9 @@ const DEFAULT_BLAME: Record<ErrorCode, Blame> = {
   SANDBOX_UNSUPPORTED: 'environment',
   SANDBOX_SETUP_FAILED: 'kernel',
   SANDBOX_SYSCALL_DENIED: 'model',
+  RUNTIME_UNSUPPORTED: 'environment',
+  CONFIG_INVALID: 'user',
+  PROVIDER_NOT_CONFIGURED: 'user',
   LOOP_BUDGET_EXCEEDED: 'kernel',
   REPEATED_FAILURE: 'model',
   // A refused delegation is the configuration speaking, the same as TOOL_DENIED.

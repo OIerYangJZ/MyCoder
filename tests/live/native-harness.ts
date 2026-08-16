@@ -9,11 +9,10 @@
  * enforce yesterday's rules while the tests describe today's.
  */
 
-import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-
-import { SANDBOX_BINARY, SANDBOX_SOURCE } from '../../src/execution/linux-native/paths.ts';
+import { SANDBOX_BINARY } from '../../src/execution/linux-native/paths.ts';
+import { buildSandbox, sandboxBinaryState } from '../../src/execution/linux-native/build.ts';
 import { probeLauncher } from '../../src/execution/linux-native/probe.ts';
+import { KERNEL_VERSION } from '../../src/kernel.ts';
 
 export interface NativeRequirement {
   run: boolean;
@@ -42,16 +41,26 @@ export function nativeRequirement(): NativeRequirement {
     return cached;
   }
 
-  if (!existsSync(SANDBOX_BINARY)) {
-    const build = spawnSync(
-      process.env.CC ?? 'cc',
-      ['-O2', '-Wall', '-Wextra', '-Werror', '-std=c11', '-o', SANDBOX_BINARY, SANDBOX_SOURCE],
-      { encoding: 'utf8' },
-    );
-    if (build.status !== 0) {
-      cached = { run: false, required, reason: `the launcher could not be built: ${build.stderr.trim()}` };
+  // Rebuild whenever the launcher does not *verify*, not merely when the file is
+  // absent (ADR-0020). Since alpha.8 the backend refuses a binary with no
+  // manifest, so "the file exists" is no longer the question — and a binary left
+  // over from a previous source is exactly the case the identity check exists to
+  // catch. Going through `buildSandbox` rather than a bare `cc` line is what
+  // writes the manifest at all; the ad-hoc invocation here used to skip the
+  // hardening flags too, so the suite was testing a differently-compiled binary
+  // from the one `pnpm build:sandbox` produces.
+  if (!sandboxBinaryState().ok) {
+    const build = buildSandbox({ kernelVersion: KERNEL_VERSION });
+    if (!build.ok) {
+      cached = { run: false, required, reason: `the launcher could not be built: ${build.detail.trim()}` };
       return cached;
     }
+  }
+
+  const verified = sandboxBinaryState();
+  if (!verified.ok) {
+    cached = { run: false, required, reason: `the launcher does not verify: ${verified.reason}` };
+    return cached;
   }
 
   const probe = probeLauncher(SANDBOX_BINARY);

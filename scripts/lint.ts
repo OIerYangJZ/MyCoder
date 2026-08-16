@@ -372,6 +372,14 @@ export const RULES: Rule[] = [
         // installation keep its own files. It reads one override name and no
         // credential can be one.
         'src/execution/linux-native/paths.ts',
+        // Reads `CC` to pick a compiler for the explicit build step (ADR-0020).
+        // It moved here from `scripts/` in alpha.8 so a packaged install — which
+        // has no `scripts/` entry and no pnpm — can reach it from
+        // `mycoder build-sandbox`. Nothing it reads reaches a child's
+        // environment: the compile runs under `spawnSync` with an explicit argv
+        // and no inherited env of interest, and no credential can be a compiler
+        // name.
+        'src/execution/linux-native/build.ts',
       ].includes(f),
     check: ({ file, code }) => scan(file, code, /\bprocess\.env\b/, 'no-host-env-read', 'reads process.env'),
   },
@@ -444,14 +452,15 @@ export const RULES: Rule[] = [
   {
     name: 'explicit-ts-extension',
     rationale:
-      'Node runs this source directly with no bundler, so a relative import without a .ts extension fails at ' +
-      'runtime — and only on the code path that imports it.',
+      'Node runs this source directly with no bundler, so a relative import without an explicit extension ' +
+      'fails at runtime — and only on the code path that imports it. `.mjs` counts: `bin/mycoder.mjs` is ' +
+      'plain JavaScript on purpose (ADR-0019 §3), and the runtime-version suite imports it.',
     applies: (f) => f.endsWith('.ts'),
     check: ({ file, text }) =>
       scan(
         file,
         text,
-        /(?:from|import)\s*\(?\s*['"]\.\.?\/[^'"]*(?<!\.ts)(?<!\.js)(?<!\.json)['"]/,
+        /(?:from|import)\s*\(?\s*['"]\.\.?\/[^'"]*(?<!\.ts)(?<!\.js)(?<!\.mjs)(?<!\.json)['"]/,
         'explicit-ts-extension',
         'relative import is missing its .ts extension',
       ),

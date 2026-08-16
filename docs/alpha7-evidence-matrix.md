@@ -11,6 +11,27 @@ evidence (alpha.6 §59, carried forward).
 `live` = requires Linux with Landlock (`KERNEL_NATIVE=1`).
 `offline` = runs in the default `pnpm test`.
 
+## Model provenance
+
+**This matrix makes no live-model behavioural claims.** Every row is an
+enforcement or conformance property measured directly against the kernel and the
+host: Landlock ABI, seccomp errno attribution, descriptor hygiene, cross-backend
+conformance, and the diagnosis classifier's 19 unit cases. None of them involves a
+model deciding anything, so none of them is single-model.
+
+The two numbers that could be mistaken for behavioural are not:
+
+- **20/20 native sandbox, 3/3 composition** — scripted trajectories driving the
+  backend, not a model choosing actions;
+- **+0.3 ms per exec** — a measurement of the launcher, over 20 runs.
+
+Host tier for every live row: **Ubuntu 26.04 aarch64, kernel 7.0.0-29-generic,
+Landlock ABI 8**, reachable as `linux-vm`. Not macOS, and the difference is not
+cosmetic — Landlock does not exist there.
+
+The live-model dogfood on this backend remains an explicit non-claim; see
+`docs/alpha7-status.md` and alpha.8 §24.
+
 ## 1. The sandbox itself
 
 | Requirement                                               | Status | Evidence                                                                    | Notes                                         |

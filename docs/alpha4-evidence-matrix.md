@@ -29,6 +29,22 @@ Evidence prefixes: `test:` `suite:` `ci:` `eval:` `artifact:` `live:` `manual:`.
 > OS-level isolation of a child — a subagent is a policy scope in the same
 > process, not a sandbox — and any second provider.
 
+## Model provenance
+
+**Every behavioural number here was measured on `deepseek-chat` (DeepSeek,
+`openai-chat`), N=5.** The delegation-utility result in particular — _0 of 25
+delegations chosen_, and 0 of 70 after the system-prompt lever — is a
+**single-model** finding.
+
+That one matters more than most, because "the model never delegates" reads like a
+property of the kernel and may be a property of one model. alpha.8 §20 re-ran the
+experiment against a second model for exactly this reason; the side-by-side result
+is in `docs/alpha8-evidence-matrix.md` and is reported next to this number, never
+averaged with it.
+
+Live tiers: local backend on macOS arm64, plus the `linux-vm` host for the SSH
+rows.
+
 ---
 
 ## 0. Preflight: alpha.3 provenance (§0)

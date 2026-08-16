@@ -33,6 +33,8 @@ import { createLogger, type Logger } from '../../util/logger.ts';
 import { scrubEnv, assertNoCredentialEnv } from '../../security/env-scrub.ts';
 import type { Redactor } from '../../security/redactor.ts';
 import { LocalExecutionBackend } from '../local.ts';
+import { verifyLauncher } from './identity.ts';
+import { resolveLauncherSourcePath } from './paths.ts';
 import { linuxNativeEnforcement, summarizeEnforcement } from '../enforcement.ts';
 import type {
   BackendKind,
@@ -74,6 +76,12 @@ export interface LinuxNativeBackendOptions {
    */
   protectedInsideRoots?: readonly CanonicalPath[];
   discoveryTruncated?: boolean;
+  /**
+   * The launcher source this installation ships, for the ADR-0020 identity
+   * check. Defaults to `resolveLauncherSourcePath()`; the live suites override
+   * it when they build into a temp directory.
+   */
+  launcherSourcePath?: string;
   /** Test seam: skip probing and use this result. */
   probeOverride?: LandlockProbe;
 }
@@ -270,6 +278,35 @@ export class LinuxNativeExecutionBackend implements ExecutionBackend {
           safeDetails: { remedy: 'Use --backend container, or run on Linux.' },
         }),
       );
+    }
+
+    // Identity before capability (ADR-0020). Asking an unverified binary what it
+    // can enforce and believing the answer is backwards: `--probe` is a claim
+    // made by the very program whose provenance is in question, so a replaced
+    // launcher could report ABI 8 and enforce nothing. Verify what it *is*
+    // first, then ask what it can do.
+    //
+    // Skipped only when the caller supplied a probe override, which is the live
+    // suites building into a temp directory — they pass `launcherSourcePath` when
+    // they want the real check.
+    if (!opts.probeOverride) {
+      const identity = verifyLauncher(
+        opts.launcherPath,
+        opts.launcherSourcePath ?? resolveLauncherSourcePath(),
+      );
+      if (!identity.ok) {
+        throw new KernelErrorException(
+          kernelError('SANDBOX_UNSUPPORTED', identity.reason, {
+            blame: identity.problem === 'mismatched' ? 'environment' : 'user',
+            retryable: false,
+            safeDetails: {
+              problem: `launcher-${identity.problem}`,
+              remedy: identity.remedy,
+              launcher: identity.binary,
+            },
+          }),
+        );
+      }
     }
 
     const probed = opts.probeOverride

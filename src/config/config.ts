@@ -42,6 +42,18 @@ export interface LoadedConfig {
    * egress destination by declaring an endpoint.
    */
   userProviderIds: string[];
+  /**
+   * Did any config layer actually say which model to use?
+   *
+   * The distinction alpha.8 §10 turns on. `defaultConfig()` resolves `fake`, so
+   * "the effective model is fake" is true both for a deliberate
+   * `default = "fake"` — which every offline test wants — and for a machine that
+   * has never been configured at all. Before this flag the two were
+   * indistinguishable, and a fresh install answered its first task with
+   * `(fake model: script exhausted)` and exited 0: the silently degraded session
+   * §10 forbids, reported as success.
+   */
+  explicitModelDefault: boolean;
 }
 
 export interface LoadConfigOptions {
@@ -56,6 +68,7 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
   const read = opts.readFileImpl ?? ((p: string) => readFile(p, 'utf8'));
   const sources: string[] = [];
   const userProviderIds = new Set<string>();
+  let explicitModelDefault = false;
   let config = defaultConfig();
 
   const userPath = path.join(opts.userConfigDir, 'config.toml');
@@ -70,6 +83,7 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
     sources.push(file);
 
     const layer = configFromToml(parsed.table, label);
+    if (layer.model?.default !== undefined) explicitModelDefault = true;
 
     // A project file may *name* a provider but must never *define* one. This is
     // the rule the spec already applies to SSH remotes (§19.2), for the same
@@ -117,6 +131,7 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
     config.warnings.push(...parsed.warnings);
   }
 
+  if (opts.overrides?.model?.default !== undefined) explicitModelDefault = true;
   if (opts.overrides) config = mergeConfig(config, opts.overrides);
   config = applySystemCeiling(config);
 
@@ -134,7 +149,7 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
     config.warnings.push(...parsedRules.warnings, ...permissions.warnings);
   }
 
-  return { config, projectRules, sources, userProviderIds: [...userProviderIds] };
+  return { config, projectRules, sources, userProviderIds: [...userProviderIds], explicitModelDefault };
 }
 
 /**

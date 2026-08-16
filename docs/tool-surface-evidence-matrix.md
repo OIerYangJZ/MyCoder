@@ -48,6 +48,25 @@ being left for a reader to notice.
 | Fetched content cannot inject instructions                 | NOT TESTED |                                                                                                                                                    | not a technical control; see `docs/threat-model.md` — the label reduces the surface, nothing closes it |
 | Tool usability: task success rate, step counts             | NOT TESTED |                                                                                                                                                    | no harness exists yet; this is the gap that motivated the round and it is still open                   |
 
+## Model provenance
+
+**Every behavioural number in this matrix was measured on one model:
+`deepseek-chat` (DeepSeek, `openai-chat` protocol), N=5 per cell.**
+
+This is the matrix where that caveat bites hardest, because its central finding is
+about _how a model calls tools_: adding `Write` made `Edit` harder to call, and the
+model dropped Edit's required `mode` in 10 of 20 calls. Whether that is a fact
+about this tool surface or a fact about this model is precisely the question one
+model cannot answer.
+
+alpha.8 §20 re-ran the tool-utility experiment against a second model under §21's
+fairness rules — same fixtures, same prompts, same `fixtureVersion`, same N, no
+per-model prompt tuning. The result is reported beside this one in
+`docs/alpha8-evidence-matrix.md`, never averaged into it.
+
+Structural rows (a tool exists, a capability is refused, an approval is required)
+are model-independent and hold for any model.
+
 ## What this matrix does not claim
 
 Every row above is about a boundary. None of them says the tools are _good_ — a

@@ -1,0 +1,35 @@
+{
+  // Emit configuration for the distribution artifact (ADR-0019 §1, revised).
+  //
+  // The original decision was to publish the TypeScript sources and let Node
+  // strip the types at runtime, on the argument that the shipped code should be
+  // byte-for-byte what the evidence ran against. The install dogfood (§25) killed
+  // it in one line:
+  //
+  //     Stripping types is currently unsupported for files under node_modules
+  //
+  // That restriction is unconditional — neither `--experimental-strip-types` nor
+  // `--experimental-transform-types` lifts it — and a globally installed npm
+  // package lives under `node_modules` by construction. So the published form has
+  // to be JavaScript.
+  //
+  // `rewriteRelativeImportExtensions` is what makes that possible without
+  // touching a single import: the source says `./foo.ts` (which is what lets Node
+  // run the checkout directly), and the emitted JavaScript says `./foo.js`.
+  //
+  // The evidence argument is answered rather than abandoned: `dist/` is derived
+  // mechanically from `src/` at a recorded commit, the package ships *both* so a
+  // reader can audit what they ran, and the release workflow rebuilds `dist/` and
+  // compares it against the shipped one.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "declaration": false,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["tests/**/*", "evals/**/*", "scripts/**/*"]
+}
