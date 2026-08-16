@@ -195,6 +195,26 @@ code was written.
 | the artifact job passes in CI                        | PASS   | artifact:docs/alpha8-status.md           | Run `31933653742`: packed, installed into a clean prefix, driven. Four defects found by running it (13-16), all fixed |
 | **an end-to-end green Release Gate**                 | PASS   | artifact:docs/alpha8-status.md           | Run `31933653742`: all five tiers success at one exact commit, both `_REQUIRED` — so none could pass by skipping      |
 
+### 7.1 The tag `v0.1.0-alpha.8` does not have a green gate (recorded by alpha.9 §19)
+
+Read this before re-running anything at that tag, because the result is red and
+that is expected.
+
+| Requirement                                             | Status     | Evidence                       | Notes                                                                                                          |
+| ------------------------------------------------------- | ---------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| the tag was **not** moved to a commit with a green gate | PASS       | artifact:docs/alpha9-status.md | `v0.1.0-alpha.8` still points at `c2566f4`; a tag is the one thing here that must never move                   |
+| the gate result **at the tag** is recorded, not implied | PASS       | artifact:docs/alpha9-status.md | It is RED. `c2566f4` carries the first `release.yml`, which contains defects 13–16, so its own gate rejects it |
+| the reader is told where the green gate actually is     | PASS       | artifact:docs/alpha8-status.md | Run `31933653742`, dispatched against `f99041e` — eleven commits past the tag at the time                      |
+| a release tag whose own gate is green exists            | NOT TESTED | artifact:docs/alpha9-status.md | Deferred to `v0.1.0-alpha.8.1` under alpha.9 §19 CLOSURE A, and closed there rather than here                  |
+
+alpha.8 built a release gate, proved it blocks, proved it passes, and left its own
+tag on a commit the gate rejects — the alpha.8-shaped failure (a claim whose
+evidence was never run at the commit carrying it) recurring one level up, in the
+milestone whose subject was that failure mode. The tag is not moved. `alpha.8.1`
+is cut at a commit whose gate actually ran green, and the two rows above exist so
+that a future reader who runs the gate at `v0.1.0-alpha.8` knows the red result is
+the record rather than a regression.
+
 ---
 
 ## 8. Cross-model validation (§19–§23)

@@ -423,6 +423,17 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      # alpha.9 defect 1. Most jobs in this file deliberately run with no
+      # `node_modules` at all — that is real evidence for ADR-0009, and it must
+      # stay. The *full* glob is the exception: `tests/integration/packaging.test.ts`
+      # builds `dist/` with `node_modules/typescript/bin/tsc`, because the artifact
+      # under test is the built one (ADR-0019 §1). Without an install this job
+      # cannot run the suite it claims to run, and it had been red on every push
+      # since that test started building — invisible locally, where node_modules
+      # is always present, and unreadable from the maintainer's network, where
+      # the blob host serving job logs is not reachable.
+      - run: pnpm install --frozen-lockfile
+
       - name: Run the unit and integration suites
         shell: bash
         run: |
@@ -566,15 +577,23 @@ jobs:
         with:
           node-version: 22
 
+      # `test:platform` includes tests/integration/**, and that includes the
+      # packaging test, which builds `dist/` with the TypeScript compiler. See
+      # the note in the `unit-integration` job above: this is alpha.9 defect 1,
+      # and it is why the failure below was never explained.
+      - run: pnpm install --frozen-lockfile
+
       # macOS is where the path layer earns its keep: APFS is case-insensitive
       # and stores filenames in NFD, so `.ENV` and a decomposed filename must
       # still hit the protected-path rules.
       #
-      # Tee'd to a file and uploaded below. This job failed once on a release
-      # commit and the cause was never established, because GitHub serves job logs
-      # from a blob host that was unreachable from the machine doing the release —
-      # so "green on attempt 2" was the most that could be said. `pipefail` keeps
-      # the step's exit status the test runner's rather than tee's.
+      # Tee'd to a file and uploaded below. This job failed on a release commit
+      # and the cause went unestablished for a milestone, because GitHub serves
+      # job logs from a blob host that is not reachable from the maintainer's
+      # network — so "green on attempt 2" was the most that could be said. It was
+      # the missing install; the cause was found by running the same suite on a
+      # Linux host staged with `git archive`, which has no node_modules either.
+      # `pipefail` keeps the step's exit status the test runner's rather than tee's.
       - name: Run the platform suite
         shell: bash
         run: |
