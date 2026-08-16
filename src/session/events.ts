@@ -225,18 +225,47 @@ export interface FileReadPayload {
   redactions: number;
 }
 
+/**
+ * One mutation, from any of the four mutating tools (ADR-0025 §1).
+ *
+ * Until alpha.10 only `Edit` produced this event, so the audit trail covered one
+ * tool in four and the missing three were the ones that overwrite whole files,
+ * remove them and rename them. The fields below the first block are what a
+ * reversal needs; `src/edit/journal-log.ts` owns both directions of the mapping.
+ */
 export interface FileEditedPayload {
   path: string;
   toolCallId: ToolCallId;
   modelRequestId?: string;
   oldHash: string;
   newHash: string;
-  /** Unified diff, redacted. Kept so an edit can be reviewed or rolled back. */
+  /**
+   * Unified diff, redacted. Kept so an edit can be reviewed or rolled back —
+   * and empty when the §5 ceiling dropped it, which `diffOmitted` records.
+   */
   diff: string;
-  linesAdded: number;
-  linesRemoved: number;
+  linesAdded?: number;
+  linesRemoved?: number;
   eol: 'lf' | 'crlf';
   created: boolean;
+
+  /** Stable identity of the journal entry. Absent in a pre-alpha.10 log. */
+  entryId?: string;
+  canonicalPath?: string;
+  kind?: 'replace' | 'create' | 'overwrite' | 'delete' | 'move';
+  /** Whether the *pre-edit* content ended with a newline; the diff cannot say. */
+  finalNewline?: boolean;
+  appliedAt?: number;
+  /** Bytes of diff dropped by the size ceiling (ADR-0025 §5). */
+  diffOmitted?: number;
+  mixedEol?: boolean;
+  deletedFile?: boolean;
+  directory?: boolean;
+  movedFrom?: string;
+  movedFromPath?: string;
+  delegationId?: string;
+  /** Set when this edit was itself a reversal, naming what it reversed. */
+  undoOf?: string;
 }
 
 export interface WorkspaceMutationPayload {

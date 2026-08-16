@@ -19,8 +19,8 @@
 import type { JsonSchema } from '../../util/jsonschema.ts';
 import { toPosix } from '../../util/paths.ts';
 import type { AccessRequest } from '../../policy/access.ts';
-import type { EditJournal } from '../../edit/atomic-write.ts';
-import { sha256Hex } from '../../util/ids.ts';
+import type { EditJournal, RollbackMetadata } from '../../edit/atomic-write.ts';
+import { newJournalEntryId, sha256Hex } from '../../util/ids.ts';
 import {
   errorResult,
   okResult,
@@ -168,30 +168,40 @@ export function createMoveTool(opts: MoveToolOptions): ToolDefinition<MoveArgs> 
           ctx.freshness.invalidatePath(to.path);
 
           const kind = sourceStat.isDirectory ? 'directory' : 'file';
-          opts.journal.record({
+          const pairHash = sha256Hex(`${from.path}\n${to.path}`).slice(0, 32);
+          const entry: RollbackMetadata = {
+            entryId: newJournalEntryId(ctx.now()),
             path: to.path,
             displayPath: toDisplay,
             kind: 'move',
             // A move changes no bytes, so the two hashes are equal by
             // construction: the hash of the *path pair*, which is enough to
             // correlate the journal entry with the event log without reading a
-            // file that may be very large.
-            oldHash: sha256Hex(`${from.path}\n${to.path}`).slice(0, 32),
-            newHash: sha256Hex(`${from.path}\n${to.path}`).slice(0, 32),
+            // file that may be very large. Reversing a move therefore checks the
+            // paths rather than a content hash (ADR-0026 §2).
+            oldHash: pairHash,
+            newHash: pairHash,
             diff: `rename from ${fromDisplay}\nrename to ${toDisplay}\n`,
             eol: 'lf',
+            finalNewline: true,
             createdFile: false,
+            ...(sourceStat.isDirectory ? { directory: true } : {}),
             movedFrom: fromDisplay,
+            movedFromPath: from.path,
             toolCallId: ctx.toolCallId,
             turnId: ctx.turnId,
             stepId: ctx.stepId,
             appliedAt: ctx.now(),
-          });
+          };
+          opts.journal.record(entry);
           opts.onApplied?.({ from: fromDisplay, to: toDisplay });
 
           return okResult(`Moved ${kind} ${fromDisplay} to ${toDisplay}.`, {
             structured: { from: fromDisplay, to: toDisplay, kind },
-            metadata: { from: fromDisplay, to: toDisplay, kind },
+            // CLOSURE B (ADR-0025 §1): a move reaches the event log too. The
+            // journal fields travel in the metadata rather than a second
+            // callback, so one dispatch in `kernel.ts` serves all four tools.
+            metadata: { from: fromDisplay, to: toDisplay, kind, journal: entry },
           });
         },
       };

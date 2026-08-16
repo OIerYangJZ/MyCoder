@@ -19,7 +19,8 @@ import { renderErrorForModel } from '../../util/errors.ts';
 import { truncateForModel } from '../../util/text.ts';
 import { toPosix } from '../../util/paths.ts';
 import { ExactEditEngine, EditConflictError, type EditPlan } from '../../edit/edit-engine.ts';
-import type { EditJournal } from '../../edit/atomic-write.ts';
+import type { EditJournal, RollbackMetadata } from '../../edit/atomic-write.ts';
+import { newJournalEntryId, sha256Hex } from '../../util/ids.ts';
 import {
   errorResult,
   okResult,
@@ -33,6 +34,8 @@ export interface DeleteArgs {
   path: string;
   receiptId?: string;
 }
+
+const EMPTY_HASH = sha256Hex('');
 
 const SCHEMA: JsonSchema = {
   type: 'object',
@@ -150,9 +153,35 @@ export function createDeleteTool(opts: DeleteToolOptions): ToolDefinition<Delete
               );
             }
             await executor.fs.remove(canonical, { directory: true });
+
+            // An empty-directory removal is still a mutation, and until alpha.10
+            // it reached neither the journal nor the log — the one code path in
+            // the four mutating tools that changed the workspace with no record
+            // at all. There is no content to restore, so the entry exists to be
+            // audited and re-created, and its diff is empty by construction.
+            const dirEntry: RollbackMetadata = {
+              entryId: newJournalEntryId(ctx.now()),
+              path: canonical,
+              displayPath,
+              kind: 'delete',
+              oldHash: sha256Hex(`dir:${canonical}`).slice(0, 32),
+              newHash: EMPTY_HASH,
+              diff: '',
+              eol: 'lf',
+              finalNewline: true,
+              createdFile: false,
+              deletedFile: true,
+              directory: true,
+              toolCallId: ctx.toolCallId,
+              turnId: ctx.turnId,
+              stepId: ctx.stepId,
+              appliedAt: ctx.now(),
+            };
+            opts.journal.record(dirEntry);
+
             return okResult(`Removed empty directory ${displayPath}.`, {
               structured: { path: displayPath, kind: 'directory' },
-              metadata: { path: displayPath, kind: 'directory' },
+              metadata: { path: displayPath, kind: 'directory', journal: dirEntry },
             });
           }
 
@@ -168,6 +197,10 @@ export function createDeleteTool(opts: DeleteToolOptions): ToolDefinition<Delete
             toolCallId: ctx.toolCallId,
             turnId: ctx.turnId,
             stepId: ctx.stepId,
+            // ADR-0025 §7: a child's edits enter the parent's journal, but
+            // attributed. The registry is shared, so without this the parent
+            // could not tell its own edits from a subagent's.
+            ...(ctx.delegation.delegationId ? { delegationId: ctx.delegation.delegationId } : {}),
             now: ctx.now,
           };
 
@@ -207,6 +240,9 @@ export function createDeleteTool(opts: DeleteToolOptions): ToolDefinition<Delete
                   oldHash: plan.oldHash,
                   diff: plan.diff,
                   linesRemoved: plan.stats.linesRemoved,
+                  // CLOSURE B (ADR-0025 §1). The least recoverable of the four
+                  // tools was the one with no durable record at all.
+                  journal: result.rollback,
                 },
               },
             );

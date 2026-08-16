@@ -257,6 +257,10 @@ export function createEditTool(opts: EditToolOptions): ToolDefinition<EditArgs> 
             toolCallId: ctx.toolCallId,
             turnId: ctx.turnId,
             stepId: ctx.stepId,
+            // ADR-0025 §7: a child's edits enter the parent's journal, but
+            // attributed. The registry is shared, so without this the parent
+            // could not tell its own edits from a subagent's.
+            ...(ctx.delegation.delegationId ? { delegationId: ctx.delegation.delegationId } : {}),
             now: ctx.now,
           };
 
@@ -300,6 +304,7 @@ export function createEditTool(opts: EditToolOptions): ToolDefinition<EditArgs> 
                   eol: plan.eol,
                   created: plan.kind === 'create',
                   bytesWritten: result.bytesWritten,
+                  journal: result.rollback,
                 },
               },
             );

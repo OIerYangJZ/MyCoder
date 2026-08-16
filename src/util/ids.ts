@@ -23,6 +23,8 @@ export type ModelRequestId = Brand<string, 'ModelRequestId'>;
 export type DelegationId = Brand<string, 'DelegationId'>;
 /** Identifies the child *execution scope* a delegation produced. */
 export type ChildRunId = Brand<string, 'ChildRunId'>;
+/** Identity of one edit-journal entry, so an undo can name what it reversed. */
+export type JournalEntryId = Brand<string, 'JournalEntryId'>;
 
 /** Monotonic-ish, sortable, human-scannable id: <prefix>_<base36 time>_<rand>. */
 function makeId(prefix: string, nowMs: number): string {
@@ -54,6 +56,9 @@ export function newDelegationId(nowMs: number): DelegationId {
 }
 export function newChildRunId(nowMs: number): ChildRunId {
   return makeId('crn', nowMs) as ChildRunId;
+}
+export function newJournalEntryId(nowMs: number): JournalEntryId {
+  return makeId('jrn', nowMs) as JournalEntryId;
 }
 
 /**

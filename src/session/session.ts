@@ -38,6 +38,7 @@ import { compact, needsCompaction } from '../context/compaction.ts';
 import type { EditJournal } from '../edit/atomic-write.ts';
 import type { ToolRegistry } from '../tools/registry.ts';
 import { ToolRuntime, syntheticInterruptedResult } from '../tools/runtime.ts';
+import type { ToolResult } from '../tools/contract.ts';
 import type { ExecutionBackend } from '../execution/backend.ts';
 import type { SessionStore, SessionMetadata } from './store.ts';
 import type {
@@ -887,6 +888,30 @@ export class Session {
       request.maxOutputTokens = step.model.profile.maxOutputTokens;
     }
     return request;
+  }
+
+  /**
+   * Run one tool on the **user's** behalf, from the control plane (ADR-0026 §6).
+   *
+   * `/undo` is the first caller. The step context is synthesised rather than
+   * borrowed from a turn, because a slash command may be typed when no turn is
+   * running — but everything the runtime does with it below is the ordinary
+   * path: schema validation, the policy decision, the approval prompt and a
+   * narrowed executor. There is no shortcut here, only a different origin.
+   */
+  async runControlTool(name: string, args: unknown): Promise<ToolResult> {
+    const step = freezeStepContext({
+      sessionId: this.sessionId,
+      turnId: this.turn?.turnId ?? (newTurnId(this.clock.now()) as TurnId),
+      stepId: newStepId(this.clock.now()),
+      context: this.opts.projector.project(this.context, this.context.repository.facts),
+      tools: this.opts.toolRegistry.view(this.effectiveTools ? { allowed: this.effectiveTools } : {}),
+      model: this.resolveModel(),
+      execution: this.opts.backend.environment,
+      loopBudget: new LoopBudgetTracker(this.budgetCeiling, () => this.clock.now()).snapshot(),
+      frozenAt: this.clock.now(),
+    });
+    return this.opts.toolRuntime.executeControlCall(name, args, step, new AbortController().signal);
   }
 
   private freezeStep(turn: Turn, model: ResolvedModelProfile, budget: LoopBudgetTracker): StepContext {

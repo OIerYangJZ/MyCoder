@@ -320,10 +320,53 @@ export class ToolRuntime {
     return terminalFailure ? { results, terminalFailure } : { results };
   }
 
+  /**
+   * Run one tool call on the **user's** behalf, from the control plane.
+   *
+   * `/undo` needs the same policy decision, the same approval prompt and the
+   * same narrowed executor that a model-issued call gets. The alternative — the
+   * control plane assembling its own executor — would be a second copy of the
+   * sequence in `executeOne`, and a second copy of a security-critical sequence
+   * is how the two come to disagree.
+   *
+   * What it does *not* do is pretend a person is a model: no doom-loop
+   * accounting, no hooks, no `tool.call` pair in the transcript. The command's
+   * own `control.command` event is the record.
+   */
+  async executeControlCall(
+    name: string,
+    args: unknown,
+    step: StepContext,
+    signal: AbortSignal,
+  ): Promise<ToolResult> {
+    const call: ToolCallPart = {
+      type: 'tool_call',
+      id: `ctl_${this.opts.now().toString(36)}` as ToolCallPart['id'],
+      name,
+      arguments: args,
+    };
+    const { result } = await this.executeOne(call, step, signal, true);
+    this.opts.onRecord?.({
+      toolCallId: call.id,
+      name,
+      isError: result.isError,
+      durationMs: 0,
+      contentBytes: Buffer.byteLength(result.content, 'utf8'),
+      truncated: false,
+      decisions: [],
+      turnId: step.turnId,
+      stepId: step.stepId,
+      ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+      ...(result.metadata ? { metadata: result.metadata } : {}),
+    });
+    return result;
+  }
+
   private async executeOne(
     call: ToolCallPart,
     step: StepContext,
     signal: AbortSignal,
+    operator = false,
   ): Promise<{ result: ToolResult; decisions: PolicyDecision[] }> {
     const tool = this.opts.registry.get(call.name);
     if (!tool) {
@@ -341,7 +384,13 @@ export class ToolRuntime {
 
     // The catalogue frozen for this step is the authority on what the model was
     // allowed to call — not the registry, which may contain deferred tools.
-    if (!step.tools.tools.some((t) => t.name === call.name)) {
+    //
+    // Skipped for a control-plane call, because the catalogue answers a question
+    // that does not apply: it records what the *model* was offered this step, and
+    // a user typing a slash command was offered nothing. Everything below —
+    // schema validation, the policy decision, the approval prompt, the sandbox
+    // profile — is unchanged, which is the part that must not be skippable.
+    if (!operator && !step.tools.tools.some((t) => t.name === call.name)) {
       return {
         result: {
           content: `error: TOOL_NOT_FOUND\n"${call.name}" was not available in this step.`,
@@ -368,7 +417,10 @@ export class ToolRuntime {
 
     let execution: ToolExecution;
     try {
-      execution = await tool.resolve(validation.value as never, this.buildResolveContext(call, step, signal));
+      execution = await tool.resolve(
+        validation.value as never,
+        this.buildResolveContext(call, step, signal, operator),
+      );
     } catch (e) {
       const err = toKernelError(e);
       return {
@@ -535,6 +587,7 @@ export class ToolRuntime {
     call: ToolCallPart,
     step: StepContext,
     signal: AbortSignal,
+    operator = false,
   ): ToolResolveContext {
     const workspaceRoot = this.opts.workspaceRoot;
     return {
@@ -582,6 +635,7 @@ export class ToolRuntime {
       signal,
       delegation: this.delegationScope,
       loopBudget: step.loopBudget,
+      ...(operator ? { operator: true } : {}),
       ...(this.opts.delegate ? { delegate: this.opts.delegate } : {}),
       ...(this.opts.activateSkill ? { activateSkill: this.opts.activateSkill } : {}),
     };

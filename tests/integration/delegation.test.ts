@@ -648,6 +648,7 @@ describe('the delegation surface is absent when nothing can be delegated', () =>
         'Move',
         'Read',
         'Shell',
+        'Undo',
         'Write',
       ]);
       assert.equal(ws.kernel.toolRegistry.has('WebFetch'), false);

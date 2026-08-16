@@ -57,6 +57,7 @@ import { ContextProjector, type ContextOverlay } from '../context/projector.ts';
 import { FreshnessLedger } from '../context/freshness.ts';
 import type { RepositoryPlane } from '../context/repository-plane.ts';
 import type { EditJournal } from '../edit/atomic-write.ts';
+import { journalEntriesOf, journalEventPayload } from '../edit/journal-log.ts';
 import type { ToolRegistry } from '../tools/registry.ts';
 import { ToolRuntime, type ApprovalPrompter } from '../tools/runtime.ts';
 import {
@@ -942,23 +943,20 @@ export class DelegationService {
           return;
         }
 
-        if (record.name === 'Edit' && typeof meta.newHash === 'string') {
-          if (typeof meta.path === 'string') dirty.add(meta.path);
-          void opts.store.append(opts.sessionId, {
-            type: 'file.edited',
-            payload: {
-              path: meta.path,
-              toolCallId: record.toolCallId,
-              oldHash: meta.oldHash,
-              newHash: meta.newHash,
-              diff: meta.diff,
-              linesAdded: meta.linesAdded,
-              linesRemoved: meta.linesRemoved,
-              eol: meta.eol,
-              created: meta.created,
-            },
-            ...eventScope,
-          });
+        // Every mutating tool, not just `Edit` (CLOSURE B, ADR-0025 §1). The
+        // child's edits are tagged with `delegationId` by `eventScope`, which is
+        // what makes ADR-0025 §7 — a child's edits enter the parent's journal,
+        // attributed — true in the log as well as in memory.
+        const journalled = journalEntriesOf(meta);
+        if (journalled.length > 0) {
+          for (const entry of journalled) {
+            dirty.add(entry.displayPath);
+            void opts.store.append(opts.sessionId, {
+              type: 'file.edited',
+              payload: journalEventPayload(entry, record.toolCallId, meta),
+              ...eventScope,
+            });
+          }
           return;
         }
 

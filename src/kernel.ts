@@ -71,6 +71,8 @@ import { ContextProjector } from './context/projector.ts';
 import { compact } from './context/compaction.ts';
 
 import { EditJournal } from './edit/atomic-write.ts';
+import { journalEntriesOf, journalEventPayload, journalFromLog } from './edit/journal-log.ts';
+import { UncoveredTracker } from './edit/uncovered.ts';
 
 import { ToolRegistry } from './tools/registry.ts';
 import { ToolRuntime, DenyAllPrompter, type ApprovalPrompter } from './tools/runtime.ts';
@@ -81,6 +83,7 @@ import { createEditTool } from './tools/builtin/edit.ts';
 import { createWriteTool } from './tools/builtin/write.ts';
 import { createDeleteTool } from './tools/builtin/delete.ts';
 import { createMoveTool } from './tools/builtin/move.ts';
+import { createUndoTool } from './tools/builtin/undo.ts';
 import { createWebFetchTool } from './tools/builtin/web-fetch.ts';
 import { createShellTool } from './tools/builtin/shell.ts';
 import { createGitDiffTool } from './tools/builtin/git-diff.ts';
@@ -731,6 +734,10 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   const repository = new RepositoryPlane({ workspaceRoot, referenceRoots });
   const context = new ContextEngine({ repository, freshness, now: () => clock.now() });
   const editJournal = new EditJournal();
+  // What undo will *not* be able to reach, counted as the session runs
+  // (ADR-0026 §4). Fed from the callbacks that already fire, so it can never
+  // disagree with the event log.
+  const uncovered = new UncoveredTracker();
 
   // The session id is minted here rather than with the session store below,
   // because MCP startup is egress and the gate audits every request against a
@@ -796,11 +803,39 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   toolRegistry.register(createWriteTool({ journal: editJournal }));
   toolRegistry.register(createDeleteTool({ journal: editJournal }));
   toolRegistry.register(createMoveTool({ journal: editJournal }));
+
+  // Undo, last of the mutating tools, because it exists to reverse the four
+  // above (ADR-0026). It is registered unconditionally: a session with nothing
+  // to undo answers "there is nothing to undo" and enumerates what it could not
+  // have reached anyway, which is information the model needs whether or not an
+  // edit has happened yet.
+  toolRegistry.register(
+    createUndoTool({
+      journal: editJournal,
+      protectedPaths,
+      uncovered,
+      onApplied: (reverted) => {
+        // §7: the fact has to survive into the next step. A tool result can be
+        // compacted away; a critical fact is re-projected.
+        context.addFact({
+          id: 'undo-applied',
+          priority: 'critical',
+          text:
+            `An undo reversed ${reverted.length} edit(s): ${reverted.slice(0, 5).join(', ')}` +
+            `${reverted.length > 5 ? ', …' : ''}. Read those files again before editing them; ` +
+            'any receipt you hold for them describes content that is no longer there.',
+        });
+      },
+    }),
+  );
   toolRegistry.register(
     createShellTool({
       detector,
       defaultTimeoutMs: config.shell.timeoutMs ?? 120_000,
       onUndeclaredMutation: (changes) => {
+        // §12's second class. `MutationDetector` already knows; until alpha.10
+        // nothing kept the running total that an undo has to report.
+        uncovered.recordShellMutation(changes.length);
         // Surface the change as a fact for the next step (spec §10.4) rather
         // than letting it disappear into the shell output.
         context.addFact({
@@ -955,6 +990,11 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     onRecord: (record) => {
       const scope = { turnId: record.turnId, stepId: record.stepId };
 
+      // §12's first class, counted rather than assumed. A foreign tool's writes
+      // are invisible to the journal by construction (ADR-0023 §1), so the only
+      // honest thing undo can report is how many chances there were.
+      uncovered.recordToolCall(record.name);
+
       // A failed call, with the reason attached.
       //
       // `tool.result` already records *that* a call failed, but not which tool it
@@ -997,22 +1037,24 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
         return;
       }
 
-      if (record.name === 'Edit' && typeof meta.newHash === 'string') {
-        void store.append(sessionId, {
-          type: 'file.edited',
-          payload: {
-            path: meta.path,
-            toolCallId: record.toolCallId,
-            oldHash: meta.oldHash,
-            newHash: meta.newHash,
-            diff: meta.diff,
-            linesAdded: meta.linesAdded,
-            linesRemoved: meta.linesRemoved,
-            eol: meta.eol,
-            created: meta.created,
-          },
-          ...scope,
-        });
+      // Every mutation the kernel applies, not one in four (CLOSURE B,
+      // ADR-0025 §1).
+      //
+      // This used to read `record.name === 'Edit'`, and `Write`, `Delete` and
+      // `Move` — the three tools whose mistakes are least recoverable — reached
+      // the workspace and never the audit trail. Keying on the journal entry
+      // instead of the tool's name is what stops a fifth mutating tool from
+      // re-creating the gap: a mutating tool that forgets to attach one fails
+      // `tests/integration/audit-trail.test.ts` rather than disappearing quietly.
+      const journalled = journalEntriesOf(meta);
+      if (journalled.length > 0) {
+        for (const entry of journalled) {
+          void store.append(sessionId, {
+            type: 'file.edited',
+            payload: journalEventPayload(entry, record.toolCallId, meta),
+            ...scope,
+          });
+        }
         return;
       }
 
@@ -1151,6 +1193,27 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       // Token and cost totals live only in the metadata snapshot; see
       // `SessionOptions.resumedUsage`.
       resumedUsage = replayed.metadata.usage;
+
+      // ADR-0025 §6: the journal is rebuilt from the log, so a session resumed
+      // after a crash can still undo. Until alpha.10 the journal was a private
+      // array that died with the process, which meant the one capability that
+      // repairs a mistake was unavailable in exactly the situation that produces
+      // the worst ones.
+      const { rebuilt } = await journalFromLog(store, sessionId, editJournal);
+      config.warnings.push(...rebuilt.warnings);
+      if (rebuilt.entries.length > 0) {
+        context.addFact({
+          id: 'resume-journal',
+          priority: 'normal',
+          text:
+            `${rebuilt.entries.length} edit(s) from the previous session were recovered from the ` +
+            `event log${
+              rebuilt.legacyCount > 0
+                ? `, ${rebuilt.legacyCount} of which predate the ` + 'durable journal and cannot be reversed'
+                : ''
+            }.`,
+        });
+      }
     }
   } else {
     await store.createSession(metadata);
@@ -1312,6 +1375,36 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       return {
         ok: false,
         message: 'Backend switching mid-session is not available in v0.1. Restart without --remote.',
+      };
+    },
+
+    // Both routed through the tool runtime, so `/undo` gets the same policy
+    // decision, approval prompt and narrowed executor a model-issued `Undo`
+    // gets (ADR-0026 §6). The control plane never touches the journal directly:
+    // an undo is an edit, and edits go through the tool plane.
+    async undo(request) {
+      const result = await session.runControlTool('Undo', {
+        scope: request.scope,
+        ...(request.count !== undefined ? { count: request.count } : {}),
+        ...(request.path !== undefined ? { path: request.path } : {}),
+      });
+      return { ok: !result.isError, message: result.content };
+    },
+
+    undoInventory() {
+      return {
+        entries: editJournal
+          .all()
+          .filter((e) => !editJournal.isUndone(e.entryId))
+          .reverse()
+          .map((e) => ({
+            entryId: e.entryId,
+            kind: e.kind,
+            displayPath: e.displayPath,
+            turnId: e.turnId,
+            ...(e.undoOf ? { undoOf: e.undoOf } : {}),
+          })),
+        uncovered: uncovered.render(editJournal),
       };
     },
 

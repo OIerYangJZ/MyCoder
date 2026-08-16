@@ -92,6 +92,25 @@ export interface ControlHost {
   };
   hooks: ReadonlyArray<{ event: string; command: string[] }>;
   /**
+   * Reverse edits, on the user's behalf (ADR-0026 §6).
+   *
+   * A callback rather than the control plane reaching for the journal itself,
+   * because an undo is an edit: it must go through the policy engine, the
+   * approval prompt and a narrowed executor, and the only component that owns
+   * that sequence is the tool runtime. The kernel wires this to
+   * `ToolRuntime.executeControlCall`, so `/undo` and the model's `Undo` cannot
+   * disagree about what may be reversed.
+   */
+  undo(request: { scope: 'last' | 'turn' | 'path'; count?: number; path?: string }): Promise<{
+    ok: boolean;
+    message: string;
+  }>;
+  /** The journal inventory, for `/undo list`. */
+  undoInventory(): {
+    entries: Array<{ entryId: string; kind: string; displayPath: string; turnId: string; undoOf?: string }>;
+    uncovered: string;
+  };
+  /**
    * Per-provider credential *source* lines (alpha.3 §8).
    *
    * "file" / "environment (X)" / "none", and whether a credential was found.
@@ -139,6 +158,7 @@ export class ControlPlane {
     this.register('skills', handleSkills);
     this.register('agents', handleAgents);
     this.register('hooks', handleHooks);
+    this.register('undo', handleUndo);
     this.register('cancel', handleCancel);
     this.register('help', (args) => handleHelp(args, this.commandNames()));
   }
@@ -473,6 +493,7 @@ const handleStatus: ControlHandler = (_args, host) => {
   const model = host.modelRegistry.resolve(session.activeModelAlias);
   const sandbox = describeEnforcement(host.enforcement);
   const dirty = session.editJournal.dirtyPaths();
+  const inventory = host.undoInventory();
   const u = session.usageSnapshot;
   const { active, finished } = host.delegations();
   const cost = session.costBreakdown;
@@ -506,6 +527,12 @@ const handleStatus: ControlHandler = (_args, host) => {
         `${u.modelRequests} requests, ${u.toolCalls} tool calls` +
         (u.costUsd > 0 ? `, $${u.costUsd.toFixed(4)}` : ''),
       `dirty files  : ${dirty.length === 0 ? 'none' : `${dirty.length} (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? ', …' : ''})`}`,
+      // alpha.10 §12. The count on its own would be the dishonest half — a user
+      // reading "12 reversible" would take the workspace to be 12 steps from
+      // where it started. The enumeration below is what makes the number mean
+      // something, and it is derived from this session, never from a constant.
+      `undo         : ${inventory.entries.length === 0 ? 'nothing reversible' : `${inventory.entries.length} reversible edit(s) — /undo list`}`,
+      ...inventory.uncovered.split('\n').map((line) => `               ${line}`),
       `skills       : ${skills.length === 0 ? 'none active' : skills.map((s) => `${s.name} (${s.preApplied ? 'agent' : s.scope})`).join(', ')}`,
       // §41: enough to know what a child is doing, and nothing about how it was
       // prompted. No instructions, no credentials, no task text.
@@ -733,6 +760,82 @@ const handleHooks: ControlHandler = (_args, host) => ({
         host.hooks.map((h) => `  ${h.event.padEnd(18)} ${h.command.join(' ')}`).join('\n') +
         '\n\nProject hooks run through the executor with a scrubbed environment and are never trusted kernel hooks.',
 });
+
+/**
+ * `/undo` (ADR-0026 §1).
+ *
+ * ```text
+ * /undo                reverse the most recent reversible edit
+ * /undo last <n>       reverse the last n
+ * /undo path <p>       reverse every edit to one file
+ * /undo turn           reverse everything the current turn did
+ * /undo list           reverse nothing; show the inventory and the limits
+ * ```
+ *
+ * There is deliberately no "undo everything since the session started". A
+ * session-wide revert with no VCS underneath it is a restore, not an undo, and
+ * it should look like one.
+ */
+const handleUndo: ControlHandler = async (args, host) => {
+  const sub = (args[0] ?? '').toLowerCase();
+
+  if (sub === 'list' || sub === 'status') {
+    const inventory = host.undoInventory();
+    if (inventory.entries.length === 0) {
+      return {
+        ok: true,
+        command: 'undo',
+        message: `No edit in this session can be reversed.\n\n${inventory.uncovered}`,
+      };
+    }
+    return {
+      ok: true,
+      command: 'undo',
+      message: [
+        `${inventory.entries.length} reversible edit(s), newest first:`,
+        ...inventory.entries.map(
+          (e) =>
+            `  ${e.entryId}  ${e.kind.padEnd(9)} ${e.displayPath}` +
+            (e.undoOf ? '  (itself a reversal)' : ''),
+        ),
+        '',
+        inventory.uncovered,
+      ].join('\n'),
+    };
+  }
+
+  if (sub === 'path') {
+    const target = args[1];
+    if (!target) return { ok: false, command: 'undo', message: 'Usage: /undo path <file>' };
+    const outcome = await host.undo({ scope: 'path', path: target });
+    return { ok: outcome.ok, command: 'undo', message: outcome.message, projection: outcome.message };
+  }
+
+  if (sub === 'turn') {
+    const outcome = await host.undo({ scope: 'turn' });
+    return { ok: outcome.ok, command: 'undo', message: outcome.message, projection: outcome.message };
+  }
+
+  const count = sub === 'last' ? Number.parseInt(args[1] ?? '1', 10) : 1;
+  if (!Number.isFinite(count) || count < 1) {
+    return { ok: false, command: 'undo', message: 'Usage: /undo last <n>' };
+  }
+  if (sub !== '' && sub !== 'last') {
+    return {
+      ok: false,
+      command: 'undo',
+      message:
+        `Unknown subcommand "/undo ${sub}". Try /undo, /undo last <n>, /undo path <f>, ` +
+        '/undo turn, or /undo list.',
+    };
+  }
+
+  const outcome = await host.undo({ scope: 'last', count });
+  // Projected, because the model's picture of those files is now wrong and it
+  // did not cause that. A control command that silently changed the workspace
+  // under the model is the failure this projection exists to prevent.
+  return { ok: outcome.ok, command: 'undo', message: outcome.message, projection: outcome.message };
+};
 
 const handleCancel: ControlHandler = (_args, host) => {
   const cancelled = host.session.cancel();

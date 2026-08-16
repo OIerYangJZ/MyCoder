@@ -143,6 +143,10 @@ export function createWriteTool(opts: WriteToolOptions): ToolDefinition<WriteArg
             toolCallId: ctx.toolCallId,
             turnId: ctx.turnId,
             stepId: ctx.stepId,
+            // ADR-0025 §7: a child's edits enter the parent's journal, but
+            // attributed. The registry is shared, so without this the parent
+            // could not tell its own edits from a subagent's.
+            ...(ctx.delegation.delegationId ? { delegationId: ctx.delegation.delegationId } : {}),
             now: ctx.now,
           };
 
@@ -185,6 +189,9 @@ export function createWriteTool(opts: WriteToolOptions): ToolDefinition<WriteArg
                   eol: plan.eol,
                   created: plan.kind === 'create',
                   bytesWritten: result.bytesWritten,
+                  // CLOSURE B (ADR-0025 §1). Until alpha.10 this tool's writes
+                  // reached the workspace and never the event log.
+                  journal: result.rollback,
                 },
               },
             );

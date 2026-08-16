@@ -15,13 +15,21 @@
  * filesystem → fsync → atomic rename → record new hash → append event.
  */
 
-import { sha256Hex, type ModelRequestId, type StepId, type ToolCallId, type TurnId } from '../util/ids.ts';
+import {
+  newJournalEntryId,
+  sha256Hex,
+  type JournalEntryId,
+  type ModelRequestId,
+  type StepId,
+  type ToolCallId,
+  type TurnId,
+} from '../util/ids.ts';
 import { kernelError, type KernelError } from '../util/errors.ts';
 import type { CanonicalPath } from '../util/paths.ts';
 import { detectEol, toLf, type EolStyle } from '../util/text.ts';
 import type { CapabilityExecutor } from '../execution/backend.ts';
 import { FreshnessLedger, freshnessError } from '../context/freshness.ts';
-import type { RollbackMetadata } from './atomic-write.ts';
+import { capJournalDiff, type RollbackMetadata } from './atomic-write.ts';
 import { summarizeDiff, unifiedDiff, type DiffStats } from './diff.ts';
 import { applyExactReplace, prepareCreate } from './exact-replace.ts';
 
@@ -61,6 +69,10 @@ export interface EditContext {
   turnId: TurnId;
   stepId: StepId;
   modelRequestId?: ModelRequestId;
+  /** Set when this edit is itself a reversal, naming the entry it reverses. */
+  undoOf?: JournalEntryId;
+  /** Set when a delegated child is performing the edit (ADR-0025 §7). */
+  delegationId?: string;
   now(): number;
 }
 
@@ -77,6 +89,14 @@ export interface EditPlan {
   stats: DiffStats;
   eol: EolStyle;
   mixedEol: boolean;
+  /**
+   * Whether the content *being replaced* ended with a newline (ADR-0025 §3).
+   *
+   * Recorded on the plan rather than recomputed at undo time because by then the
+   * only copy of the pre-edit content is the diff, and the diff cannot express
+   * it.
+   */
+  finalNewline: boolean;
   replacements: number;
   /** Human summary for the approval prompt. */
   summary: string;
@@ -145,6 +165,9 @@ export class ExactEditEngine implements EditEngine {
         stats: diff.stats,
         eol: 'lf',
         mixedEol: false,
+        // There was no file, so there is no prior shape to restore; reversing a
+        // create deletes.
+        finalNewline: true,
         replacements: 0,
         summary: `create ${proposal.displayPath} (${diff.stats.linesAdded} lines)`,
       },
@@ -224,6 +247,7 @@ export class ExactEditEngine implements EditEngine {
         stats: diff.stats,
         eol: eolInfo.style,
         mixedEol: eolInfo.mixed,
+        finalNewline: eolInfo.finalNewline,
         replacements: 1,
         summary:
           `rewrite ${proposal.displayPath} (${summarizeDiff(diff.stats)}` +
@@ -290,6 +314,7 @@ export class ExactEditEngine implements EditEngine {
         stats: diff.stats,
         eol: eolInfo.style,
         mixedEol: eolInfo.mixed,
+        finalNewline: eolInfo.finalNewline,
         replacements: 0,
         summary: `delete ${proposal.displayPath} (${diff.stats.linesRemoved} lines)`,
       },
@@ -369,6 +394,7 @@ export class ExactEditEngine implements EditEngine {
         stats: diff.stats,
         eol: applied.eol,
         mixedEol: applied.mixedEol,
+        finalNewline: detectEol(currentContent).finalNewline,
         replacements: applied.replacements,
         summary:
           `edit ${proposal.displayPath} (${summarizeDiff(diff.stats)}` +
@@ -432,13 +458,16 @@ export class ExactEditEngine implements EditEngine {
       }
 
       const rollback: RollbackMetadata = {
+        entryId: newJournalEntryId(ctx.now()),
         path: plan.path,
         displayPath: plan.displayPath,
         kind: plan.kind,
         oldHash: plan.oldHash,
         newHash: plan.newHash,
-        diff: plan.diff,
+        ...capJournalDiff(plan.diff),
         eol: plan.eol,
+        finalNewline: plan.finalNewline,
+        ...(plan.mixedEol ? { mixedEol: true } : {}),
         createdFile: plan.kind === 'create',
         ...(plan.kind === 'delete' ? { deletedFile: true } : {}),
         toolCallId: ctx.toolCallId,
@@ -447,6 +476,8 @@ export class ExactEditEngine implements EditEngine {
         appliedAt: ctx.now(),
       };
       if (ctx.modelRequestId) rollback.modelRequestId = ctx.modelRequestId;
+      if (ctx.undoOf) rollback.undoOf = ctx.undoOf;
+      if (ctx.delegationId) rollback.delegationId = ctx.delegationId;
 
       return { plan, rollback, bytesWritten: buffer.length };
     } finally {

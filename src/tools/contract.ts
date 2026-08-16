@@ -68,6 +68,19 @@ export interface ToolResolveContext {
    * tool unable to mutate it.
    */
   loopBudget: LoopBudgetSnapshot;
+  /**
+   * True when this call came from the **user**, through the control plane,
+   * rather than from the model (ADR-0026 §6).
+   *
+   * Unforgeable by construction, and that is the point: it is not an argument,
+   * so it is not in any tool's input schema, so there is no value the model can
+   * emit that sets it. A tool may use it to widen what a person is allowed to
+   * ask for — `/undo` may reverse a reversal, and may reach past the current
+   * turn, neither of which the model may do — but never to skip a policy
+   * decision or an approval. The pipeline above this line is identical either
+   * way.
+   */
+  operator?: boolean;
   /** Dispatch a bounded child scope. Absent when no agents are configured. */
   delegate?: DelegateFn;
   /** Activate a discovered skill. Absent when no skills are configured. */
