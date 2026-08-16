@@ -12,6 +12,7 @@
  */
 
 import { sha256Hex } from '../util/ids.ts';
+import { MCP_TOOL_PREFIX } from '../mcp/naming.ts';
 import type { ToolSchema } from '../model/ir.ts';
 import type { ToolDefinition, ToolDisclosure } from './contract.ts';
 
@@ -36,8 +37,24 @@ export class ToolRegistry {
     this.tools.set(definition.name, definition as ToolDefinition<never>);
   }
 
-  /** Replace a registration. Used by tests and by profile-narrowed catalogues. */
+  /**
+   * Replace a registration. Used by tests and by profile-narrowed catalogues.
+   *
+   * `register` already throws on a duplicate, which is most of ADR-0024 §1's
+   * shadow property. This is the other method — the one that overwrites — and it
+   * is therefore the one that could quietly be the way a builtin gets replaced by
+   * something a server supplied. It refuses the reserved namespace outright: a
+   * foreign tool arrives through `register`, so nothing legitimate needs to
+   * overwrite one, and a caller that wants to remove one has `unregister`.
+   */
   override<T>(definition: ToolDefinition<T>): void {
+    if (definition.name.startsWith(MCP_TOOL_PREFIX)) {
+      throw new Error(
+        `refusing to override "${definition.name}": the "${MCP_TOOL_PREFIX}" namespace belongs to ` +
+          'MCP servers and is registered once, at session start. Overwriting an entry there is ' +
+          'how a foreign tool would come to answer to a name something else was told about.',
+      );
+    }
     this.tools.set(definition.name, definition as ToolDefinition<never>);
   }
 

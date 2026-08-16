@@ -226,7 +226,6 @@ unreviewable in exactly the way the function exists to prevent.
 
 ```text
 HTTP transport through the EgressGate (§10)     not built
-registry / session wiring                        not built — no McpService
 secrets via SecretBroker (§15)                   partial: the env canary passes,
                                                  no injection path exists
 friction metric on MCP tools (§17)               not built
@@ -235,10 +234,22 @@ third-party server dogfood (§5)                  not run
 CLOSURE B — the golden set's denial arm (§20)    not built
 ```
 
-The honest summary is that **nothing constructs a client from configuration
-yet**. `[mcp.servers.*]` parses, is audited, and is correctly refused from a
-project layer; `McpClient` and `StdioTransport` work against a real spawned
-server. Nothing joins them. A user cannot attach a server today.
+`McpService` closed the gap that used to head this list. A **stdio** server
+declared in user config now attaches end to end: started through the
+`ExecutionBackend`, its namespaced tools registered into the real
+`ToolRegistry` — last, so that a bug letting one through under a builtin's name
+would collide with an already-registered entry and throw rather than silently
+win — and the session's enforcement descriptor built with `withForeignTools`
+before the system prompt is assembled, so the model cannot be told about a
+stronger boundary than the one `/status` reports.
+
+Two decisions in it are worth naming. A declared server that will not start
+**refuses the session**, naming the server and telling the user about
+`optional = true`; and a refusal after some servers already started tears the
+started ones down, because leaking the processes the refusal exists to avoid
+would be worse than the failure. An HTTP server is refused the same way rather
+than skipped: the transport is unbuilt, and a declared server that quietly does
+not exist is exactly what ADR-0022 §5 is about.
 
 §25's success definition contains "the friction of the foreign surface is
 measured on two models and reported side by side". That is false, so the

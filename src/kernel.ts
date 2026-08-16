@@ -52,7 +52,8 @@ import {
 import { LinuxNativeExecutionBackend } from './execution/linux-native/backend.ts';
 import { resolveLauncherPath } from './execution/linux-native/paths.ts';
 import { MutationDetector } from './execution/mutation-detector.ts';
-import { describeEnforcement, networkEnforcementLabel } from './execution/enforcement.ts';
+import { describeEnforcement, networkEnforcementLabel, withForeignTools } from './execution/enforcement.ts';
+import { McpService } from './mcp/service.ts';
 import type { ExecutionBackend } from './execution/backend.ts';
 
 import { ModelRegistry, type ResolvedModelProfile } from './model/profiles.ts';
@@ -731,13 +732,32 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   const context = new ContextEngine({ repository, freshness, now: () => clock.now() });
   const editJournal = new EditJournal();
 
+  // 10b. MCP servers, before the projector, because attaching one changes what
+  // the boundary description is allowed to say (ADR-0023 §6). A server that will
+  // not start refuses the session here, which is why this is above every
+  // registration below rather than beside them.
+  const mcp = await McpService.start({
+    servers: config.mcp.servers ?? {},
+    backend: backend.process,
+    workspaceRoot,
+    logger: logger.child('mcp'),
+  });
+  config.warnings.push(...mcp.warnings);
+
   // The model's view of the boundary comes from the same descriptor `/status`
   // reads, so the prompt cannot describe a stronger sandbox than the one the CLI
   // reports (§42, invariant 5).
-  const sandbox = describeEnforcement(backend.environment.enforcement);
+  //
+  // `withForeignTools` is applied *here*, once, and every consumer below reads
+  // this constant rather than `backend.environment.enforcement`. The backend's
+  // own descriptor is still true — it describes the backend — but it does not
+  // know about the servers this session attached, and a prompt or an audit
+  // record built from it would be describing a session that does not exist.
+  const enforcement = withForeignTools(backend.environment.enforcement, mcp.serverNames());
+  const sandbox = describeEnforcement(enforcement);
   const projector = new ContextProjector({
     sandboxDescription: `${sandbox.label} — ${sandbox.caveat}`,
-    networkEnforcement: networkEnforcementLabel(backend.environment.enforcement),
+    networkEnforcement: networkEnforcementLabel(enforcement),
     permissionProfile: sessionProfile.name,
     backendDescription: backend.environment.description,
     editJournal,
@@ -794,6 +814,14 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
         ...(opts.webLookup ? { lookup: opts.webLookup } : {}),
       }),
     );
+  }
+
+  // Foreign tools last, so a bug that let one through under a builtin's name
+  // would collide with an already-registered entry and throw, rather than
+  // silently winning the race. `register` refuses a duplicate; that ordering is
+  // what turns the refusal into a guarantee (ADR-0024 §1).
+  for (const definition of mcp.toolDefinitions()) {
+    toolRegistry.register(definition);
   }
 
   // 12. Session store.
@@ -1122,7 +1150,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
         // that says "container-enforced" without saying which dimensions were
         // container-enforced is exactly the overclaim this milestone set out to
         // make impossible.
-        enforcement: backend.environment.enforcement,
+        enforcement,
         kernelVersion: KERNEL_VERSION,
       },
     });
@@ -1180,7 +1208,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       kernelVersion: KERNEL_VERSION,
       environment: {
         sandboxDescription: `${sandbox.label} — ${sandbox.caveat}`,
-        networkEnforcement: networkEnforcementLabel(backend.environment.enforcement),
+        networkEnforcement: networkEnforcementLabel(enforcement),
         backendDescription: backend.environment.description,
       },
       maxDepth: config.loop.maxDelegationDepth ?? ROOT_SCOPE.maxDepth,
@@ -1324,6 +1352,9 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       await session.runHooks('SessionEnd', undefined, {}).catch(() => {});
       await session.persistMetadata();
       await store.close();
+      // Before the backend: a stdio server is one of its child processes, and
+      // closing the backend first would leave the kill with nothing to talk to.
+      await mcp.close();
       await backend.close();
       secrets.releaseAll();
     },

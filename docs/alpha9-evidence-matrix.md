@@ -36,29 +36,34 @@ runners, ubuntu-latest and macos-latest.
 
 ## 0. What this milestone reached, and what it did not
 
-CLOSURE A is complete. The MCP **trust layer** is built and tested. The MCP
-**product** is not: nothing constructs a server from configuration, so a user
-cannot yet attach one.
+CLOSURE A is complete. The MCP **trust layer** is built and tested, and a
+**stdio** server declared in user config now attaches end to end: `McpService`
+starts it through the `ExecutionBackend`, its namespaced tools reach the real
+`ToolRegistry`, and the session's enforcement descriptor reports what is not
+enforced inside it.
 
-| Area                                            | State                                                                     |
-| ----------------------------------------------- | ------------------------------------------------------------------------- |
-| CLOSURE A — a tag whose gate is green           | **done** — `v0.1.0-alpha.8.1`, run `31935882150`                          |
-| ADR-0022, ADR-0023, ADR-0024                    | **done**                                                                  |
-| the capability question (§8)                    | **done** — `mcp.invoke`, decided and tested                               |
-| server declaration, user-config only (§11)      | **done**                                                                  |
-| stdio transport through the backend (§9)        | **done** — local backend; other backends refuse                           |
-| naming and provenance (§13)                     | **done**                                                                  |
-| untrusted descriptions (§12)                    | **done**                                                                  |
-| enforcement descriptors (§14)                   | **done** in the descriptor; **not** wired into the live `/status` command |
-| HTTP transport through the EgressGate (§10)     | **NOT BUILT**                                                             |
-| secrets via `SecretBroker` (§15)                | **partial** — the env canary passes; no credential injection path exists  |
-| lifecycle and failure (§16)                     | **done**                                                                  |
-| registry/session wiring                         | **NOT BUILT** — no `McpService`, no config → client construction          |
-| friction metric on MCP tools (§17)              | **NOT BUILT**                                                             |
-| the two-arm experiment, either model (§17, §18) | **NOT RUN**                                                               |
-| third-party server dogfood (§5)                 | **NOT RUN**                                                               |
-| CLOSURE B — the golden set's denial arm (§20)   | **NOT BUILT**                                                             |
-| CLOSURE C — the clean-resolver non-claim (§21)  | **restated**, not closed — see §8                                         |
+What is still missing is the HTTP transport, the credential path, and every
+measurement §17 and §18 ask for.
+
+| Area                                            | State                                                                    |
+| ----------------------------------------------- | ------------------------------------------------------------------------ |
+| CLOSURE A — a tag whose gate is green           | **done** — `v0.1.0-alpha.8.1`, run `31935882150`                         |
+| ADR-0022, ADR-0023, ADR-0024                    | **done**                                                                 |
+| the capability question (§8)                    | **done** — `mcp.invoke`, decided and tested                              |
+| server declaration, user-config only (§11)      | **done**                                                                 |
+| stdio transport through the backend (§9)        | **done** — local backend; other backends refuse                          |
+| naming and provenance (§13)                     | **done**                                                                 |
+| untrusted descriptions (§12)                    | **done**                                                                 |
+| enforcement descriptors (§14)                   | **done**, and wired: the kernel applies it before building the prompt    |
+| HTTP transport through the EgressGate (§10)     | **NOT BUILT**                                                            |
+| secrets via `SecretBroker` (§15)                | **partial** — the env canary passes; no credential injection path exists |
+| lifecycle and failure (§16)                     | **done**                                                                 |
+| registry/session wiring                         | **done** — `McpService`, wired into `createKernel`                       |
+| friction metric on MCP tools (§17)              | **NOT BUILT**                                                            |
+| the two-arm experiment, either model (§17, §18) | **NOT RUN**                                                              |
+| third-party server dogfood (§5)                 | **NOT RUN**                                                              |
+| CLOSURE B — the golden set's denial arm (§20)   | **NOT BUILT**                                                            |
+| CLOSURE C — the clean-resolver non-claim (§21)  | **restated**, not closed — see §8                                        |
 
 **§25's success definition is therefore not met.** The sentence it asks for
 contains "the friction of the foreign surface is measured on two models and
@@ -117,17 +122,20 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 
 ## 4. Naming and provenance (§13, ADR-0024) — the Shadow Stop
 
-| Requirement                                         | Status | Evidence                                                                        | Notes                                    |
-| --------------------------------------------------- | ------ | ------------------------------------------------------------------------------- | ---------------------------------------- |
-| a tool named `Read` cannot shadow the builtin       | PASS   | test:a tool called Read is namespaced and does not become the builtin           | The server never supplies the identifier |
-| no builtin name is reachable by any composition     | PASS   | test:every builtin name stays reachable and unshadowed                          | Over six builtin names, not one example  |
-| two servers with the same tool name stay distinct   | PASS   | test:two servers offering the same tool name stay distinguishable               |                                          |
-| the audit log can say which server a call went to   | PASS   | test:the name round-trips, so the audit log can say which server                |                                          |
-| an illegal name is refused, never sanitised         | PASS   | test:NEGATIVE CONTROL: illegal names are refused, not cleaned up                | Sanitising is how two names become one   |
-| an over-long identifier is refused, never truncated | PASS   | test:NEGATIVE CONTROL: an over-long identifier is refused rather than truncated |                                          |
-| one bad name does not cost the other tools          | PASS   | test:an illegal tool name is rejected without costing the others                |                                          |
-| the same holds against a **real** server            | PASS   | test:a server offering Read, Shell and Delegate shadows none of them            | A spawned process, not a fake transport  |
-| NEGATIVE CONTROL: a legal name is not rejected      | PASS   | test:NEGATIVE CONTROL: a legal name is not rejected                             |                                          |
+| Requirement                                         | Status | Evidence                                                                        | Notes                                                                                 |
+| --------------------------------------------------- | ------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| a tool named `Read` cannot shadow the builtin       | PASS   | test:a tool called Read is namespaced and does not become the builtin           | The server never supplies the identifier                                              |
+| no builtin name is reachable by any composition     | PASS   | test:every builtin name stays reachable and unshadowed                          | Over six builtin names, not one example                                               |
+| two servers with the same tool name stay distinct   | PASS   | test:two servers offering the same tool name stay distinguishable               |                                                                                       |
+| the audit log can say which server a call went to   | PASS   | test:the name round-trips, so the audit log can say which server                |                                                                                       |
+| an illegal name is refused, never sanitised         | PASS   | test:NEGATIVE CONTROL: illegal names are refused, not cleaned up                | Sanitising is how two names become one                                                |
+| an over-long identifier is refused, never truncated | PASS   | test:NEGATIVE CONTROL: an over-long identifier is refused rather than truncated |                                                                                       |
+| one bad name does not cost the other tools          | PASS   | test:an illegal tool name is rejected without costing the others                |                                                                                       |
+| the same holds against a **real** server            | PASS   | test:a server offering Read, Shell and Delegate shadows none of them            | A spawned process, not a fake transport                                               |
+| the registry ends up with both, distinguishable     | PASS   | test:a server offering Read does not collide with the builtin                   | End to end, through `McpService` into a real `ToolRegistry`                           |
+| the reserved namespace cannot be **overwritten**    | PASS   | test:the reserved namespace cannot be overwritten                               | `register` refuses duplicates; `override` is the method that could have been the hole |
+| NEGATIVE CONTROL: override still works outside it   | PASS   | test:NEGATIVE CONTROL: override still works outside the namespace               | An `override` that always threw would pass the row above, and break profile narrowing |
+| NEGATIVE CONTROL: a legal name is not rejected      | PASS   | test:NEGATIVE CONTROL: a legal name is not rejected                             |                                                                                       |
 
 ---
 
@@ -150,25 +158,28 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 
 ## 6. Transports and lifecycle (§9, §10, §16)
 
-| Requirement                                                | Status     | Evidence                                                                        | Notes                                                                       |
-| ---------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| a stdio server is a real subprocess through the backend    | PASS       | test:initialize, tools/list and tools/call all round-trip                       | `ProcessBackend.session()`, ADR-0007 amended                                |
-| **a backend that cannot host one is refused**              | PASS       | test:a backend with no session() is refused, not worked around                  | Not spawned around the sandbox — §9's weaker fallback was declined          |
-| NEGATIVE CONTROL: a backend that can, does                 | PASS       | test:NEGATIVE CONTROL: the same spec on a backend WITH session() starts         | A `start` that always threw would pass the row above                        |
-| a server that never answers times out, turn survives       | PASS       | test:one that never answers times out, and the turn survives                    | `TOOL_TIMEOUT`, and the client is still usable                              |
-| a server that dies mid-call is named                       | PASS       | test:one that dies mid-call fails that call, naming the server                  | `TOOL_FAILED`, with its stderr attached                                     |
-| a server that floods is capped at the framer               | PASS       | test:one that floods without framing is cut off rather than buffered            | 8 MB with no newline                                                        |
-| a server that lists 500 tools is capped **and discloses**  | PASS       | test:a server that lists 500 tools is capped, and the cap is disclosed          |                                                                             |
-| a cancelled turn aborts the call and kills the tree        | PASS       | test:a cancelled turn aborts the call in flight                                 | Process group kill, alpha.7 §31                                             |
-| an unsupported protocol version refuses the server         | PASS       | test:an unsupported protocol version refuses the server                         |                                                                             |
-| NEGATIVE CONTROL: a supported version starts               | PASS       | test:NEGATIVE CONTROL: a supported version starts, and an older one is accepted | A client refusing every version would pass the row above                    |
-| a catalogue that changes disables the server               | PASS       | test:a changed description is detected, not adopted                             | Names, descriptions and schemas are all in the hash                         |
-| a disabled server refuses further calls, naming why        | PASS       | test:a disabled server refuses further calls, naming why                        |                                                                             |
-| NEGATIVE CONTROL: an unchanged catalogue reconciles        | PASS       | test:NEGATIVE CONTROL: an unchanged catalogue reconciles cleanly                | An always-"changed" comparison would pass both rows above                   |
-| **an HTTP server goes through the EgressGate**             | NOT TESTED | artifact:docs/alpha9-status.md                                                  | Not built. §5 requires it; §10 specifies it. This is a gap, not a scope cut |
-| **an HTTP host that is not allowlisted is refused**        | NOT TESTED | artifact:docs/alpha9-status.md                                                  | Depends on the row above                                                    |
-| **an HTTP host resolving to a private address is refused** | NOT TESTED | artifact:docs/alpha9-status.md                                                  | ADR-0017 §23 would apply; untested because unbuilt                          |
-| a server that fails to start refuses the session           | NOT TESTED | artifact:docs/adr/ADR-0022-mcp-client-transports-and-lifecycle.md               | Decided in ADR-0022 §5; no session wiring exists to enforce it              |
+| Requirement                                                | Status     | Evidence                                                                        | Notes                                                                            |
+| ---------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| a stdio server is a real subprocess through the backend    | PASS       | test:initialize, tools/list and tools/call all round-trip                       | `ProcessBackend.session()`, ADR-0007 amended                                     |
+| **a backend that cannot host one is refused**              | PASS       | test:a backend with no session() is refused, not worked around                  | Not spawned around the sandbox — §9's weaker fallback was declined               |
+| NEGATIVE CONTROL: a backend that can, does                 | PASS       | test:NEGATIVE CONTROL: the same spec on a backend WITH session() starts         | A `start` that always threw would pass the row above                             |
+| a server that never answers times out, turn survives       | PASS       | test:one that never answers times out, and the turn survives                    | `TOOL_TIMEOUT`, and the client is still usable                                   |
+| a server that dies mid-call is named                       | PASS       | test:one that dies mid-call fails that call, naming the server                  | `TOOL_FAILED`, with its stderr attached                                          |
+| a server that floods is capped at the framer               | PASS       | test:one that floods without framing is cut off rather than buffered            | 8 MB with no newline                                                             |
+| a server that lists 500 tools is capped **and discloses**  | PASS       | test:a server that lists 500 tools is capped, and the cap is disclosed          |                                                                                  |
+| a cancelled turn aborts the call and kills the tree        | PASS       | test:a cancelled turn aborts the call in flight                                 | Process group kill, alpha.7 §31                                                  |
+| an unsupported protocol version refuses the server         | PASS       | test:an unsupported protocol version refuses the server                         |                                                                                  |
+| NEGATIVE CONTROL: a supported version starts               | PASS       | test:NEGATIVE CONTROL: a supported version starts, and an older one is accepted | A client refusing every version would pass the row above                         |
+| a catalogue that changes disables the server               | PASS       | test:a changed description is detected, not adopted                             | Names, descriptions and schemas are all in the hash                              |
+| a disabled server refuses further calls, naming why        | PASS       | test:a disabled server refuses further calls, naming why                        |                                                                                  |
+| NEGATIVE CONTROL: an unchanged catalogue reconciles        | PASS       | test:NEGATIVE CONTROL: an unchanged catalogue reconciles cleanly                | An always-"changed" comparison would pass both rows above                        |
+| **an HTTP server goes through the EgressGate**             | NOT TESTED | artifact:docs/alpha9-status.md                                                  | Not built. §5 requires it; §10 specifies it. This is a gap, not a scope cut      |
+| **an HTTP host that is not allowlisted is refused**        | NOT TESTED | artifact:docs/alpha9-status.md                                                  | Depends on the row above                                                         |
+| **an HTTP host resolving to a private address is refused** | NOT TESTED | artifact:docs/alpha9-status.md                                                  | ADR-0017 §23 would apply; untested because unbuilt                               |
+| a server that fails to start refuses the session           | PASS       | test:refuses the session by default, naming the server and the remedy           | Names the server and the remedy, per ADR-0022 section 5                          |
+| `optional = true` starts the session without it, loudly    | PASS       | test:`optional = true` starts the session without it, loudly                    | A warning and no tools, never a silent gap                                       |
+| a refusal does not leave other servers half-attached       | PASS       | test:one failing server does not leave the others half-attached                 | Leaking the process the refusal avoids would be worse than the failure           |
+| an unimplemented transport is refused, not skipped         | PASS       | test:an HTTP server is refused explicitly, not silently skipped                 | HTTP is unbuilt; a declared server that quietly does not exist is section 5 case |
 
 ---
 
@@ -198,14 +209,24 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 
 ---
 
+### 6.1 Configuration to a running server, end to end
+
+| Requirement                                            | Status | Evidence                                                                | Notes                                             |
+| ------------------------------------------------------ | ------ | ----------------------------------------------------------------------- | ------------------------------------------------- |
+| a declared server's tools reach a real registry        | PASS   | test:the tools reach a real ToolRegistry under namespaced names         | `Read` and the namespaced echo tool, side by side |
+| attaching one changes what `/status` may say           | PASS   | test:attaching a server changes what /status is allowed to say          | The descriptor is applied in `createKernel`, once |
+| NEGATIVE CONTROL: with none, `/status` is silent on it | PASS   | test:NEGATIVE CONTROL: with no servers, /status says nothing about them |                                                   |
+
+---
+
 ## 9. Gates at this commit
 
 | Gate               | Result                                                   |
 | ------------------ | -------------------------------------------------------- |
-| offline suite      | 1118 · 1025 pass · 0 fail · 93 skip                      |
+| offline suite      | 1128 · 1035 pass · 0 fail · 93 skip                      |
 | architecture lint  | 16 rules, 0 violations                                   |
 | lint self-tests    | green, including 2 new workflow-hazard checks            |
-| evidence gate      | 7 matrices, every claim resolves                         |
+| evidence gate      | 7 matrices, 85 alpha.9 rows, every claim resolves        |
 | typecheck / format | clean                                                    |
 | release gate       | green at `c701a31` (run `31935882150`), tagged alpha.8.1 |
 

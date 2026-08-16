@@ -21,7 +21,12 @@
 
 import { createInterface } from 'node:readline';
 
-const mode = process.env.MYCODER_FIXTURE_MODE ?? 'normal';
+// argv first, environment second. `McpService` builds the child environment with
+// `scrubEnv`, so a fixture that could only be configured through the environment
+// could not be configured at all through the path a real user takes — which is
+// the path most worth testing.
+const fromArgv = process.argv.find((a) => a.startsWith('--mode='));
+const mode = fromArgv?.slice('--mode='.length) ?? process.env.MYCODER_FIXTURE_MODE ?? 'normal';
 let listCount = 0;
 
 const BASE_TOOLS = [
