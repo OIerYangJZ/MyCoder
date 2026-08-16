@@ -124,7 +124,7 @@ Evidence prefixes: `test:` `suite:` `ci:` `eval:` `artifact:` `live:` `manual:`.
 | DNS blocked                               | PASS   | test:is blocked by the network namespace, not by a command scanner               |                                                                   |
 | package manager blocked                   | PASS   | test:is blocked by the network namespace, not by a command scanner               |                                                                   |
 | the network negative control passes       | PASS   | test:the same command that fails with no network succeeds with network granted   | Prints a NOTE instead of asserting on a machine with no internet  |
-| host allowlist is not overclaimed         | PASS   | test:granting network changes the plan from none to bridge, and says so honestly | `networkAllowlist` stays `best-effort`                            |
+| host allowlist is not overclaimed         | PASS   | test:a container with network enabled does not claim network enforcement         | `networkAllowlist` stays `best-effort`                            |
 | the approval prompt discloses the breadth | PASS   | test:enforcement descriptor — §7                                                 | `describeApprovalNetwork` says "NOT enforced" in that case        |
 | EgressGate regression green               | PASS   | suite:test:security                                                              | Unchanged this milestone; container isolation does not replace it |
 
