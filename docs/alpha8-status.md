@@ -191,8 +191,14 @@ command on the left runs. So `pack.txt` sat untracked in the repository root by
 the time `collectBuildInfo` read `git status --porcelain`. The log now goes to
 `$RUNNER_TEMP`.
 
-Three defects, in the machinery whose entire job is to be trustworthy, all of
-which read correctly on review.
+**Defect 16 — a `pipefail` assertion that could only ever fail.** The install step
+asserted `mycoder doctor 2>&1 | grep -q 'config.toml'`. Under `set -o pipefail` a
+pipeline takes the last non-zero status in it, and `doctor` exits 3 here _by
+design_ — that is the thing under test — so the pipeline returned 3 whether or not
+grep matched.
+
+Four defects, in the machinery whose entire job is to be trustworthy, all of which
+read correctly on review.
 
 ## Defect distribution, for the alpha.9 decision (§30)
 
@@ -202,26 +208,28 @@ distribution / packaging   4   (2 of them fatal; 3 found only by a real install
 first-run / config UX      4   (2 of them found only by doing the real thing:
                                placing a credential, and running the eval gate)
 security-mechanism         2   (launcher identity, credential write ordering)
-release engineering        3   (the gate could not build what it checks; the pack
+release engineering        4   (the gate could not build what it checks; the pack
                                script collided with a pnpm builtin; the pack step
-                               dirtied the tree with its own log)
+                               dirtied the tree with its own log; a pipefail
+                               assertion could only ever fail)
 provider adapter           1
 test-methodology           2   (a suite passing for the wrong reason; a security
                                task that stopped exercising the boundary)
 boundary failures          0
 
-Fifteen, not ten. Five more arrived *after* the tag — placing a real credential,
-running the eval gate, and **three** from running the release workflow — all from
+Sixteen, not ten. Six more arrived *after* the tag — placing a real credential,
+running the eval gate, and **four** from running the release workflow — all from
 doing the real thing rather than testing it, which is the same pattern as the two
 that justified the milestone in the first place.
 
-That the release machinery accounted for three of the five is the finding worth
+That the release machinery accounted for four of the six is the finding worth
 carrying into alpha.9. It was reviewed, it read correctly, and it was wrong in
-three independent ways the first time it ran.
+four independent ways the first time each path executed. A workflow is code that
+nothing tests, and this milestone is the evidence for that sentence.
 ```
 
 §30 says: "If alpha.8 finds mostly install/config defects, that is evidence the
-product surface needs another pass before new capability." Eleven of fifteen are
+product surface needs another pass before new capability." Twelve of sixteen are
 distribution, first-run, config or release engineering, and three of those were
 fatal — two to the artifact and one to the gate that would have shipped it. Read
 literally, that points at another productization pass rather than at MCP.
@@ -272,58 +280,47 @@ provider credential was placed on that host, because alpha.7 §57 and alpha.8 §
 both say that is the user's decision and not the agent's. It was not asked for and
 not taken.
 
-### 3. The release gate is proved in four tiers of five
+### 3. The release gate — **green, end to end**
 
-It has now run for real. Pushing `v0.1.0-alpha.8` triggered it and it **blocked
-the release**, which is the behaviour it exists for. Four more runs followed,
-fixing defects 13, 14 and 15 in turn.
-
-The best of them, run `31931750015`, against the commit with 13 and 14 fixed:
+Run `31933653742`, against `f99041e`:
 
 ```text
 Offline Gates @ exact commit (ubuntu-latest)   success
 Offline Gates @ exact commit (macos-latest)    success
 Container Tier @ exact commit (REQUIRED)       success
 Native Tier   @ exact commit (REQUIRED)        success
-Build and verify the artifact                  failure   ← defect 15
-Release Gate                                   failure   (correctly)
+Build and verify the artifact                  success
+Release Gate                                   success
 ```
 
-**Four of five tiers are green on runners nobody in this project controls**,
-including both `_REQUIRED` enforcement tiers. GitHub's ubuntu image carries
-Landlock, so the native tier genuinely ran rather than skipping — the first time
-either `_REQUIRED` tier has been proved off this project's own hardware, and the
-substantive half of what §18 asks for.
+`§18` is closed. All five tiers ran at one exact commit, both enforcement tiers
+under their `_REQUIRED` variables — so neither could have passed by skipping —
+and the artifact was packed, installed into a clean prefix and driven.
 
-**The fifth is not, and the run that would have proved it never started:**
+Getting there took six runs and produced **four defects**, all in the release
+machinery, all of which read correctly on review and none of which survived
+execution:
 
-```text
-The job was not started because recent account payments have failed or your
-spending limit needs to be increased.
-```
+|        |                                                                                                                                                               |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **13** | the gate ran `package:check` without `pnpm build` — it blocked its own release on a build output it never produced                                            |
+| **14** | `pnpm pack` is a pnpm **builtin** and shadowed the script, so `--release` never reached it                                                                    |
+| **15** | `\| tee pack.txt` created the file when the shell built the pipeline, so `pack --release` refused the tree as dirty — dirtied one step earlier by its own log |
+| **16** | under `set -o pipefail`, `mycoder doctor \| grep -q` inherited doctor's exit 3, so the assertion could only ever fail                                         |
 
-Under §23 that is an **`ENVIRONMENT_ERROR`** — the account's, not the code's, and
-the same category as the OpenAI `insufficient_quota` that redirected §20. It is
-recorded rather than worked around, and the part that is this milestone's own
-fault is recorded too: five dispatches, each carrying a macOS job, which GitHub
-bills at ten times the Linux rate.
+The earlier runs also proved the gate **blocks**, twice, for two different causes.
+Both halves of §27's Release Stop are therefore evidence rather than assertion: it
+passes when everything ran, and it refuses when anything did not.
 
-|                                                           |                                                                    |
-| --------------------------------------------------------- | ------------------------------------------------------------------ |
-| the gate blocks a release when a tier fails               | **proved**, twice, for two different causes                        |
-| offline gates on both tier-1 platforms at an exact commit | **proved**                                                         |
-| container tier with `KERNEL_CONTAINER_REQUIRED=1`         | **proved**                                                         |
-| native tier with `KERNEL_NATIVE_REQUIRED=1`               | **proved**                                                         |
-| pack → install → drive the artifact, in CI                | **not proved** — three defects found and fixed, the fix unverified |
-| an end-to-end green Release Gate                          | **not proved**                                                     |
+The tag is **not moved**. `v0.1.0-alpha.8` points at `c2566f4`, whose own gate run
+is red because it contains the first broken workflow. That is the honest record;
+the green run is against the fixed commit, which is exactly what the
+`workflow_dispatch` `ref` input exists for.
 
-What is missing is CI doing the install unattended, not evidence that the install
-works: that path was driven by hand on the evidence host twice, once from the
-exact tagged artifact.
-
-The tag is **not moved**. `v0.1.0-alpha.8` points at `c2566f4`, which contains the
-first broken workflow, so its own gate run stays red — and that is the honest
-record rather than an embarrassment to tidy away.
+One thing changed outside the code to get here: the repository is now **public**,
+so Actions runs free on standard runners. The previous dispatch was blocked by an
+account billing state — an `ENVIRONMENT_ERROR` under §23 — and going public
+removed the dependency rather than working around it.
 
 ## Cross-model validation (§20–§23)
 
