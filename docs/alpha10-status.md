@@ -169,7 +169,11 @@ example.com  → 198.18.2.134
 
 alpha.10 §15 gave two options and option 1 needs a host that does not exist here,
 so the claim is downgraded to `NOT APPLICABLE` with the reason attached — in
-ADR-0017 as a section of its own, and in the alpha.6 and alpha.9 matrices. The
+ADR-0017 as a section of its own, and in **all four** matrices that carried it
+(alpha.6, alpha.7, alpha.8, alpha.9). Downgrading three of the four and leaving
+the fourth was the first version of this change, and it would have left one claim
+holding two different statuses in one evidence corpus — which the gate cannot
+catch, because both are legal. The
 negative controls are unaffected and still pass: four non-global scopes refused,
 each naming the scope. What has never been demonstrated end to end is the
 positive case.
