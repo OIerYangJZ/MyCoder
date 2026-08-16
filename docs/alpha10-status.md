@@ -197,10 +197,10 @@ commit was gated, this document then recorded that run — which produced a new
 commit — and **that** commit was gated again before the tag was placed. The tag
 points at the second one.
 
-| Gate                             | Commit                                     | Run                                                                                         |
-| -------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| the code commit                  | `f57979d827fb36d479d70ff06f31e63645be1d4d` | [31952254018](https://github.com/OIerYangJZ/MyCoder/actions/runs/31952254018) — success     |
-| **the commit the tag points at** | recorded at the tag                        | re-dispatched after this document was written; the tag push re-runs it again on the tag ref |
+| Gate                             | Commit                                     | Run                                                                                                                                                                                                        |
+| -------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the code commit                  | `f57979d827fb36d479d70ff06f31e63645be1d4d` | [31952254018](https://github.com/OIerYangJZ/MyCoder/actions/runs/31952254018) — success                                                                                                                    |
+| **the commit the tag points at** | `9ea00b754895e840929fe5848e3131de96dad02f` | [31952416489](https://github.com/OIerYangJZ/MyCoder/actions/runs/31952416489) — success, re-run by the tag push as [31952538487](https://github.com/OIerYangJZ/MyCoder/actions/runs/31952538487) — success |
 
 Both runs cover every tier at the exact commit checked out, with no tier allowed
 to pass by skipping:
@@ -214,6 +214,14 @@ Build and verify the artifact                  success
 ```
 
 `v0.1.0-alpha.9.2` is not moved, and no tag in this repository ever is.
+
+> **Written after the tag.** The two run numbers in the second row could not be
+> known before the commit they gate existed, so this row was completed on the
+> branch afterwards and **the tag was not moved**. The tag's own tree therefore
+> describes the process truthfully and names one of the three runs rather than
+> all three. That is a deliberate trade taken in the open, not a document that
+> quietly went stale: the alternative is another commit after a green gate, which
+> is the trap this whole section is about.
 
 ---
 
