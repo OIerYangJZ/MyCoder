@@ -172,6 +172,55 @@ export interface EgressConfig {
   allowBenchmarkRange?: boolean;
 }
 
+/**
+ * One MCP server (ADR-0022 §3).
+ *
+ * **User config only.** A project-declared `[mcp]` table is dropped with a
+ * warning by `loadConfig`, the same treatment as a provider endpoint and a
+ * container image, for the same reason and one step worse: a project that could
+ * define a server would be adding an *executable* to the session — one whose
+ * tool descriptions enter the model's context and whose implementation the
+ * kernel never sees.
+ */
+export interface McpServerConfig {
+  /** `stdio` spawns `command`; `http` connects to `url`. Derived, not declared. */
+  transport: 'stdio' | 'http';
+  /** stdio: argv. Never a shell string — spec §9.2 applies here too. */
+  command?: readonly string[];
+  /** http: the endpoint. Its host must also be in `[egress] mcp = [...]`. */
+  url?: string;
+  /**
+   * A `secret_ref://` name, injected by `SecretBroker` (ADR-0023, alpha.9 §15).
+   *
+   * Never a literal. A credential written here would be in a file the kernel
+   * reads into memory and, worse, would invite putting one in a tool argument.
+   */
+  credentialRef?: string;
+  /**
+   * Start the session even if this server does not (ADR-0022 §5).
+   *
+   * Default `false`: a declared server that will not start fails the session,
+   * because alpha.8 §10's rule is that a first run refuses rather than degrades,
+   * and a model told about a tool that then is not there produces the worst
+   * failure mode this project has measured.
+   */
+  optional?: boolean;
+  /** Per-server ceiling for one `tools/call`, milliseconds. */
+  timeoutMs?: number;
+}
+
+export interface McpConfig {
+  /** Server name → definition. The key is the name the *user* typed. */
+  servers?: Record<string, McpServerConfig>;
+  /**
+   * A project may narrow which user-declared servers this workspace uses.
+   *
+   * The one thing a project layer is allowed to say about MCP, and it can only
+   * subtract: names not also present in the user's `servers` are dropped.
+   */
+  use?: readonly string[];
+}
+
 export interface KernelConfig {
   project: ProjectConfig;
   model: ModelConfig;
@@ -181,6 +230,7 @@ export interface KernelConfig {
   container: ContainerConfigSection;
   telemetry: TelemetryConfig;
   egress: EgressConfig;
+  mcp: McpConfig;
   generatedPaths: string[];
   /** Non-fatal problems found while loading; surfaced by `/status`. */
   warnings: string[];
@@ -210,6 +260,7 @@ export function defaultConfig(): KernelConfig {
     container: {},
     telemetry: { enabled: true, content: false, traceUpload: false },
     egress: { allowedHosts: {} },
+    mcp: {},
     generatedPaths: ['dist/**', 'coverage/**', '.cache/**', 'target/**', 'build/**', 'node_modules/**'],
     warnings: [],
   };
@@ -300,6 +351,14 @@ export function mergeConfig(lower: KernelConfig, higher: Partial<KernelConfig>):
         higher.egress?.allowBenchmarkRange,
         false,
       ),
+    },
+    // Servers merge by name, which is last-write-wins — but only the user layer
+    // ever carries `servers`, because `loadConfig` deletes it from a project
+    // layer before merging. `use` is intersected in `loadConfig` once both
+    // layers are known, since narrowing needs the final server set to narrow.
+    mcp: {
+      servers: { ...(lower.mcp?.servers ?? {}), ...(higher.mcp?.servers ?? {}) },
+      ...((higher.mcp?.use ?? lower.mcp?.use) ? { use: higher.mcp?.use ?? lower.mcp?.use } : {}),
     },
     generatedPaths: [...new Set([...lower.generatedPaths, ...(higher.generatedPaths ?? [])])],
     warnings: [...lower.warnings, ...(higher.warnings ?? [])],
@@ -661,6 +720,12 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
     };
   }
 
+  const mcp = tableAt(table, 'mcp');
+  if (mcp) {
+    const parsed = parseMcp(mcp, source, warnings);
+    if (parsed) out.mcp = parsed;
+  }
+
   const generated = tableAt(table, 'generated_paths');
   if (generated) {
     const allow = strList(generated.allow);
@@ -668,6 +733,78 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
   }
 
   return out;
+}
+
+/**
+ * Parse `[mcp]` (ADR-0022 §3).
+ *
+ * The transport is **derived** from which of `command`/`url` is present rather
+ * than declared, so a server cannot claim `transport = "stdio"` while carrying a
+ * `url` and end up routed through neither boundary. Declaring both is a
+ * configuration error and the server is dropped: guessing which one was meant is
+ * how a server ends up on the path its author did not intend.
+ */
+function parseMcp(mcp: TomlTable, source: string, warnings: string[]): McpConfig | undefined {
+  const out: McpConfig = {};
+
+  const use = strList(mcp.use);
+  if (use) out.use = use;
+
+  const serversTable = tableAt(mcp, 'servers');
+  if (serversTable) {
+    const servers: Record<string, McpServerConfig> = {};
+
+    for (const [name, raw] of Object.entries(serversTable)) {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        warnings.push(`${source}: [mcp.servers.${name}] is not a table; it was ignored.`);
+        continue;
+      }
+      const entry = raw as TomlTable;
+
+      const command = strList(entry.command);
+      const url = str(entry.url);
+
+      if (command && url !== undefined) {
+        warnings.push(
+          `${source}: [mcp.servers.${name}] declares both command and url. A server is either a ` +
+            'subprocess or a destination; it cannot be both, and guessing would route it through ' +
+            'the boundary it was not meant for. The server was ignored.',
+        );
+        continue;
+      }
+      if (!command && url === undefined) {
+        warnings.push(`${source}: [mcp.servers.${name}] declares neither command nor url; it was ignored.`);
+        continue;
+      }
+      if (command && command.length === 0) {
+        warnings.push(`${source}: [mcp.servers.${name}] has an empty command; it was ignored.`);
+        continue;
+      }
+
+      servers[name] = {
+        transport: command ? 'stdio' : 'http',
+        ...(command ? { command } : {}),
+        ...(url !== undefined ? { url } : {}),
+        ...(str(entry.credential_ref) !== undefined ? { credentialRef: str(entry.credential_ref)! } : {}),
+        ...(bool(entry.optional) !== undefined ? { optional: bool(entry.optional)! } : {}),
+        ...(num(entry.timeout_ms) !== undefined ? { timeoutMs: num(entry.timeout_ms)! } : {}),
+      };
+
+      // A literal here would be a credential in a config file *and* an invitation
+      // to pass one as a tool argument, which alpha.9 §15 forbids outright.
+      if (str(entry.credential) !== undefined || str(entry.api_key) !== undefined) {
+        warnings.push(
+          `${source}: [mcp.servers.${name}] carries a literal credential; it was ignored. Use ` +
+            'credential_ref = "<name>" so the value is brokered and never enters a tool argument, ' +
+            'a description or the event log.',
+        );
+      }
+    }
+
+    if (Object.keys(servers).length > 0) out.servers = servers;
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function tableAt(table: TomlTable, key: string): TomlTable | undefined {

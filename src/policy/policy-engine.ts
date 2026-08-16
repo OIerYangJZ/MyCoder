@@ -327,6 +327,20 @@ export class PolicyEngine {
         // count here would mean the policy engine held mutable per-turn state,
         // which is precisely what makes a decision engine untestable.
         return undefined;
+
+      case 'mcp.invoke':
+        // No system hard ceiling, and this is the uncomfortable one to write
+        // down (ADR-0023 §1). Every other case above can hard-deny because the
+        // kernel knows the *target*: a path, an executable, a host. Here it
+        // knows only that a server was asked to run a tool. There is no path to
+        // check against `ProtectedPaths`, because the kernel never sees one.
+        //
+        // Which is exactly why `mcp.invoke` is `deny` under `read-only` and
+        // `review` and `ask` under `workspace-dev` in the builtin profiles, and
+        // why the descriptor reports `foreignToolEffects: none`. The protection
+        // is that the call needs a grant at all — not that this function can
+        // inspect what it will do.
+        return undefined;
     }
   }
 }

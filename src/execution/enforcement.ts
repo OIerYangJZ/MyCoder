@@ -89,8 +89,57 @@ export interface EnforcementDescriptor {
   environmentIsolation: EnforcementLevel;
   hostFileBroker: EnforcementLevel;
   networkAllowlist: EnforcementLevel;
+  /**
+   * What the kernel enforces about effects that happen *inside* an MCP server's
+   * process (alpha.9 §14, ADR-0023 §6).
+   *
+   * **Absent** means no foreign tools are attached, so the question does not
+   * arise. **Present** means at least one MCP server is, and the only honest
+   * value is `none`:
+   *
+   * > The kernel cannot enforce a boundary inside somebody else's process.
+   *
+   * A separate dimension rather than a downgrade of the others, because both
+   * facts are true at once and a user is entitled to both. A `linux-native`
+   * session with a server attached genuinely does have `os-enforced` filesystem
+   * confinement for its subprocesses; rounding that down would be as dishonest
+   * as rounding this up. What the reader needs to see is the pair — that the
+   * strongest boundary in the system does not cover the most capable tool in the
+   * catalogue — and they need to see it before typing a task, not after.
+   */
+  foreignToolEffects?: EnforcementLevel;
+  /** Which MCP servers are attached. Only meaningful with `foreignToolEffects`. */
+  foreignToolServers?: readonly string[];
   /** Platform caveats, shown verbatim in `/status`. Never a substitute for a level. */
   platformNotes?: readonly string[];
+}
+
+/**
+ * Attach the foreign-tool dimension to a backend's descriptor.
+ *
+ * Derived, never asserted, exactly like `summarizeEnforcement`: a caller passes
+ * the servers that are actually attached and gets `none` if there are any. There
+ * is no argument that produces a level above `none`, because there is no
+ * mechanism that would justify one — and leaving the door open for a future
+ * caller to pass `'policy-enforced'` here is how an overclaim gets added by
+ * someone who did not read this comment.
+ */
+export function withForeignTools(
+  d: EnforcementDescriptor,
+  servers: readonly string[],
+): EnforcementDescriptor {
+  if (servers.length === 0) return d;
+  return {
+    ...d,
+    foreignToolEffects: 'none',
+    foreignToolServers: [...servers],
+    platformNotes: [
+      ...(d.platformNotes ?? []),
+      `MCP server(s) attached: ${servers.join(', ')}. MyCoder decides whether a server may be ` +
+        'asked to run a tool; it does not and cannot enforce what the server then does. Files it ' +
+        'touches, hosts it reaches and processes it starts are outside every boundary above.',
+    ],
+  };
 }
 
 /**
@@ -346,6 +395,13 @@ export function describeEnforcement(d: EnforcementDescriptor): EnforcementSummar
   const label = summarizeEnforcement(d);
   const lines = DIMENSION_LABELS.map(([key, name]) => `${name}: ${d[key] as EnforcementLevel}`);
 
+  // Last, and only when there are foreign tools. It reads as the punchline of
+  // the list rather than a footnote inside it — which is the intent: the reader
+  // has just been told the process filesystem is os-enforced.
+  if (d.foreignToolEffects !== undefined) {
+    lines.push(`effects inside MCP servers: ${d.foreignToolEffects}`);
+  }
+
   const parts: string[] = [];
   if (atLeast(d.processFilesystem, 'container-enforced')) {
     parts.push(
@@ -385,6 +441,15 @@ export function describeEnforcement(d: EnforcementDescriptor): EnforcementSummar
   if (d.hostFileBroker === 'policy-enforced' && atLeast(d.processFilesystem, 'container-enforced')) {
     parts.push(
       'Read/Edit/Grep are trusted kernel operations on the host filesystem and remain policy-enforced.',
+    );
+  }
+  if (d.foreignToolEffects !== undefined) {
+    // Emitted from the *level*, like every other sentence here, so it cannot be
+    // acquired by wording or dropped by forgetting.
+    parts.push(
+      'This session has tools MyCoder did not write. Everything above describes what MyCoder ' +
+        'enforces on its own subprocesses and its own network calls; none of it extends inside an ' +
+        'MCP server.',
     );
   }
   for (const note of d.platformNotes ?? []) parts.push(note);

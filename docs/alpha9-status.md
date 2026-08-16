@@ -144,13 +144,24 @@ glob expansions away. The test also asserts the derivation is non-vacuous — th
 
 ### Status of CLOSURE A
 
-| Step                                                   | State                                                          |
-| ------------------------------------------------------ | -------------------------------------------------------------- |
-| 1. do not move `v0.1.0-alpha.8`                        | done — it still points at `c2566f4`                            |
-| 2. run the release gate at the current `main`          | pending — after the fixes below are pushed                     |
-| 3. fix whatever it finds                               | three defects so far, all found before the gate was dispatched |
-| 4. cut `v0.1.0-alpha.8.1` at that exact commit         | pending                                                        |
-| 5. record that the original tag's gate is red, and why | done — `docs/alpha8-evidence-matrix.md` §7.1                   |
+| Step                                                   | State                                                              |
+| ------------------------------------------------------ | ------------------------------------------------------------------ |
+| 1. do not move `v0.1.0-alpha.8`                        | **done** — it still points at `c2566f4`                            |
+| 2. run the release gate at the current `main`          | **done** — run `31935882150`, dispatched against `c701a31`         |
+| 3. fix whatever it finds                               | **done** — three defects, all found before the gate was dispatched |
+| 4. cut `v0.1.0-alpha.8.1` at that exact commit         | **done** — annotated tag on `c701a31`                              |
+| 5. record that the original tag's gate is red, and why | **done** — `docs/alpha8-evidence-matrix.md` §7.1                   |
+
+Run `31935882150`: all five tiers `success` at `c701a31` — offline on ubuntu and
+macOS, container and native each under their `_REQUIRED` variable so neither
+could pass by skipping, and the artifact packed, installed into a clean prefix
+and driven. The tag was then pushed, which triggers the same workflow again on
+the tag ref, so the claim "this tag's gate is green" is evidenced twice: once by
+dispatch before the tag existed, and once by the tag's own push.
+
+**CLOSURE A is closed.** `v0.1.0-alpha.8` is left where it is, red gate and all,
+with §7.1 of the alpha.8 matrix explaining that to whoever runs it next.
+`v0.1.0-alpha.8.1` is the tag whose own gate ran green at the commit it names.
 
 The plan asked whether step 0 would take an hour or a day. It took longer than an
 hour, and the finding is the one §1 predicted in a different register: the

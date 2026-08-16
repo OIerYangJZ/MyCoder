@@ -134,6 +134,67 @@ export const WEAKENING_KEYS: WeakeningKey[] = [
       'A missing container image will be pulled at startup because [container] pull_if_missing is ' +
       'enabled in your user config. Pulling still never happens as a side effect of a tool call.',
   },
+  // The strongest weakening in this table, and the one whose row is worth
+  // reading twice. A provider endpoint redirects where prompts go; a container
+  // image chooses the interpreter inside the boundary. This adds an *executable*
+  // to the session whose tool descriptions enter the model's context and whose
+  // implementation the kernel never reads (ADR-0022 §3).
+  {
+    key: '[mcp.servers.*] command / url',
+    weakens:
+      'the property that held for every tool until alpha.9 — that the kernel wrote the tool and ' +
+      'knew what it touched before it ran',
+    stillDenied:
+      'a project config may never declare one; a stdio server is a subprocess under the session ' +
+      'sandbox and an HTTP server is egress through the allowlist, so a server cannot exist ' +
+      'outside the boundaries its transport belongs to. What the server does *internally* is not ' +
+      'enforced at all, which is why the descriptor reports foreignToolEffects: none',
+    layer: 'user-only',
+    enforcedBy: 'loadConfig drops a project-declared [mcp] servers table with a warning',
+    isSet: (c) => Object.keys(c.mcp.servers ?? {}).length > 0,
+    disclose: (c) =>
+      `MCP server(s) ${Object.keys(c.mcp.servers ?? {}).join(', ')} are attached. MyCoder decides ` +
+      'whether a server may be asked to run a tool; it does not enforce what the server then does.',
+  },
+  {
+    key: '[mcp.servers.*] credential_ref',
+    weakens: 'nothing — it is the mechanism that keeps a credential out of a tool argument',
+    stillDenied:
+      'the value is brokered by SecretBroker and never enters a tool argument, a description, the ' +
+      "model's context or the event log; a literal `credential`/`api_key` key is refused outright",
+    layer: 'user-only',
+    enforcedBy: 'parseMcp warns on and discards a literal; SecretBroker owns the value',
+    isSet: () => false,
+    disclose: () => '',
+  },
+  {
+    key: '[mcp.servers.*] optional',
+    weakens:
+      "alpha.8 §10's rule that a first run refuses rather than degrades — a session may start " +
+      'with a declared server missing',
+    stillDenied:
+      'the absence is still loud: a warning on stderr and an mcp.server.unavailable event. The ' +
+      'default is to fail the session, and the user had to type this per server to change that',
+    layer: 'user-only',
+    enforcedBy: 'the default is false; only a user-config layer can set it',
+    isSet: (c) => Object.values(c.mcp.servers ?? {}).some((s) => s.optional === true),
+    disclose: (c) =>
+      `MCP server(s) ${Object.entries(c.mcp.servers ?? {})
+        .filter(([, s]) => s.optional)
+        .map(([n]) => n)
+        .join(', ')} are optional: the session will start without them if they fail.`,
+  },
+  {
+    key: '[mcp] use',
+    weakens: 'nothing — it can only narrow the user-declared server set',
+    stillDenied:
+      'a name not present in the user layer is dropped with a warning rather than created; a ' +
+      'project selects among servers, it cannot conjure one',
+    layer: 'any-layer',
+    enforcedBy: 'loadConfig intersects `use` against the final user-declared server set',
+    isSet: () => false,
+    disclose: () => '',
+  },
   {
     key: '[security] permission_profile',
     weakens: 'appears to widen permissions by naming a broader profile',
@@ -162,6 +223,7 @@ export const CEILING_PINNED = [
   '[security] extra_secret_paths — union; a layer may add a deny pattern, never remove one',
   '[container] pids_limit / memory_bytes / cpus — Math.min; a layer may only tighten',
   '[container] privileged / network_mode / extra_mounts / cap_add — not a configuration surface at all; warned and ignored',
+  '[mcp.servers.*] credential / api_key — not a configuration surface at all; a literal credential is warned about and discarded, and only credential_ref is honoured',
 ];
 
 /** Every disclosure this configuration owes the user at startup (§12). */

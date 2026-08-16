@@ -26,7 +26,8 @@ export type Capability =
   | 'env.read'
   | 'vcs.mutate'
   | 'remote.connect'
-  | 'agent.invoke';
+  | 'agent.invoke'
+  | 'mcp.invoke';
 
 export const ALL_CAPABILITIES: readonly Capability[] = [
   'file.read',
@@ -40,6 +41,7 @@ export const ALL_CAPABILITIES: readonly Capability[] = [
   'vcs.mutate',
   'remote.connect',
   'agent.invoke',
+  'mcp.invoke',
 ];
 
 export interface FileReadAccess {
@@ -166,6 +168,36 @@ export interface AgentInvokeAccess {
   display: string;
 }
 
+/**
+ * Asking a server the kernel did not write to run a tool it did not write
+ * (ADR-0023).
+ *
+ * This is the milestone's central design act, and its honesty is the whole
+ * point: the kernel is **not** claiming to know what the call does. It cannot.
+ * It cannot read the server's implementation, it cannot infer what the arguments
+ * mean, and it must not ask — a component that declares its own capabilities has
+ * not been constrained, it has been asked politely.
+ *
+ * So this records the only fact the kernel actually has: this session permitted
+ * this server to be asked to run this tool. What the server then does is outside
+ * every boundary this project has built, and `describeAccess` says so in as many
+ * words rather than leaving it to be inferred.
+ *
+ * Note what it deliberately does **not** carry: no arguments. The model's
+ * arguments are validated against the server's schema and then sent, but they
+ * are not part of the access request, because a policy engine ruling on them
+ * would be ruling on a shape the server chose.
+ */
+export interface McpInvokeAccess {
+  kind: 'mcp.invoke';
+  /** The name from user config — never anything the server reported. */
+  server: string;
+  /** The bare tool name as listed, without the `mcp__server__` prefix. */
+  tool: string;
+  transport: 'stdio' | 'http';
+  display: string;
+}
+
 export type AccessRequest =
   | FileReadAccess
   | FileWriteAccess
@@ -176,7 +208,8 @@ export type AccessRequest =
   | EnvironmentAccess
   | VcsMutationAccess
   | RemoteAccess
-  | AgentInvokeAccess;
+  | AgentInvokeAccess
+  | McpInvokeAccess;
 
 /** The capability a request draws on, used to index policy rules. */
 export function capabilityOf(access: AccessRequest): Capability {
@@ -201,6 +234,8 @@ export function capabilityOf(access: AccessRequest): Capability {
       return 'remote.connect';
     case 'agent.invoke':
       return 'agent.invoke';
+    case 'mcp.invoke':
+      return 'mcp.invoke';
   }
 }
 
@@ -225,6 +260,10 @@ export function matchTargetOf(access: AccessRequest): string {
       return access.remote;
     case 'agent.invoke':
       return access.agent;
+    // `server/tool`, so a rule can name one server's whole surface
+    // (`wiki/*`), one tool (`wiki/search`), or a family (`wiki/search_*`).
+    case 'mcp.invoke':
+      return `${access.server}/${access.tool}`;
   }
 }
 
@@ -280,6 +319,13 @@ export function subjectKeyOf(access: AccessRequest): string {
     // depth limit is enforced separately rather than through the approval cache.
     case 'agent.invoke':
       return `agent.invoke:${access.agent}`;
+    // Per server **and** per tool. Approving "search the wiki" must never spend
+    // as approval for "delete the wiki" — the same reason alpha.6 §36 refused a
+    // session-wide network approval. A server with thirty tools therefore costs
+    // thirty approvals across a session, which is the cheaper of the two
+    // mistakes available here.
+    case 'mcp.invoke':
+      return `mcp.invoke:${access.server}/${access.tool}`;
   }
 }
 
@@ -310,5 +356,10 @@ export function describeAccess(access: AccessRequest): string {
       return `connect to remote "${access.remote}" (${access.host})`;
     case 'agent.invoke':
       return `delegate to agent "${access.agent}" at depth ${access.depth}`;
+    case 'mcp.invoke':
+      return (
+        `call "${access.tool}" on MCP server "${access.server}" (${access.transport}) — ` +
+        'what the server does with this call is not enforced by MyCoder'
+      );
   }
 }

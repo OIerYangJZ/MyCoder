@@ -266,6 +266,15 @@ export function readOnlyProfile(ctx: ProfileContext): PermissionProfile {
       { action: 'deny', capability: 'network.connect', note: 'read-only profile' },
       { action: 'deny', capability: 'vcs.mutate', note: 'read-only profile' },
       { action: 'deny', capability: 'secret.use', note: 'read-only profile' },
+      // A foreign tool cannot be classified as read-only, because `readOnly`
+      // would be the *server's* claim about itself, and ADR-0023 §2 says those
+      // are worth nothing. A profile whose promise is "this session changes
+      // nothing" cannot keep that promise while calling code it cannot see.
+      {
+        action: 'deny',
+        capability: 'mcp.invoke',
+        note: 'read-only profile: a tool whose effects are unknown is not a read',
+      },
       // Appendix A: test/lint/build is `ask` under read-only.
       {
         action: 'ask',
@@ -293,6 +302,11 @@ export function reviewProfile(ctx: ProfileContext): PermissionProfile {
       { action: 'deny', capability: 'network.connect', note: 'review profile has no network' },
       { action: 'deny', capability: 'vcs.mutate', note: 'review profile does not mutate git' },
       { action: 'deny', capability: 'secret.use' },
+      {
+        action: 'deny',
+        capability: 'mcp.invoke',
+        note: 'review profile: a tool whose effects are unknown is not a review',
+      },
       {
         action: 'allow',
         capability: 'process.exec',
@@ -397,6 +411,16 @@ export function workspaceDevProfile(ctx: ProfileContext): PermissionProfile {
       { action: 'ask', capability: 'secret.use', note: 'a credential would be injected' },
       { action: 'ask', capability: 'remote.connect', note: 'first connection to a remote' },
       { action: 'ask', capability: 'env.read' },
+      // Per server *and* per tool — `subjectKeyOf` makes the subject
+      // `mcp.invoke:<server>/<tool>`, so a server with thirty tools costs thirty
+      // approvals across a session. That is deliberate and it is the cheaper of
+      // the two mistakes: one approval covering twenty-nine tools the user never
+      // saw is the shape alpha.6 §36 already rejected for network hosts.
+      {
+        action: 'ask',
+        capability: 'mcp.invoke',
+        note: 'a tool this kernel did not write; nothing enforces what it does',
+      },
     ],
   };
 }

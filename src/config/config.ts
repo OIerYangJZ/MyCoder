@@ -127,6 +127,27 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
       delete layer.container.pullIfMissing;
     }
 
+    // Same rule again, and this is the strongest case for it (ADR-0022 §3). A
+    // provider endpoint redirects where prompts go; a container image chooses
+    // the interpreter inside the boundary. A project-declared MCP server adds an
+    // *executable* to the session whose tool descriptions enter the model's
+    // context and whose implementation the kernel never reads. That is not a
+    // redirection vector — it is arbitrary code execution with a configuration
+    // file's manners.
+    //
+    // `use` survives, because it can only narrow: it selects among servers the
+    // user already declared.
+    if (label === 'project config' && layer.mcp?.servers) {
+      const declared = Object.keys(layer.mcp.servers);
+      layer.warnings = [
+        ...(layer.warnings ?? []),
+        `project config declared MCP server(s) ${declared.join(', ')}; these were ignored. ` +
+          `MCP servers may only be defined in ${userPath} — a project may select from the servers ` +
+          'you declared, using `[mcp] use = [...]`, but it may not add an executable to your session.',
+      ];
+      delete layer.mcp.servers;
+    }
+
     config = mergeConfig(config, layer);
     config.warnings.push(...parsed.warnings);
   }
@@ -134,6 +155,25 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
   if (opts.overrides?.model?.default !== undefined) explicitModelDefault = true;
   if (opts.overrides) config = mergeConfig(config, opts.overrides);
   config = applySystemCeiling(config);
+
+  // `use` narrows, and only narrows. Applied here rather than in `mergeConfig`
+  // because narrowing needs the final server set: a project naming a server the
+  // user has not declared must be a warning, not a silent no-op, and that cannot
+  // be told apart from "not merged yet" partway through the layer loop.
+  if (config.mcp.use) {
+    const declared = new Set(Object.keys(config.mcp.servers ?? {}));
+    const unknown = config.mcp.use.filter((name) => !declared.has(name));
+    if (unknown.length > 0) {
+      config.warnings.push(
+        `[mcp] use names server(s) ${unknown.join(', ')} that are not declared in ${userPath}. ` +
+          'A project selects among the servers you declared; it cannot conjure one.',
+      );
+    }
+    const kept = Object.fromEntries(
+      Object.entries(config.mcp.servers ?? {}).filter(([name]) => config.mcp.use!.includes(name)),
+    );
+    config.mcp = { ...config.mcp, servers: kept };
+  }
 
   const permissionsPath = await firstExisting(
     read,
