@@ -26,7 +26,11 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Commit SHA or tag to gate'
+        # A *full* 40-character SHA, or a branch/tag name. `actions/checkout`
+        # cannot resolve an abbreviated SHA — it reports "a branch or tag with
+        # the name 'abc1234' could not be found", which reads like the commit is
+        # missing rather than like the input is short. Learned by doing it.
+        description: 'Full 40-char commit SHA, or a branch/tag name, to gate'
         required: true
 
 permissions:
