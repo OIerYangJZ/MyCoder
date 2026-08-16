@@ -713,7 +713,24 @@ function kernelCommit(): string | undefined {
   return r.status === 0 && out ? out : undefined;
 }
 
-async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
+/**
+ * Run one golden task.
+ *
+ * `forceScripted` is alpha.9 CLOSURE B (§20). A live run drives the model and
+ * lets it choose, which means a denial the model declines to provoke is never
+ * exercised at all — `denied-secret` scored 0/5 against a working kernel for
+ * exactly that reason, and `requiresAttempt` made the report honest without
+ * making it a test. This flag lets the caller run the *same task* through its
+ * scripted adversarial trajectory in the same session, so the hard-deny is
+ * exercised every run regardless of what the model chose.
+ */
+async function runTask(
+  task: GoldenTask,
+  runId = 'r1',
+  opts: { forceScripted?: boolean } = {},
+): Promise<TaskMetrics> {
+  // Local, not the module constant: this is the whole mechanism of the two arms.
+  const live = opts.forceScripted === true ? false : LIVE;
   const started = Date.now();
   const base = await mkdtemp(path.join(tmpdir(), `eval-${task.id}-`));
   const root = path.join(base, 'workspace');
@@ -730,7 +747,7 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     await symlink(path.join(root, target), full);
   }
 
-  const transport = LIVE ? new RecordingPassthrough() : new Capture();
+  const transport = live ? new RecordingPassthrough() : new Capture();
   const prompter = new ScriptedPrompter(task.approvals ?? []);
 
   // A loopback fixture, for tasks that read a URL. The port is only known once
@@ -779,7 +796,7 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
       config: configDir,
       data: path.join(base, 'data'),
       cache: path.join(base, 'cache'),
-      home: LIVE ? real.home : path.join(base, 'home'),
+      home: live ? real.home : path.join(base, 'home'),
     };
   }
 
@@ -791,7 +808,7 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     // default. Since alpha.8 §10 a *defaulted-into* fake model is refused — that
     // is the whole point of the check — and a runner that leaned on the default
     // was asking for the thing the check exists to prevent.
-    modelOverride: LIVE ? LIVE_ALIAS! : 'fake',
+    modelOverride: live ? LIVE_ALIAS! : 'fake',
     egressTransport: transport,
     prompter,
     logLevel: 'silent',
@@ -804,8 +821,11 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     kernel.freshness.list().find((r) => r.path.endsWith(suffix))?.receiptId ?? 'missing-receipt';
 
   // In live mode the model decides for itself; the script is exactly what we are
-  // no longer supplying.
-  if (!LIVE) {
+  // no longer supplying. `live` rather than `LIVE`, so CLOSURE B's scripted arm
+  // actually gets its script — the first version of that arm read the module
+  // constant here, registered no fake model, and produced a guaranteed-passing
+  // "0 tools" run that failed for the right reason by accident.
+  if (!live) {
     const model = new FakeModel({
       // A delegation task needs the *request* to decide, because parent and child
       // share one runtime and a flat index cannot tell them apart.
@@ -864,7 +884,7 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     // catalogue the first step is frozen against.
     await task.prepare?.(kernel);
 
-    await kernel.session.runTurn(substitute(LIVE ? (task.livePrompt ?? task.prompt) : task.prompt));
+    await kernel.session.runTurn(substitute(live ? (task.livePrompt ?? task.prompt) : task.prompt));
 
     for (const check of task.checks) {
       try {
@@ -882,7 +902,7 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
         // The checks that do *not* depend on an attempt, `noCanaryAnywhere`
         // above all, still run in both modes and are what carries the security
         // claim.
-        if (LIVE && check.requiresAttempt) notExercised.push(check.name);
+        if (live && check.requiresAttempt) notExercised.push(check.name);
         else failures.push(`${check.name}: ${failure}`);
       } catch (e) {
         failures.push(`${check.name}: threw ${e instanceof Error ? e.message : String(e)}`);
@@ -922,7 +942,7 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     const report = kernel.session.usageReportSnapshot;
 
     // The *template*, before `{{webBase}}` becomes a port that changes every run.
-    const effectivePrompt = LIVE ? (task.livePrompt ?? task.prompt) : task.prompt;
+    const effectivePrompt = live ? (task.livePrompt ?? task.prompt) : task.prompt;
     const failureClass = classifyFailure(failures, results, {
       ...(kernel.session.turn?.state ? { turnState: kernel.session.turn.state } : {}),
       originalFiles: task.files,
@@ -1010,6 +1030,30 @@ async function main(argv: readonly string[]): Promise<number> {
     }
   }
 
+  // CLOSURE B (alpha.9 §20): the scripted denial arm.
+  //
+  // `requiresAttempt` made a live run *honest* about a model that declined to
+  // provoke a denial — it reports `not exercised` rather than failing a
+  // well-behaved model against a working kernel. Honest, and not a fix: a live
+  // release run then exercised the kernel's hard-deny **zero times**.
+  //
+  // So every task carrying such a check is run again, in the same session,
+  // through its scripted adversarial trajectory. Two arms, both reported,
+  // neither substituting for the other:
+  //
+  //   live arm      measures what the model chooses, and may choose not to
+  //   scripted arm  exercises the hard-deny, guaranteed, every run
+  //
+  // In a scripted run this does nothing, because the live arm already is the
+  // scripted one and running it twice would only inflate the totals.
+  const deniedArm: TaskMetrics[] = [];
+  if (LIVE) {
+    const forced = tasks.filter((t) => t.checks.some((c) => c.requiresAttempt) && t.script);
+    for (const task of forced) {
+      deniedArm.push(await runTask(task, 'scripted-arm', { forceScripted: true }));
+    }
+  }
+
   for (const metrics of results) {
     const task = tasks.find((t) => t.id === metrics.id)!;
     if (!json) {
@@ -1029,6 +1073,25 @@ async function main(argv: readonly string[]): Promise<number> {
       process.stdout.write(`skip  ${task.id.padEnd(32)} ${task.scriptedOnly}\n`);
     }
   }
+
+  // Reported separately and never folded into the live totals. Merging them
+  // would let a guaranteed scripted pass paper over a model that never tried,
+  // which is the substitution §20 explicitly forbids.
+  if (!json && deniedArm.length > 0) {
+    process.stdout.write('\nscripted denial arm (CLOSURE B) — the hard-deny, exercised every run\n');
+    for (const metrics of deniedArm) {
+      process.stdout.write(
+        `${metrics.passed ? 'pass' : 'FAIL'}  ${metrics.id.padEnd(36)} ` +
+          `${String(metrics.toolCalls).padStart(3)} tools\n`,
+      );
+      for (const failure of metrics.failures) process.stdout.write(`      ${failure}\n`);
+    }
+  }
+
+  // The scripted arm is a **gate**, unlike the live arm's behavioural numbers: it
+  // runs a fixed adversarial trajectory against a kernel whose answer must not
+  // depend on a model. A failure here is a kernel regression.
+  const deniedArmFailures = deniedArm.filter((r) => !r.passed);
 
   const solved = results.filter((r) => r.passed).length;
   const totals = results.reduce(
@@ -1276,6 +1339,9 @@ async function main(argv: readonly string[]): Promise<number> {
   // that are genuinely ours — the kernel behaved, and nothing leaked — and
   // reports the solve rate as a measurement rather than a verdict.
   if (totals.secretViolations > 0) return 1;
+  // A scripted-arm failure fails the run even in live mode. The live arm's
+  // outcome is a fact about a model; this one is a fact about the kernel.
+  if (deniedArmFailures.length > 0) return 1;
   if (LIVE) return results.every((r) => r.kernelCorrect) ? 0 : 1;
   return solved === results.length ? 0 : 1;
 }

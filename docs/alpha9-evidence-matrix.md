@@ -223,11 +223,15 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 
 ## 8. CLOSURE B and CLOSURE C
 
-| Requirement                                              | Status     | Evidence                       | Notes                                                                                        |
-| -------------------------------------------------------- | ---------- | ------------------------------ | -------------------------------------------------------------------------------------------- |
-| **CLOSURE B — a scripted arm that forces the hard-deny** | NOT TESTED | artifact:docs/alpha9-status.md | §20. Not built. `denied-secret` still reports `not exercised` when a model declines          |
-| **CLOSURE C — strict egress on a clean resolver**        | NOT TESTED | artifact:docs/alpha9-status.md | §21. Restated for a third milestone; both available hosts still NAT public names into 198.18 |
-| CLOSURE C is restated rather than forgotten              | PASS       | artifact:docs/alpha9-status.md | The plan's explicit instruction: "do not let a third milestone quietly forget it exists"     |
+| Requirement                                              | Status     | Evidence                                                         | Notes                                                                                        |
+| -------------------------------------------------------- | ---------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **CLOSURE B — a scripted arm that forces the hard-deny** | PASS       | artifact:docs/alpha9-status.md                                   | `runTask({forceScripted})`; runs for every requiresAttempt task in a live run                |
+| both arms are reported, neither substituting             | PASS       | artifact:docs/alpha9-status.md                                   | Separate section; the scripted arm is never folded into the live totals                      |
+| the scripted arm is a gate, not a measurement            | PASS       | artifact:evals/runners/run.ts                                    | A failure there returns 1 even in live mode: it is a fact about the kernel                   |
+| every requiresAttempt task can be forced                 | PASS       | test:every requiresAttempt check belongs to a task with a script | A task the arm silently skips looks exactly like one that passed                             |
+| NEGATIVE CONTROL: the arm is not vacuous                 | PASS       | test:NEGATIVE CONTROL: there is at least one such task           | Deleting requiresAttempt everywhere would satisfy the row above                              |
+| **CLOSURE C — strict egress on a clean resolver**        | NOT TESTED | artifact:docs/alpha9-status.md                                   | §21. Restated for a third milestone; both available hosts still NAT public names into 198.18 |
+| CLOSURE C is restated rather than forgotten              | PASS       | artifact:docs/alpha9-status.md                                   | The plan's explicit instruction: "do not let a third milestone quietly forget it exists"     |
 
 ---
 
@@ -245,7 +249,7 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 
 | Gate               | Result                                                   |
 | ------------------ | -------------------------------------------------------- |
-| offline suite      | 1146 · 1053 pass · 0 fail · 93 skip                      |
+| offline suite      | 1148 · 1055 pass · 0 fail · 93 skip                      |
 | architecture lint  | 16 rules, 0 violations                                   |
 | lint self-tests    | green, including 2 new workflow-hazard checks            |
 | evidence gate      | 7 matrices, 85 alpha.9 rows, every claim resolves        |

@@ -577,3 +577,31 @@ describe('a denial check needs the model to have tried (alpha.8 §20, defect 10)
     assert.deepEqual(overMarked, []);
   });
 });
+
+describe('CLOSURE B: the scripted denial arm can exist for every task that needs it', () => {
+  test('every requiresAttempt check belongs to a task with a script', () => {
+    // alpha.9 §20. A live run lets the model decline to provoke a denial, and
+    // `requiresAttempt` makes the report honest about that — which left the
+    // kernel's hard-deny exercised zero times in a live release run. The fix is
+    // a second arm that forces the call, and that arm needs a script to force it
+    // with. A task with `requiresAttempt` and no script would be silently
+    // skipped by the arm and would look exactly like a task that passed.
+    const unscripted = GOLDEN_TASKS.filter((t) => t.checks.some((c) => c.requiresAttempt) && !t.script).map(
+      (t) => t.id,
+    );
+
+    assert.deepEqual(
+      unscripted,
+      [],
+      'these tasks assert a denial the model must provoke, but have no scripted ' +
+        'trajectory to provoke it with, so the scripted arm cannot cover them',
+    );
+  });
+
+  test('NEGATIVE CONTROL: there is at least one such task', () => {
+    // Without this, deleting `requiresAttempt` everywhere would satisfy the row
+    // above by making the arm vacuous.
+    const withAttempt = GOLDEN_TASKS.filter((t) => t.checks.some((c) => c.requiresAttempt));
+    assert.ok(withAttempt.length > 0, 'the scripted arm would cover nothing');
+  });
+});
