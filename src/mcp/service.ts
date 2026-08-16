@@ -114,6 +114,28 @@ export class McpService {
   }
 
   private async attach(name: string, declared: McpServerConfig, opts: McpServiceOptions): Promise<void> {
+    // A credential on a stdio server is refused rather than ignored (alpha.9
+    // §15). The config has no field naming the environment variable it should
+    // land in, and guessing one would be the kernel choosing where a secret
+    // goes in someone else's process. Silence would be worse than either: the
+    // user wrote `credential_ref`, the server would start unauthenticated, and
+    // nothing would say so — which is the "silently loses" failure mode ADR-0022
+    // §5 exists to prevent, with a credential attached.
+    if (declared.transport === 'stdio' && declared.credentialRef !== undefined) {
+      throw new KernelErrorException(
+        kernelError(
+          'CONFIG_INVALID',
+          `MCP server "${name}" is a stdio server with credential_ref = ` +
+            `"${declared.credentialRef}". Credential injection is implemented for HTTP servers ` +
+            'only, where the value goes into an Authorization header. There is no field naming ' +
+            'the environment variable a stdio server would want it in, and MyCoder will not ' +
+            "guess where a secret lands inside someone else's process. Remove credential_ref, " +
+            'or use an HTTP server.',
+          { blame: 'user', safeDetails: { server: name } },
+        ),
+      );
+    }
+
     const transport =
       declared.transport === 'http'
         ? await this.connectHttp(name, declared, opts)

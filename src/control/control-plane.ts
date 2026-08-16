@@ -13,6 +13,7 @@
 
 import { APP_DISPLAY_NAME, PROJECT_DIR } from '../app.ts';
 import { describeEnforcement, networkEnforcementLabel } from '../execution/enforcement.ts';
+import type { EnforcementDescriptor } from '../execution/enforcement.ts';
 import { ModelRegistry } from '../model/profiles.ts';
 import type { GoalState } from '../context/context-engine.ts';
 import type { LoopBudget } from '../session/step.ts';
@@ -49,6 +50,18 @@ export interface ControlHost {
   policy: PolicyEngine;
   config: KernelConfig;
   environment: EnvironmentDescriptor;
+  /**
+   * What this **session** enforces, which is not always what the backend does.
+   *
+   * `environment.enforcement` describes the backend and is still true. It does
+   * not know which MCP servers this session attached, and alpha.9 §14 requires
+   * `/status` to say that the boundary does not extend inside one. A separate
+   * field rather than a mutation of the backend's descriptor, because both are
+   * true and a reader of either should get the one they asked for — and because
+   * the last time this was left implicit, `/status` silently kept reporting the
+   * backend's view while the model was being told the session's.
+   */
+  enforcement: EnforcementDescriptor;
   modelRegistry: ModelRegistry;
   configSources: readonly string[];
   remotes: readonly RemoteConfig[];
@@ -432,7 +445,7 @@ const handlePermissions: ControlHandler = (args, host) => {
 
   const layers = host.policy.describeLayers();
   const approvals = host.policy.approvals.entries();
-  const sandbox = describeEnforcement(host.environment.enforcement);
+  const sandbox = describeEnforcement(host.enforcement);
 
   return {
     ok: true,
@@ -458,7 +471,7 @@ const handleStatus: ControlHandler = (_args, host) => {
   const usage = host.contextUsage();
   const session = host.session;
   const model = host.modelRegistry.resolve(session.activeModelAlias);
-  const sandbox = describeEnforcement(host.environment.enforcement);
+  const sandbox = describeEnforcement(host.enforcement);
   const dirty = session.editJournal.dirtyPaths();
   const u = session.usageSnapshot;
   const { active, finished } = host.delegations();
@@ -477,7 +490,7 @@ const handleStatus: ControlHandler = (_args, host) => {
       `backend      : ${host.environment.description}`,
       `remote       : ${host.activeRemote ?? 'none (local)'}`,
       `profile      : ${host.config.security.permissionProfile}`,
-      `isolation    : ${sandbox.label} — network from Shell is ${networkEnforcementLabel(host.environment.enforcement)}`,
+      `isolation    : ${sandbox.label} — network from Shell is ${networkEnforcementLabel(host.enforcement)}`,
       // §41. The backend contributes its own lines rather than the control plane
       // learning what a container is: the runtime, the image and its digest, the
       // network mode and the mount shape all mean something different per backend,
@@ -485,7 +498,7 @@ const handleStatus: ControlHandler = (_args, host) => {
       // to keep out of shared code.
       ...(host.backendDetail?.() ?? []).map((line) => `             ${line}`),
       ...sandbox.lines.map((line) => `             ${line}`),
-      ...(host.environment.enforcement.platformNotes ?? []).map((note) => `platform     : ${note}`),
+      ...(host.enforcement.platformNotes ?? []).map((note) => `platform     : ${note}`),
       `context      : ~${usage.estimatedTokens.toLocaleString()} / ${usage.budgetTokens.toLocaleString()} tokens (${pct}%)`,
       `loop budget  : ${session.budgetCeiling.maxSteps} steps, ${session.budgetCeiling.maxToolCalls} tool calls`,
       `goal         : ${session.goal ? `${session.goal.objective} (${session.goal.status})` : 'none'}`,

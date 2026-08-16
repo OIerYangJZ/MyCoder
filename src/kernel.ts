@@ -1252,6 +1252,10 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     policy,
     config,
     environment: backend.environment,
+    // The session's descriptor, not the backend's. `/status` must report the MCP
+    // dimension the projector already told the model about (alpha.9 §14), and
+    // reading `environment.enforcement` here is exactly how the two drifted.
+    enforcement,
     modelRegistry,
     configSources: loaded.sources,
     remotes,

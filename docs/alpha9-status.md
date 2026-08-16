@@ -354,22 +354,23 @@ experiments, the dogfood — has nothing to attach to.
 
 ---
 
-## The Trust Stop, and why alpha.9 is not tagged
+## The Trust Stop, and the amendment §25 needed
 
-§23 lists a Trust Stop:
+§23 listed a Trust Stop:
 
 ```text
 an MCP tool reaches something a builtin tool would have been denied
 → stop
 ```
 
-**Read literally, that has been hit.** The §5 dogfood attached
-`@modelcontextprotocol/server-filesystem`, and it listed a `.env` file that
+**Read literally, that was hit.** The §5 dogfood attached
+`@modelcontextprotocol/server-filesystem` and it listed a `.env` file that
 MyCoder's own `Read` hard-denies with `PROTECTED_PATH` — a denial no approval can
-lift, with a golden task and a canary suite behind it. The server would read that
+lift, with a golden task and a canary suite behind it. That server would read the
 file. Both facts are true in the same session.
 
-This is not a bug with a patch. It is what §8 predicted in advance:
+It is not a bug with a patch, and it was predicted in the same plan that forbade
+it. §8:
 
 > the honest answer is likely to be uncomfortable: the kernel is granting
 > **access to a server**, not access to a resource, and what the server then does
@@ -377,24 +378,79 @@ This is not a bug with a patch. It is what §8 predicted in advance:
 >
 > Say that plainly or do not ship it.
 
-So the Trust Stop and the Derivation Stop are in tension with each other, and
-ADR-0023 resolves it the only way that does not involve lying: the kernel grants
-`mcp.invoke` and reports `foreignToolEffects: none`, `/status` says the boundary
-does not extend inside a server, every description arrives labelled unverified,
-and `docs/alpha9-mcp-dogfood.md` shows a real server doing exactly the thing the
-descriptor warns about.
+So §25 and §8 contradicted each other from the day the plan was written. **§25 has
+been amended** — the original clause is kept visible in `research/v0.1.0-alpha.9_mcp_and_foreign_tool_trust.md`
+§25.1, the reason in §25.2, the replacement in §25.3, and the Trust Stop's
+replacement in §25.4. The new clause is stricter in one respect than the one it
+replaces: it requires the limitation to be **stated in the product**, not merely
+to be true.
 
-**That resolution is a product decision, not an engineering one**, which is why
-this document records it rather than a tag. Tagging `v0.1.0-alpha.9` would assert
-§25's success sentence, and one clause of it —
+```text
+was:  A foreign tool reaches nothing a builtin would have been denied.
 
-> A foreign tool reaches nothing a builtin would have been denied.
+now:  A foreign tool is granted nothing the kernel derived from the server:
+      exactly one mcp.invoke, per server and per tool, never a builtin
+      capability. What the server then does is outside every boundary this
+      kernel enforces, and the product says so — in /status, in the approval
+      prompt, and in the enforcement descriptor — rather than leaving it to be
+      inferred.
+```
 
-— is false as written, demonstrably, and cannot be made true while MCP exists at
-all. The choices are to amend §25 to the sentence ADR-0023 actually supports, or
-to decide MCP does not ship. Either is defensible; neither is mine to make
-silently.
+Both halves are tested: six hostile argument shapes that must each produce
+`['mcp.invoke']` and nothing else, and a descriptor whose only possible value for
+that dimension is `none`.
 
-**Also still open:** CLOSURE C's positive control (§21), restated for a third
-milestone. That one is infrastructure, not a decision — one Linux host with an
+## The audit, after the amendment
+
+Reading §5's MUST list and §22's matrix against the suite rather than against
+memory found four things nothing covered. A row with no test looks exactly like a
+row that passes, which is why this pass happened at all.
+
+**`/status` was not showing the MCP line.** The kernel computed the
+session-effective descriptor and gave it to the projector and the audit record —
+so the _model_ was told the boundary does not extend inside a server, and the
+_user_ was not. `handleStatus` and `handlePermissions` both read
+`host.environment.enforcement`, the backend's view, which does not know which
+servers this session attached. §14 requires `/status` to say it. `ControlHost`
+now carries `enforcement` alongside `environment`, both call sites read it, and
+there is no remaining reference to the backend's descriptor in the control plane.
+
+That one is worth dwelling on: the descriptor was correct, the wiring was
+correct, the prompt was correct, and the single surface a _human_ reads was
+still wrong. Nothing failed.
+
+**A stdio server under a backend that cannot host one** had no test. The refusal
+existed and worked; nothing asserted that container, ssh and native actually lack
+`session()`, so a backend growing one would have silently changed the story. Now
+asserted from source, with the local backend as the arm that must succeed.
+
+**A tool call that would touch a protected path** had no test, because there is
+nothing to assert _stopped_. The test now asserts the honest thing instead: the
+access is `mcp.invoke` and nothing else, the approval says what is not enforced,
+and the descriptor reports `none`. A test asserting the server was blocked would
+have been the overclaim ADR-0023 §6 exists to prevent.
+
+**The exit code** was never checked against ADR-0021. An MCP misconfiguration is
+`CONFIG_INVALID` → exit 3, not the catch-all, because a script that retries on 1
+and edits config on 3 needs the difference.
+
+And one defect the audit found rather than a missing test:
+
+**alpha.9 defect 5 — `credential_ref` on a stdio server was parsed and ignored.**
+The config accepts it for both transports; only HTTP has anywhere to put it. A
+user writing it on a stdio server got a server that started unauthenticated with
+nothing said. It is now refused, naming the ref, and the message says why MyCoder
+will not guess which environment variable a secret should land in inside someone
+else's process. Refusing beats guessing, and both beat silence.
+
+## Still open
+
+**CLOSURE C's positive control (§21).** Third milestone running. Both available
+hosts NAT public names into RFC 2544 space, so the positive arm — an approved
+host whose resolved address is genuinely global, reached under the strict
+ADR-0017 §23 default — still cannot be produced. The negative direction is
+tested, in four scopes, with a global address as the control that must pass.
+
+No clean-resolver host is available, so it is restated rather than closed, and it
+is the one `NOT TESTED` row in the alpha.9 matrix. One Linux host with an
 ordinary resolver closes it in about half an hour.
