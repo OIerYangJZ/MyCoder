@@ -211,10 +211,25 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+          cache: pnpm
 
-      # `--release` refuses a dirty tree. An artifact whose recorded commit does
-      # not describe its contents is worse than one with no commit at all,
-      # because it looks checkable (ADR-0019 §6).
+      # `scripts/pack.ts` shells out to the TypeScript compiler to build `dist/`,
+      # so the devDependencies have to be here. This job did not install them and
+      # would have failed on a missing `tsc` even after the dirty-tree check.
+      - run: pnpm install --frozen-lockfile
+
+      # `--release` reads `git status --porcelain` and refuses anything it reports
+      # (ADR-0019 §6) — untracked files included, deliberately, since an untracked
+      # file matching `files` would ship without being in any commit. Printed
+      # first because a refusal that does not say *what* was dirty sends the
+      # reader to guess, which is precisely what it did on its first real run.
+      - name: Show whether the checkout is pristine
+        run: |
+          echo "commit: $(git rev-parse HEAD)"
+          echo "--- git status --porcelain ---"
+          git status --porcelain
+          echo "--- end ---"
+
       - name: Pack
         run: pnpm release:pack --release | tee pack.txt
 
