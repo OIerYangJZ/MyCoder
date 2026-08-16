@@ -33,6 +33,7 @@
  */
 
 import { toPosix, type CanonicalPath } from '../util/paths.ts';
+import { classifyAddress, normalizeHostOrUndefined } from '../security/egress/host.ts';
 import type { CapabilityProfile } from './backend.ts';
 
 /** Where the workspace appears inside the container. */
@@ -386,6 +387,36 @@ export interface ContainerImageRef {
   digest?: string;
 }
 
+/**
+ * The plan's network, in the three shapes alpha.6 §9 distinguishes.
+ *
+ * alpha.5 had `'none' | 'bridge'`, which is exactly the collapse that made a
+ * host allowlist unenforceable: `{ hosts: [...] }` and "give it the internet"
+ * were the same value. Splitting `unrestricted` from `scoped` means the plan —
+ * the thing the validator, the audit event and `/status` all read — records
+ * which of the two the capability actually asked for.
+ */
+export type ContainerNetworkPlan =
+  /** `--network none`: no interfaces at all. */
+  | { kind: 'none' }
+  /** Explicitly approved broad egress: an ordinary bridge (§40). */
+  | { kind: 'unrestricted' }
+  /**
+   * The private per-execution network, with a dual-homed proxy as the only exit
+   * (§12, §13). `dockerNetwork` is `--internal`, so attaching to it *is* the
+   * denial of direct egress; `dns` points the workload's resolver at its own
+   * loopback so external name resolution fails too (§15).
+   */
+  | {
+      kind: 'scoped';
+      dockerNetwork: string;
+      proxyAddress: string;
+      proxyPort: number;
+      dns: readonly string[];
+      /** Normalised, sorted approved hosts. Recorded for audit and `/status`. */
+      allowedHosts: readonly string[];
+    };
+
 export interface ContainerPlan {
   image: ContainerImageRef;
   mounts: readonly ContainerMount[];
@@ -403,7 +434,7 @@ export interface ContainerPlan {
    * value from the client process, whose environment the kernel controls.
    */
   envPassthrough: readonly string[];
-  network: 'none' | 'bridge';
+  network: ContainerNetworkPlan;
   /** `uid:gid`, or undefined to accept the image's user. */
   user?: string;
   readOnlyRoot: boolean;
@@ -430,7 +461,7 @@ export interface BuildPlanOptions {
   envPassthrough?: readonly string[];
   argv: readonly string[];
   timeoutMs: number;
-  network: 'none' | 'bridge';
+  network: ContainerNetworkPlan;
   user?: string;
   limits?: ContainerLimits;
   name: string;
@@ -533,6 +564,92 @@ const FORBIDDEN_MOUNT_DESTINATIONS: readonly string[] = [
 ];
 
 /**
+ * The network half of the second boundary (alpha.6 §39, §86).
+ *
+ * Its job is to make the fall-back-to-bridge failure *unrepresentable in a plan
+ * that reaches the daemon*, not merely absent from the code that builds one. The
+ * scoped shape is only accepted when every part of the topology it names is
+ * present: a private network with the kernel's own prefix, a proxy at a private
+ * address, and a resolver that cannot reach outside. A plan claiming `scoped`
+ * while pointing at `bridge` is the exact defect §39 calls the Fallback Stop, and
+ * it is refused here even though nothing in the backend can currently produce it.
+ */
+function validateNetworkPlan(plan: ContainerPlan): string[] {
+  const problems: string[] = [];
+  const network = plan.network;
+
+  if (network.kind === 'none' || network.kind === 'unrestricted') return problems;
+  if (network.kind !== 'scoped') {
+    problems.push(
+      `network mode "${String((network as { kind: string }).kind)}" is not one of none/unrestricted/scoped`,
+    );
+    return problems;
+  }
+
+  if (!/^mycoder-egress-[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(network.dockerNetwork)) {
+    problems.push(
+      `scoped egress names docker network "${network.dockerNetwork}", which is not a kernel-owned private network`,
+    );
+  }
+  // Naming a shared or built-in network would silently reintroduce a route.
+  if (['bridge', 'host', 'none', 'default'].includes(network.dockerNetwork)) {
+    problems.push(`scoped egress must not run on the built-in "${network.dockerNetwork}" network`);
+  }
+  const proxyScope = classifyAddress(network.proxyAddress)?.scope;
+  if (proxyScope !== 'private') {
+    problems.push(
+      `the scoped-egress proxy address "${network.proxyAddress}" is ${proxyScope ?? 'unparseable'}, not a private address`,
+    );
+  }
+  if (!Number.isInteger(network.proxyPort) || network.proxyPort < 1 || network.proxyPort > 65535) {
+    problems.push('the scoped-egress proxy port is not a valid port number');
+  }
+  if (network.dns.length === 0) {
+    problems.push(
+      'scoped egress must pin the workload resolver; an unset --dns inherits external resolution',
+    );
+  }
+  for (const server of network.dns) {
+    // Loopback only: the point is that the embedded resolver has no upstream it
+    // can reach, so external names do not resolve inside the workload (§15).
+    if (classifyAddress(server)?.scope !== 'loopback') {
+      problems.push(`scoped egress resolver "${server}" is not a loopback address`);
+    }
+  }
+  if (network.allowedHosts.length === 0) {
+    problems.push('scoped egress has an empty approved host set, which is not a valid grant (alpha.6 §9)');
+  }
+  for (const host of network.allowedHosts) {
+    const normalized = normalizeHostOrUndefined(host);
+    if (normalized !== host) {
+      problems.push(
+        `approved host "${host}" is not in normalised form; the plan and the proxy policy could differ`,
+      );
+    }
+  }
+
+  // The workload's proxy variables must name the proxy this plan created, and
+  // nothing else. A `HTTP_PROXY` pointing anywhere else would be a second,
+  // unvalidated destination handed to every well-behaved client.
+  const expected = `http://${network.proxyAddress}:${network.proxyPort}`;
+  for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) {
+    const value = plan.env[name];
+    if (value === undefined) {
+      problems.push(`scoped egress did not set ${name} for the workload`);
+    } else if (value !== expected) {
+      problems.push(`${name} does not point at this execution's egress proxy`);
+    }
+  }
+  for (const name of ['NO_PROXY', 'no_proxy']) {
+    // A non-empty NO_PROXY would tell a client that some destination needs no
+    // proxy — which is true of nothing here, and confusing when it fails.
+    if ((plan.env[name] ?? '') !== '') problems.push(`${name} must be empty under scoped egress`);
+  }
+
+  return problems;
+}
+
+/**
  * The second boundary (§50).
  *
  * Everything checked here was already supposed to be impossible by
@@ -551,9 +668,7 @@ export function validateContainerPlan(plan: ContainerPlan, opts: ValidatePlanOpt
   if (!plan.capDropAll) problems.push('Linux capabilities are not dropped');
   if (!plan.noNewPrivileges) problems.push('no-new-privileges is not set');
   if (!plan.removeOnExit) problems.push('the container would not be removed on exit');
-  if (plan.network !== 'none' && plan.network !== 'bridge') {
-    problems.push(`network mode "${String(plan.network)}" is not one of none/bridge`);
-  }
+  problems.push(...validateNetworkPlan(plan));
   if (plan.name.trim() === '' || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(plan.name)) {
     problems.push('the container name is empty or not a valid Docker name');
   }
@@ -671,7 +786,22 @@ export function validateContainerPlan(plan: ContainerPlan, opts: ValidatePlanOpt
 export function dockerRunArgs(plan: ContainerPlan): string[] {
   const args: string[] = ['run', '--rm', '--name', plan.name];
 
-  args.push('--network', plan.network);
+  // The three modes become three different daemon-level facts, which is the
+  // whole substance of alpha.6: `none` has no interfaces, `scoped` attaches to an
+  // `--internal` network whose only dual-homed member is the kernel's proxy, and
+  // `unrestricted` is the ordinary bridge the user explicitly approved.
+  switch (plan.network.kind) {
+    case 'none':
+      args.push('--network', 'none');
+      break;
+    case 'unrestricted':
+      args.push('--network', 'bridge');
+      break;
+    case 'scoped':
+      args.push('--network', plan.network.dockerNetwork);
+      for (const server of plan.network.dns) args.push('--dns', server);
+      break;
+  }
   if (plan.readOnlyRoot) args.push('--read-only');
   if (plan.capDropAll) args.push('--cap-drop=ALL');
   if (plan.noNewPrivileges) args.push('--security-opt=no-new-privileges');

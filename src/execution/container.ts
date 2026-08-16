@@ -36,10 +36,10 @@
  * nobody reads.
  */
 
-import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   kernelError,
@@ -52,7 +52,12 @@ import { isWithin, toPosix, type CanonicalPath } from '../util/paths.ts';
 import { createLogger, type Logger } from '../util/logger.ts';
 import { scrubEnv, assertNoCredentialEnv } from '../security/env-scrub.ts';
 import type { Redactor } from '../security/redactor.ts';
+import { normalizeNetworkMode, type ProcessNetworkMode } from '../security/egress/network-mode.ts';
+import type { EgressAuditRecord } from '../security/egress-proxy/proxy.ts';
+import { SIDECAR_PORT } from '../security/egress-proxy/main.ts';
 import { containerEnforcement, summarizeEnforcement } from './enforcement.ts';
+import { dockerClientEnv, runDocker } from './docker-cli.ts';
+import { collectOrphanedEgressResources, EgressSidecar, type EgressSidecarTiming } from './egress-sidecar.ts';
 import { LocalExecutionBackend } from './local.ts';
 import {
   buildContainerPlan,
@@ -67,6 +72,7 @@ import {
   type ContainerImageRef,
   type ContainerLimits,
   type ContainerMountPlan,
+  type ContainerNetworkPlan,
   type ContainerPlan,
   type MountPlannerHost,
 } from './container-plan.ts';
@@ -147,127 +153,14 @@ export interface ProbeResult {
   detail: string;
 }
 
-interface RunOutput {
-  stdout: string;
-  stderr: string;
-  exitCode: number | null;
-  timedOut: boolean;
-  spawnError?: NodeJS.ErrnoException;
-}
-
 /**
- * Run the docker client.
+ * The docker client transport lives in `./docker-cli.ts` (alpha.6).
  *
- * The client is *kernel-side* infrastructure, not the untrusted workload, so it
- * gets an environment that lets it find the daemon: `HOME` (for
- * `~/.docker/config.json` and the current context) plus the `DOCKER_*` variables
- * a user may legitimately have set to point at a non-default daemon. That is a
- * deliberate, narrow exception to the scrub — and it is *not* the environment the
- * workload receives, which is built separately in `ContainerExecutor.exec` and
- * asserted credential-free before it is used.
+ * It moved because the egress sidecar manager needs the same client, and the two
+ * alternatives — a circular import or a second `spawn('docker', …)` with its own
+ * idea of the client environment — are both worse than one module owning it.
  */
-async function runDocker(
-  binary: string,
-  args: readonly string[],
-  opts: {
-    timeoutMs: number;
-    stdin?: string;
-    maxOutputBytes?: number;
-    env?: Record<string, string>;
-    /**
-     * Called the moment this run is being torn down, before the client is
-     * signalled.
-     *
-     * `docker run` does not exit when it receives SIGTERM: it forwards the signal
-     * to the container and keeps waiting. And the container will not act on it
-     * either, because the workload is PID 1 in its own namespace, and PID 1
-     * ignores SIGTERM unless it installs a handler — which `sh -c 'sleep 120'`
-     * does not.
-     *
-     * The measured consequence, before this hook existed: cancelling a command
-     * returned control to the user after **120 seconds**, i.e. when the command
-     * finished on its own. The cancellation had done nothing except set a flag.
-     * That is the same defect the SSH backend hit in alpha.3 for a different
-     * reason, and it is worth naming twice: a cancel that does not terminate the
-     * work is not a cancel.
-     *
-     * So the teardown path removes the *container*, which makes `docker run`
-     * exit, which settles this promise. Killing the client is the fallback, not
-     * the mechanism.
-     */
-    onTerminate?: (reason: 'timeout' | 'abort') => void;
-  },
-  signal?: AbortSignal,
-): Promise<RunOutput> {
-  const env =
-    opts.env ??
-    scrubEnv({
-      allow: ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY'],
-      home: homedir(),
-    }).env;
-
-  const maxBytes = opts.maxOutputBytes ?? 8 * 1024 * 1024;
-
-  return new Promise<RunOutput>((resolve) => {
-    const child = spawn(binary, [...args], { env, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
-
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    let settled = false;
-
-    const finish = (exitCode: number | null, spawnError?: NodeJS.ErrnoException): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      resolve({ stdout, stderr, exitCode, timedOut, ...(spawnError ? { spawnError } : {}) });
-    };
-
-    const teardown = (reason: 'timeout' | 'abort'): void => {
-      // Remove the container first; the client exits as a consequence.
-      opts.onTerminate?.(reason);
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        // already gone
-      }
-      setTimeout(() => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // already gone
-        }
-      }, 5_000).unref?.();
-    };
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      teardown('timeout');
-    }, opts.timeoutMs);
-
-    const onAbort = (): void => teardown('abort');
-    signal?.addEventListener('abort', onAbort, { once: true });
-
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (c: string) => {
-      if (Buffer.byteLength(stdout) < maxBytes) stdout += c;
-    });
-    child.stderr.on('data', (c: string) => {
-      if (Buffer.byteLength(stderr) < maxBytes) stderr += c;
-    });
-
-    child.stdin.on('error', () => {
-      // A container that exits before reading stdin closes the pipe; EPIPE here
-      // is the workload's business, not a transport failure.
-    });
-    child.stdin.end(opts.stdin ?? '');
-
-    child.on('error', (err: NodeJS.ErrnoException) => finish(null, err));
-    child.on('close', (code) => finish(code));
-  });
-}
+type RunOutput = import('./docker-cli.ts').DockerRunOutput;
 
 /**
  * Classify a docker failure (§62).
@@ -575,13 +468,7 @@ export class ContainerProcess {
 
     // The docker client's environment carries the secret values, so the
     // daemon receives them over the socket instead of via the process table.
-    const clientEnv = {
-      ...scrubEnv({
-        allow: ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY'],
-        home: homedir(),
-      }).env,
-      ...envPassthroughValues,
-    };
+    const clientEnv = { ...dockerClientEnv(), ...envPassthroughValues };
 
     const output = await runDocker(
       this.opts.binary,
@@ -624,7 +511,7 @@ export class ContainerProcess {
           {
             blame: classified.blame ?? 'environment',
             retryable: classified.retryable,
-            safeDetails: { image: plan.image.configured, network: plan.network },
+            safeDetails: { image: plan.image.configured, network: plan.network.kind },
           },
         ),
       );
@@ -696,6 +583,44 @@ function looksLikeDockerFailure(stderr: string): boolean {
 
 // --- the capability executor ----------------------------------------------
 
+/**
+ * Turn a network mode plus the topology that was actually built into a plan.
+ *
+ * The `allowlist`-without-a-sidecar case is unrepresentable rather than
+ * defaulted: reaching it would mean the setup path returned without throwing,
+ * which is the Fallback Stop of §96. It throws rather than picking a mode.
+ */
+function networkPlanFor(mode: ProcessNetworkMode, sidecar: EgressSidecar | undefined): ContainerNetworkPlan {
+  switch (mode.kind) {
+    case 'deny-all':
+      return { kind: 'none' };
+    case 'unrestricted':
+      return { kind: 'unrestricted' };
+    case 'allowlist': {
+      if (!sidecar) {
+        throw new KernelErrorException(
+          kernelError(
+            'NETWORK_ENFORCEMENT_SETUP_FAILED',
+            'Scoped egress was requested but no proxy topology exists; the execution is refused rather than run with broad networking.',
+            { blame: 'kernel', retryable: false },
+          ),
+        );
+      }
+      return {
+        kind: 'scoped',
+        dockerNetwork: sidecar.networkName,
+        proxyAddress: sidecar.proxyAddress,
+        proxyPort: SIDECAR_PORT,
+        // §15: the workload's resolver points at its own loopback, where nothing
+        // listens, so external names do not resolve inside the container. The
+        // proxy does the resolving, on the other side of the boundary.
+        dns: ['127.0.0.1'],
+        allowedHosts: mode.targets.map((t) => t.host),
+      };
+    }
+  }
+}
+
 interface ContainerExecutorDeps {
   profile: CapabilityProfile;
   environment: EnvironmentDescriptor;
@@ -714,6 +639,18 @@ interface ContainerExecutorDeps {
   tmpfsBytes?: number;
   logger: Logger;
   onPlan?: (plan: ContainerPlan) => void;
+  /** The docker binary, for the sidecar manager. */
+  binary: string;
+  /** Host path of this kernel's `src/security`, mounted read-only into the proxy. */
+  securitySourceDir: string;
+  /** Kernel-owned scratch directory, outside the workspace. */
+  scratchDir: string;
+  /** Test-only §56 escape hatches; never reachable from configuration. */
+  allowPrivateEgressAddresses?: boolean;
+  egressAllowBenchmarkRange?: boolean;
+  egressTestHostAliases?: readonly string[];
+  /** Test/`/status` seam: the proxy's decisions and the setup cost (§45, §65). */
+  onEgressAudit?: (records: readonly EgressAuditRecord[], timing: EgressSidecarTiming) => void;
 }
 
 class ContainerExecutor implements CapabilityExecutor {
@@ -778,6 +715,71 @@ class ContainerExecutor implements CapabilityExecutor {
 
     const mountPlan = await this.plan();
 
+    // The capability profile becomes an enforceable mode *before* anything else
+    // happens, because an unusable grant — `{ hosts: [] }`, an unparseable host,
+    // more hosts than the policy bound — must fail the execution rather than
+    // quietly become one of the two extremes (§9, §60).
+    const modeResult = normalizeNetworkMode(this.profile.network);
+    if (!modeResult.ok) {
+      throw new KernelErrorException(
+        kernelError(
+          'NETWORK_ENFORCEMENT_SETUP_FAILED',
+          `The network grant is not enforceable: ${modeResult.problems[0]}`,
+          {
+            blame: 'kernel',
+            retryable: false,
+            safeDetails: { problems: modeResult.problems },
+          },
+        ),
+      );
+    }
+    const mode = modeResult.mode;
+
+    // Scoped egress is the only mode with a topology to build. It is built here,
+    // torn down in the `finally` below, and nothing between the two can turn a
+    // setup failure into broad networking: `EgressSidecar.start` throws (§39).
+    let sidecar: EgressSidecar | undefined;
+    if (mode.kind === 'allowlist') {
+      sidecar = await EgressSidecar.start({
+        binary: this.deps.binary,
+        image: this.deps.image.configured,
+        executionId: shortId(),
+        mode,
+        securitySourceDir: this.deps.securitySourceDir,
+        scratchDir: this.deps.scratchDir,
+        logger: this.deps.logger,
+        ...(this.deps.user ? { user: this.deps.user } : {}),
+        ...(this.deps.allowPrivateEgressAddresses !== undefined
+          ? { allowPrivateAddresses: this.deps.allowPrivateEgressAddresses }
+          : {}),
+        ...(this.deps.egressAllowBenchmarkRange !== undefined
+          ? { allowBenchmarkRange: this.deps.egressAllowBenchmarkRange }
+          : {}),
+        ...(this.deps.egressTestHostAliases ? { testHostAliases: this.deps.egressTestHostAliases } : {}),
+      });
+    }
+
+    try {
+      return await this.execWithTopology(spec, mode, sidecar, mountPlan, signal);
+    } finally {
+      // §46, §48: the network and the proxy go away whatever happened —
+      // success, failure, timeout or cancellation. No proxy outlives the
+      // execution that owns it.
+      if (sidecar) {
+        const audit = await sidecar.collectAudit().catch((): EgressAuditRecord[] => []);
+        this.deps.onEgressAudit?.(audit, sidecar.timing);
+        await sidecar.stop();
+      }
+    }
+  }
+
+  private async execWithTopology(
+    spec: Omit<ProcessSpec, 'env'> & { env?: Record<string, string> },
+    mode: ProcessNetworkMode,
+    sidecar: EgressSidecar | undefined,
+    mountPlan: ContainerMountPlan,
+    signal?: AbortSignal,
+  ): Promise<ProcessResult> {
     // The workload's environment is built from scratch — never from
     // `process.env`, and never from the docker client's environment either.
     // `HOME` points at the tmpfs, because a container home on a read-only rootfs
@@ -795,6 +797,11 @@ class ContainerExecutor implements CapabilityExecutor {
       LANG: 'C.UTF-8',
       TZ: 'UTC',
       ...scrub.env,
+      // Last, so a tool-supplied `env` cannot redirect a well-behaved client at
+      // some other proxy. It would not be a boundary bypass — the topology is
+      // the boundary, and there is nothing else routable — but it would turn a
+      // clean denial into a confusing connection error.
+      ...(sidecar ? sidecar.proxyEnv : {}),
     };
 
     // Secrets go through the client's environment, not the argv (§25).
@@ -825,8 +832,11 @@ class ContainerExecutor implements CapabilityExecutor {
       argv: translated.argv,
       timeoutMs: spec.timeoutMs ?? this.profile.timeoutMs,
       // The one place the capability profile becomes a runtime network fact.
-      // `network: false` is the default for every profile that did not ask.
-      network: this.profile.network === false ? 'none' : 'bridge',
+      // Three modes, not two: `deny-all` is the default for every profile that
+      // did not ask, `allowlist` runs on the private network the sidecar just
+      // built, and `unrestricted` is the ordinary bridge — which now has to be
+      // asked for by name rather than being what "any network at all" means.
+      network: networkPlanFor(mode, sidecar),
       ...(this.deps.user ? { user: this.deps.user } : {}),
       limits: this.deps.limits,
       name: containerName('mycoder', shortId()),
@@ -835,7 +845,7 @@ class ContainerExecutor implements CapabilityExecutor {
     this.deps.onPlan?.(plan);
     this.deps.logger.debug('container plan', {
       image: plan.image.configured,
-      network: plan.network,
+      network: plan.network.kind,
       mounts: plan.mounts.length,
       writable: plan.mounts.filter((m) => m.mode === 'rw').length,
       masked: plan.mounts.filter((m) => m.origin === 'mask').length,
@@ -879,7 +889,46 @@ export interface ContainerBackendOptions {
   hostFs?: FileSystemBackend;
   /** Test seam: observe every plan that is about to run. */
   onPlan?: (plan: ContainerPlan) => void;
+  /**
+   * Test-only (§56): let scoped egress reach private addresses.
+   *
+   * The controlled attack topology needs an "allowed" target and a "denied"
+   * target that are both real servers the suite controls, and the only addresses
+   * a test can control are private ones. Production default is `false`, and this
+   * flag is not reachable from configuration — it is a constructor parameter used
+   * by the harness, so a config file cannot switch off §23.
+   */
+  allowPrivateEgressAddresses?: boolean;
+  /**
+   * Treat RFC 2544 benchmarking space (`198.18.0.0/15`) as reachable.
+   *
+   * Dogfood finding D-A6-2: some resolvers — DNS-interception VPNs and certain
+   * Docker Desktop setups — map public hostnames into that range and NAT them
+   * onward, so the strict §23 address policy denies every real destination.
+   * Off by default and off on the native-Linux release tier; enabling it is a
+   * deliberate, `/status`-visible weakening of the address check for one /15.
+   */
+  egressAllowBenchmarkRange?: boolean;
+  /**
+   * Test-only (§56): `name:address` entries for the proxy's `/etc/hosts`, so the
+   * controlled topology can use real domain names instead of IP literals — which
+   * is what keeps the domain matching and the SNI check in the path under test.
+   */
+  egressTestHostAliases?: readonly string[];
+  /** Observe the proxy's decisions and the topology setup cost (§45, §65). */
+  onEgressAudit?: (records: readonly EgressAuditRecord[], timing: EgressSidecarTiming) => void;
 }
+
+/**
+ * Where this kernel's `src/security` lives on the host.
+ *
+ * Derived from this module's own location rather than from `process.cwd()` or
+ * configuration, so the proxy that gets mounted into the sidecar is always
+ * *this* kernel's proxy — the one that was reviewed and tested alongside the
+ * policy it enforces — and never a copy in whatever directory the agent happens
+ * to have been started from.
+ */
+const SECURITY_SOURCE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'security');
 
 export class ContainerExecutionBackend implements ExecutionBackend {
   readonly id: string;
@@ -1073,7 +1122,18 @@ export class ContainerExecutionBackend implements ExecutionBackend {
     );
     const tools = probeTools.stdout.split('\n').map((l) => l.trim());
 
+    // §47: a previous kernel that crashed mid-execution leaves a proxy container
+    // and a private network behind. They are found by *label* and removed here,
+    // at construction, where a slow round trip costs nothing. Never a broad
+    // `docker system prune`: that would delete resources this kernel does not
+    // own, which is a much worse failure than a leaked network.
+    const collected = await collectOrphanedEgressResources(probe.info.binary, {
+      logger: logger.child('egress'),
+    }).catch(() => ({ containers: 0, networks: 0 }));
+
     logger.debug('container runtime ready', {
+      orphanedProxies: collected.containers,
+      orphanedNetworks: collected.networks,
       server: probe.info.serverVersion,
       platform: probe.info.serverPlatform,
       nativeLinux: probe.info.nativeLinux,
@@ -1132,6 +1192,17 @@ export class ContainerExecutionBackend implements ExecutionBackend {
       ...(this.config.tmpfsBytes !== undefined ? { tmpfsBytes: this.config.tmpfsBytes } : {}),
       logger: this.logger,
       ...(this.opts.onPlan ? { onPlan: this.opts.onPlan } : {}),
+      binary: this.runtime.binary,
+      securitySourceDir: SECURITY_SOURCE_DIR,
+      scratchDir: this.scratchDir,
+      ...(this.opts.allowPrivateEgressAddresses !== undefined
+        ? { allowPrivateEgressAddresses: this.opts.allowPrivateEgressAddresses }
+        : {}),
+      ...(this.opts.egressAllowBenchmarkRange !== undefined
+        ? { egressAllowBenchmarkRange: this.opts.egressAllowBenchmarkRange }
+        : {}),
+      ...(this.opts.egressTestHostAliases ? { egressTestHostAliases: this.opts.egressTestHostAliases } : {}),
+      ...(this.opts.onEgressAudit ? { onEgressAudit: this.opts.onEgressAudit } : {}),
     });
   }
 

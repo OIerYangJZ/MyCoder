@@ -442,7 +442,21 @@ describe('Replay and resume + Container — §46, §47', { ...skip, timeout: 600
       assert.match(JSON.stringify(kernel.context.history()), /before-restart/);
     } finally {
       await kernel.shutdown().catch(() => {});
-      await rm(base, { recursive: true, force: true });
+      // Retried for the reason `container-harness.ts` retries: the daemon
+      // unmounts a bind *after* the container exits, and removing the former
+      // mount target inside that window fails with EACCES on macOS. Unretried,
+      // this failed roughly one run in four under the full container suite —
+      // a red release gate for a race in a test's own teardown.
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        try {
+          await rm(base, { recursive: true, force: true });
+          break;
+        } catch (e) {
+          const code = (e as NodeJS.ErrnoException).code;
+          if (attempt === 9 || (code !== 'EACCES' && code !== 'EBUSY' && code !== 'ENOTEMPTY')) throw e;
+          await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+        }
+      }
     }
   });
 });

@@ -45,6 +45,25 @@ export const ERROR_CODES = [
   // The plan validator refused a plan (§50). Always a kernel defect: no tool
   // argument is supposed to be able to produce an invalid plan.
   'CONTAINER_PLAN_REJECTED',
+  // Scoped subprocess egress (alpha.6 §79, ADR-0015). Split by *what refused*,
+  // because a model that is told "the destination host is not approved" can ask
+  // for it, and a model that is told "the network could not be set up" cannot —
+  // and collapsing the two would make the first look like infrastructure.
+  //
+  //   SCOPE_DENIED          the host/port is not in the approved set
+  //   TARGET_ADDRESS_DENIED it resolved to a private/loopback/metadata address
+  //   TARGET_RESOLUTION     it did not resolve at all
+  //   PROTOCOL_UNSUPPORTED  outside the enforced HTTP/HTTPS scope
+  //   IDENTITY_MISMATCH     Host header or TLS SNI disagreed with the authority
+  //   PROXY_UNAVAILABLE     the proxy stopped serving mid-execution
+  //   ENFORCEMENT_SETUP     the topology could not be built — never a fallback
+  'NETWORK_SCOPE_DENIED',
+  'NETWORK_TARGET_ADDRESS_DENIED',
+  'NETWORK_TARGET_RESOLUTION_FAILED',
+  'NETWORK_PROTOCOL_UNSUPPORTED',
+  'NETWORK_IDENTITY_MISMATCH',
+  'NETWORK_PROXY_UNAVAILABLE',
+  'NETWORK_ENFORCEMENT_SETUP_FAILED',
   'LOOP_BUDGET_EXCEEDED',
   'REPEATED_FAILURE',
   'DELEGATION_DENIED',
@@ -117,6 +136,16 @@ const DEFAULT_BLAME: Record<ErrorCode, Blame> = {
   CONTAINER_START_FAILED: 'environment',
   CONTAINER_RESOURCE_LIMIT: 'environment',
   CONTAINER_PLAN_REJECTED: 'kernel',
+  // A denied destination is the *model's* to fix: it asked for a host the user
+  // did not approve, and the remedy is to ask for it or to stop. The setup
+  // failures are the environment's.
+  NETWORK_SCOPE_DENIED: 'model',
+  NETWORK_TARGET_ADDRESS_DENIED: 'model',
+  NETWORK_TARGET_RESOLUTION_FAILED: 'environment',
+  NETWORK_PROTOCOL_UNSUPPORTED: 'model',
+  NETWORK_IDENTITY_MISMATCH: 'model',
+  NETWORK_PROXY_UNAVAILABLE: 'environment',
+  NETWORK_ENFORCEMENT_SETUP_FAILED: 'environment',
   LOOP_BUDGET_EXCEEDED: 'kernel',
   REPEATED_FAILURE: 'model',
   // A refused delegation is the configuration speaking, the same as TOOL_DENIED.
