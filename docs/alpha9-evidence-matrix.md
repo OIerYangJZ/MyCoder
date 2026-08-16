@@ -208,3 +208,14 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 | evidence gate      | 7 matrices, every claim resolves                         |
 | typecheck / format | clean                                                    |
 | release gate       | green at `c701a31` (run `31935882150`), tagged alpha.8.1 |
+
+The release gate was also dispatched against this branch's head, `5eda8fb`
+(run `31937426583`), and every tier passed — offline on both tier-1 platforms,
+container and native each under their `_REQUIRED` variable, and the artifact
+packed, installed into a clean prefix and driven.
+
+State that precisely. It means the work recorded above is green at an exact
+commit. It does **not** mean the milestone is complete: a green gate proves the
+tree is consistent, and §0 is what says whether the milestone's claims are true.
+Those are different questions, and conflating them is how alpha.8 ended up with a
+tag on a commit its own gate rejects. No tag is cut here.
