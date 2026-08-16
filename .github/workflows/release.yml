@@ -230,8 +230,18 @@ jobs:
           git status --porcelain
           echo "--- end ---"
 
+      # `tee "$RUNNER_TEMP/pack.txt"`, not `tee pack.txt`.
+      #
+      # A redirection target is created by the shell when it builds the pipeline
+      # — *before* the command on the left runs. So `| tee pack.txt` put an
+      # untracked `pack.txt` in the repository root, `collectBuildInfo` read it
+      # through `git status --porcelain`, and the job refused its own release for
+      # a dirty tree that it had dirtied itself, one step earlier, with its own
+      # log file.
+      #
+      # Invisible locally, where this had only ever been run without the pipe.
       - name: Pack
-        run: pnpm release:pack --release | tee pack.txt
+        run: pnpm release:pack --release | tee "$RUNNER_TEMP/pack.txt"
 
       # The install path a real user takes, on a machine with no checkout of this
       # repository — §25's shape, as far as CI can carry it.
@@ -268,7 +278,7 @@ jobs:
           name: release-artifact
           path: |
             mycoder-*.tgz
-            pack.txt
+            ${{ runner.temp }}/pack.txt
           retention-days: 90
 
   gate:

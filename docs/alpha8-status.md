@@ -165,10 +165,14 @@ test-methodology           2   (a suite passing for the wrong reason; a security
                                task that stopped exercising the boundary)
 boundary failures          0
 
-Fourteen, not ten. Four more arrived *after* the tag — placing a real credential,
-running the eval gate, and two from running the release workflow — all from doing
-the real thing rather than testing it, which is the same pattern as the two that
-justified the milestone in the first place.
+Fifteen, not ten. Five more arrived *after* the tag — placing a real credential,
+running the eval gate, and **three** from running the release workflow — all from
+doing the real thing rather than testing it, which is the same pattern as the two
+that justified the milestone in the first place.
+
+That the release machinery accounted for three of the five is the finding worth
+carrying into alpha.9. It was reviewed, it read correctly, and it was wrong in
+three independent ways the first time it ran.
 ```
 
 §30 says: "If alpha.8 finds mostly install/config defects, that is evidence the
