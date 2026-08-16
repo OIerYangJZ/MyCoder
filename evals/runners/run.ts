@@ -141,6 +141,8 @@ export interface EvalResult {
   regression: boolean;
   failureClass?: FailureClass;
   failures: string[];
+  /** Denial checks the model never gave the kernel a chance to enforce (§20). */
+  notExercised?: string[];
 
   modelRequests: number;
   toolCalls: number;
@@ -190,6 +192,8 @@ export interface TaskMetrics {
   /** §28: the runtime behaved, whatever the model did. */
   kernelCorrect: boolean;
   failures: string[];
+  /** Denial checks the model never gave the kernel a chance to enforce (§20). */
+  notExercised?: string[];
   failureClass?: FailureClass;
   provider: string;
   model: string;
@@ -755,7 +759,11 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     workspaceDir: root,
     ...(dirs ? { dirs } : { dirsRoot: path.join(base, 'kernel') }),
     ...(task.profile ? { profileOverride: task.profile } : {}),
-    ...(LIVE ? { modelOverride: LIVE_ALIAS! } : {}),
+    // Scripted mode names `fake` explicitly rather than relying on it being the
+    // default. Since alpha.8 §10 a *defaulted-into* fake model is refused — that
+    // is the whole point of the check — and a runner that leaned on the default
+    // was asking for the thing the check exists to prevent.
+    modelOverride: LIVE ? LIVE_ALIAS! : 'fake',
     egressTransport: transport,
     prompter,
     logLevel: 'silent',
@@ -815,6 +823,12 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
   };
 
   const failures: string[] = [];
+  /**
+   * Checks that could not be evaluated because the model never attempted the
+   * thing they assert a denial of. Neither a pass nor a fail — a third outcome,
+   * which is the whole point (see the loop below).
+   */
+  const notExercised: string[] = [];
 
   try {
     // Harness-level variation, for experiments (see `GoldenTask.prepare`). Runs
@@ -827,7 +841,21 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     for (const check of task.checks) {
       try {
         const failure = await check.run(ctx);
-        if (failure) failures.push(`${check.name}: ${failure}`);
+        if (!failure) continue;
+
+        // alpha.8 §20's finding, mechanised. A check marked `requiresAttempt`
+        // asserts that the model *provoked* a denial, so in live mode its
+        // failure is a fact about the model's choices and not about the kernel:
+        // one model simply declined to try reading `.env`, and `denied-secret`
+        // scored 0/5 against a kernel that was working perfectly.
+        //
+        // Scripted mode still asserts it — that is where the adversarial
+        // sequence is guaranteed, and where the invariant is genuinely tested.
+        // The checks that do *not* depend on an attempt, `noCanaryAnywhere`
+        // above all, still run in both modes and are what carries the security
+        // claim.
+        if (LIVE && check.requiresAttempt) notExercised.push(check.name);
+        else failures.push(`${check.name}: ${failure}`);
       } catch (e) {
         failures.push(`${check.name}: threw ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -883,6 +911,7 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
       family: task.family,
       runId,
       passed: failures.length === 0 && secretBoundaryViolations === 0,
+      ...(notExercised.length > 0 ? { notExercised } : {}),
       // §28: a model omission leaves Kernel Correctness at PASS. A security
       // violation never does — that is a runtime failure by definition.
       kernelCorrect: secretBoundaryViolations === 0 && !(failureClass && KERNEL_FAULTS.has(failureClass)),
@@ -1043,6 +1072,7 @@ async function main(argv: readonly string[]): Promise<number> {
       regression: false,
       ...(r.failureClass ? { failureClass: r.failureClass } : {}),
       failures: r.failures,
+      ...(r.notExercised ? { notExercised: r.notExercised } : {}),
       modelRequests: r.modelRequests,
       toolCalls: r.toolCalls,
       editAttempts: r.editAttempts,
@@ -1090,6 +1120,7 @@ async function main(argv: readonly string[]): Promise<number> {
   } else {
     const n = results.length;
     const fam = artifact.families;
+    const notExercisedCount = results.reduce((sum, r) => sum + (r.notExercised?.length ?? 0), 0);
 
     // §24: two scoreboards, printed apart. Adding them was how alpha.2 produced
     // a number that answered neither question.
@@ -1097,6 +1128,10 @@ async function main(argv: readonly string[]): Promise<number> {
       `\n── Kernel Invariants ${'─'.repeat(40)}\n` +
         `enforced                        ${fam['kernel-invariant'].solved}/${fam['kernel-invariant'].attempts}\n` +
         `kernel correct                  ${fam['kernel-invariant'].kernelCorrect}/${fam['kernel-invariant'].attempts}\n` +
+        // §20: printed even when zero. "The model never tried" is a fact about
+        // the run, and one that silently shrinks what the invariants covered —
+        // so it belongs next to the count it shrank, not in a footnote.
+        `not exercised                   ${notExercisedCount} (the model never attempted the denied action)\n` +
         `\n── Model Capability (${LIVE ? `live, N=${RUNS}` : 'scripted'}) ${'─'.repeat(28)}\n` +
         `solved                          ${fam['model-capability'].solved}/${fam['model-capability'].attempts}\n` +
         // §28: this is the line that should stay at 100% even when the one

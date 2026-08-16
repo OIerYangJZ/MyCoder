@@ -104,13 +104,40 @@ export async function setupCredential(opts: SetupCredentialOptions): Promise<Set
   // in a repository — and on a filesystem with snapshots or an editor watching
   // the tree, "briefly" is not a guarantee of anything.
   if (isWithinDir(opts.workspaceRoot, target)) {
+    const suggestion = path.join(configDir, 'secrets', path.basename(target));
+
+    // The suggestion has to be checked too, or the message can recommend exactly
+    // the path it just refused — which is what it did the first time this was
+    // run for real, from a shell whose cwd was the home directory. The config
+    // directory was inside the "workspace", so both the target and the advice
+    // were, and the output was a refusal followed by the same path again.
+    //
+    // When that happens the problem is not the file, it is the workspace: the
+    // session is rooted somewhere that contains the config directory, and no
+    // path under it is safe. Say that instead of repeating the refusal.
+    if (isWithinDir(opts.workspaceRoot, suggestion)) {
+      return {
+        exit: EXIT.CONFIG,
+        message:
+          `Refusing to write ${target}: it is inside the workspace, and so is your\n` +
+          `config directory (${configDir}).\n\n` +
+          `The workspace is ${opts.workspaceRoot} — which is a very broad root, and probably\n` +
+          'not the project you meant. Two ways out:\n\n' +
+          '  * run this from the project directory you actually want, so the workspace is\n' +
+          '    that project rather than everything above it; or\n' +
+          '  * pass --cwd <project> to say so explicitly.\n\n' +
+          'A credential inside the workspace is one `git add` from being committed and one\n' +
+          "Read from being in the model's context, so this is refused wherever it lands.\n",
+      };
+    }
+
     return {
       exit: EXIT.CONFIG,
       message:
         `Refusing to write ${target}: it is inside the workspace.\n\n` +
         'A credential there is one `git add` from being committed and one Read from being in\n' +
         "the model's context. Put it under your config directory instead:\n\n" +
-        `    ${path.join(opts.configDir, 'secrets', path.basename(target))}\n`,
+        `    ${suggestion}\n`,
     };
   }
 

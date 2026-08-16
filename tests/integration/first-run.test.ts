@@ -108,6 +108,39 @@ describe('first run reaches one of exactly two states', () => {
     assert.equal(readiness.inferred, undefined);
   });
 
+  test('-m fake is an explicit choice, even with no config at all', () => {
+    // A regression, found by running `pnpm eval` after the readiness check
+    // landed. `mycoder -m fake "…"` is the offline path the README documents and
+    // the eval runner's scripted mode; refusing it treated a flag on the command
+    // line as if it were a default nobody chose, which is the opposite of what
+    // §10 is about.
+    const readiness = assessReadiness({
+      config: defaultConfig(),
+      sources: [],
+      explicitModelDefault: false,
+      userConfigDir: '/c',
+      aliasOverride: 'fake',
+    });
+
+    assert.ok(readiness.ready);
+    assert.equal(readiness.alias, 'fake');
+  });
+
+  test('an alias override still has to resolve to something', () => {
+    // The control for the test above: `-m` makes the choice explicit, it does
+    // not make an undefined alias acceptable.
+    const readiness = assessReadiness({
+      config: defaultConfig(),
+      sources: [],
+      explicitModelDefault: false,
+      userConfigDir: '/c',
+      aliasOverride: 'not-a-model',
+    });
+
+    assert.ok(!readiness.ready);
+    assert.equal(readiness.problem, 'alias-undefined');
+  });
+
   test('an injected fake model is always ready, whatever the config says', () => {
     const readiness = assessReadiness({
       config: defaultConfig(),

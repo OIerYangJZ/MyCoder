@@ -71,12 +71,20 @@ export function assessReadiness(input: ReadinessInput): Readiness {
   if (input.injectedFakeModel) return { ready: true, alias: input.config.model.default ?? 'fake' };
 
   const alias = input.aliasOverride ?? input.config.model.default ?? 'fake';
+
+  // `-m <alias>` is itself an explicit choice of model, including `-m fake`.
+  //
+  // Without this, `mycoder -m fake "…"` on a machine with no config file was
+  // refused — the offline path the README documents, and the one the eval runner
+  // uses in scripted mode. The readiness check exists to catch a *default* nobody
+  // chose (§10); a flag on the command line is the opposite of that.
+  const chosen = input.explicitModelDefault || input.aliasOverride !== undefined;
   const aliases = input.config.model.aliases ?? {};
   const providers = input.config.model.providers ?? {};
 
   // Nothing anywhere said which model to use, so `fake` is a default rather than
   // a decision. Whether that is a problem depends on what *is* configured.
-  if (alias === 'fake' && !input.explicitModelDefault) {
+  if (alias === 'fake' && !chosen) {
     // A config that declares one usable alias has told us which model to use as
     // clearly as `default =` would have; §10's first outcome is "usable, because
     // a provider was discoverable", and this is what discoverable means. It is

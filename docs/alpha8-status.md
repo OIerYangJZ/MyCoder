@@ -25,6 +25,8 @@ somebody actually tried.
 | format check         | clean                                         |
 | package contents     | 360 files, nothing forbidden, nothing missing |
 | install dogfood      | done, on a host with no development tree      |
+| container tier @ tag | 169 tests · 169 pass · 0 fail · 0 skipped     |
+| native tier @ tag    | 58 tests · 58 pass · 0 fail · 0 skipped       |
 
 ## §17 — the backlog, and the defect it found
 
@@ -154,12 +156,16 @@ millisecond has still existed in a repository.
 
 ```text
 distribution / packaging   3   (2 of them fatal, both found only by the dogfood)
-first-run / config UX      2
+first-run / config UX      4   (2 of them found only by doing the real thing:
+                               placing a credential, and running the eval gate)
 security-mechanism         2   (launcher identity, credential write ordering)
 provider adapter           1
 test-methodology           2   (a suite passing for the wrong reason; a security
                                task that stopped exercising the boundary)
 boundary failures          0
+
+Twelve, not ten. Two more arrived *after* the tag, both from doing the real thing
+rather than testing it — the same pattern as the two that justified the milestone.
 ```
 
 §30 says: "If alpha.8 finds mostly install/config defects, that is evidence the
