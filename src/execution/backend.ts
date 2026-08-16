@@ -103,8 +103,55 @@ export interface ProcessResult {
   outputTruncated: boolean;
 }
 
+/**
+ * A process that outlives a single message (ADR-0022 §2, amends ADR-0007).
+ *
+ * `exec()` is request and response: run a command, collect its output, done. An
+ * MCP stdio server is the opposite shape — a process spoken to over its stdin
+ * while it answers on its stdout, for as long as the session lasts.
+ *
+ * The alternative designs were both disqualified. Spawning from the MCP client
+ * is the "shortcut through ExecutionBackend for convenience" AGENTS.md rule 2
+ * calls a release blocker, and it would put the most capable component in the
+ * session outside whatever sandbox the user selected. One `exec()` per JSON-RPC
+ * call is not MCP: `initialize` establishes state a later `tools/call` relies on.
+ */
+export interface ProcessSession {
+  /** Write to the child's stdin. Rejects once the process is gone. */
+  write(data: string): Promise<void>;
+  /**
+   * stdout, as it arrives. One iterator per session; the consumer frames it.
+   *
+   * Not `ReadableStream`, because nothing else in this kernel uses one and an
+   * async iterator is what `for await` already expects.
+   */
+  stdout(): AsyncIterableIterator<string>;
+  /** Whatever the child said on stderr, capped. For diagnosis, never the model. */
+  stderrSoFar(): string;
+  /** Resolves when the process exits, however it exits. */
+  exited: Promise<{ exitCode: number | null; signal: string | null }>;
+  /** True once the process has gone. */
+  readonly alive: boolean;
+  /** SIGTERM then SIGKILL, and the process *tree* (alpha.7 §31). Idempotent. */
+  kill(): Promise<void>;
+}
+
 export interface ProcessBackend {
   exec(spec: ProcessSpec, signal?: AbortSignal): Promise<ProcessResult>;
+  /**
+   * Start a long-lived process, if this backend can host one.
+   *
+   * **Optional, and that is load-bearing.** A backend that cannot host a
+   * long-lived process says so by not implementing this, and the MCP client
+   * refuses that backend rather than falling back to a path around it. alpha.5's
+   * rule — refuse rather than approximate — is the reason this is not a default
+   * implementation that quietly spawns locally.
+   *
+   * A backend that *does* implement it owes it the same treatment as `exec()`:
+   * the same profile check, the same `assertNoCredentialEnv` gate before spawn,
+   * the same scrubbed environment, the same sandbox.
+   */
+  session?(spec: ProcessSpec, signal?: AbortSignal): Promise<ProcessSession>;
 }
 
 export interface EnvironmentDescriptor {

@@ -48,6 +48,7 @@ import type {
   FileSystemBackend,
   ProcessBackend,
   ProcessResult,
+  ProcessSession,
   ProcessSpec,
   RemoveOptions,
   WriteOptions,
@@ -195,6 +196,17 @@ class LocalProcess implements ProcessBackend {
     this.logger = logger;
   }
 
+  /**
+   * A long-lived process, for a stdio MCP server (ADR-0022 §2).
+   *
+   * Present on this backend because it can host one. It is deliberately absent
+   * on backends that cannot, so the MCP client refuses them rather than routing
+   * around them.
+   */
+  async session(spec: ProcessSpec, signal?: AbortSignal): Promise<ProcessSession> {
+    return startLocalSession(spec, this.redactor, signal);
+  }
+
   async exec(spec: ProcessSpec, signal?: AbortSignal): Promise<ProcessResult> {
     const [executable, ...args] = spec.argv;
     if (!executable) {
@@ -322,6 +334,132 @@ class LocalProcess implements ProcessBackend {
       child.on('close', (code, sig) => finish(code, sig));
     });
   }
+}
+
+/**
+ * A long-lived local process (ADR-0022 §2).
+ *
+ * Shares `exec()`'s two non-negotiables and adds nothing of its own: the
+ * environment must already be scrubbed, and `assertNoCredentialEnv` is the last
+ * line before spawn. A stdio MCP server is a subprocess, and "it is
+ * infrastructure" is not an exemption from anything alpha.4-alpha.7 established.
+ *
+ * Note what is **not** redacted here, and why it is safe. `exec()` redacts
+ * stdout before returning it, because that output goes to the model. This
+ * stream carries JSON-RPC frames that the client parses; redacting mid-frame
+ * would corrupt the JSON. Redaction happens instead where the content leaves —
+ * `parseCallResult` produces the text and the tool layer labels it, and that
+ * result travels the ordinary tool-result path with the ordinary redactor.
+ */
+export function startLocalSession(
+  spec: ProcessSpec,
+  redactor: Redactor,
+  signal?: AbortSignal,
+): Promise<ProcessSession> {
+  const [executable, ...args] = spec.argv;
+  if (!executable) {
+    throw new KernelErrorException(
+      kernelError('TOOL_INVALID_ARGS', 'No executable was given.', { blame: 'model' }),
+    );
+  }
+
+  const injected = Object.keys(spec.env).filter((n) => n.startsWith('__injected_'));
+  const check = assertNoCredentialEnv(spec.env, injected);
+  if (!check.ok) {
+    throw new KernelErrorException(
+      kernelError(
+        'SECRET_ACCESS_DENIED',
+        `Refusing to spawn: the prepared environment still contains ${check.offending.length} credential-shaped variable(s).`,
+        { blame: 'kernel', safeDetails: { names: check.offending } },
+      ),
+    );
+  }
+
+  const child = spawn(executable, args, {
+    cwd: spec.cwd,
+    env: spec.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    shell: false,
+    // A process group, so `kill()` can take the *tree* rather than just the
+    // parent — a server that spawned helpers must not leave them behind
+    // (alpha.7 §31). `detached` here means "new group", not "outlive us".
+    detached: process.platform !== 'win32',
+  });
+
+  const maxStderr = spec.maxOutputBytes ?? 256 * 1024;
+  let stderr = '';
+  let dead = false;
+
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => {
+    if (stderr.length < maxStderr) stderr += chunk;
+  });
+
+  const exited = new Promise<{ exitCode: number | null; signal: string | null }>((resolve) => {
+    const settle = (exitCode: number | null, sig: string | null): void => {
+      dead = true;
+      resolve({ exitCode, signal: sig });
+    };
+    child.on('close', (code, sig) => settle(code, sig));
+    child.on('error', () => settle(null, null));
+  });
+
+  const killTree = async (): Promise<void> => {
+    if (dead) return;
+    try {
+      if (process.platform !== 'win32' && child.pid !== undefined) {
+        process.kill(-child.pid, 'SIGTERM');
+        setTimeout(() => {
+          try {
+            process.kill(-child.pid!, 'SIGKILL');
+          } catch {
+            // Already gone.
+          }
+        }, 2_000).unref?.();
+      } else {
+        kill(child, 'SIGTERM');
+      }
+    } catch {
+      kill(child, 'SIGTERM');
+    }
+    await exited;
+  };
+
+  signal?.addEventListener('abort', () => void killTree(), { once: true });
+
+  const session: ProcessSession = {
+    async write(data: string): Promise<void> {
+      if (dead || child.stdin.destroyed) {
+        throw new KernelErrorException(
+          kernelError('TOOL_FAILED', 'the process is no longer accepting input', {
+            blame: 'provider',
+          }),
+        );
+      }
+      await new Promise<void>((resolve, reject) => {
+        child.stdin.write(data, (err) => (err ? reject(err) : resolve()));
+      });
+    },
+
+    stdout(): AsyncIterableIterator<string> {
+      return child.stdout[Symbol.asyncIterator]() as AsyncIterableIterator<string>;
+    },
+
+    stderrSoFar(): string {
+      return redactor.redact(stderr);
+    },
+
+    exited,
+
+    get alive(): boolean {
+      return !dead;
+    },
+
+    kill: killTree,
+  };
+
+  return Promise.resolve(session);
 }
 
 function kill(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
