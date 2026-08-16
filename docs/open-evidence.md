@@ -53,7 +53,6 @@ The whole of this section is procurable. None of it is a technical limit.
 | --- | ---------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------- | -------------------------- |
 | A1  | **A second operator has run this** (CLOSURE A)                   | One person who is not the author, on a machine that is not this one    | ~1 hour of their time           | alpha.10 §10               |
 | A2  | Hostile-network behaviour: packet loss, link flapping            | root on a Linux host to inject with `tc`/`netem`                       | one sudo password, an afternoon | alpha.3                    |
-| A3  | A **live-model** dogfood on the native Linux backend             | A provider credential placed on `linux-vm`                             | your decision, then ~30 min     | alpha.7 §57, alpha.8       |
 | A4  | Clean direct-OpenAI behavioural validation                       | A funded OpenAI account (the current one returns `insufficient_quota`) | account top-up                  | alpha.5 §56, alpha.8       |
 | A5  | Billing-grade delegated cost                                     | A vendor invoice, or per-alias published pricing, to compare against   | one account query               | alpha.4, alpha.5           |
 | A6  | Windows container enforcement / Docker Desktop status            | A Windows machine                                                      | one machine                     | alpha.5, alpha.6           |
@@ -62,16 +61,26 @@ The whole of this section is procurable. None of it is a technical limit.
 **A7 is now `NOT APPLICABLE`, not `NOT TESTED`** — alpha.10 §15 declined a fourth
 restatement. It is listed here anyway because a host would still close it, and
 because ADR-0017 says the paragraph should be **deleted rather than amended** if
-one appears.
+one appears. Re-verified on `linux-vm` on 2026-08-16 during alpha.11:
+`api.deepseek.com` resolves to `198.18.1.159` there. It is the network, not the
+host, and a second machine behind the same resolver is not a second data point.
+
+**A3 was closed by alpha.11** and has moved to §C. It is the only item this
+section has ever lost to a machine becoming available.
 
 ### Priority, if you are only getting one thing
 
-**A1.** It is the only item on this list that can _falsify a claim the project has
-already made_, and it has been open across four milestones. Everything else
-confirms or denies something already suspected; A1 can surprise.
+**A1**, and by a wider margin than before. It is the only item on this list that
+can _falsify a claim the project has already made_, it has now been open across
+five milestones, and alpha.11 was organised around it and could not run it.
+Everything else confirms or denies something already suspected; A1 can surprise.
 
-Second: **A3**, because the native backend is where the strongest enforcement
-claim lives and it has never run a real model.
+It is also the item that has stopped the project moving: alpha.9 §26's rule —
+recorded as a commitment by alpha.10 and now in force — is that no capability is
+added until A1 is closed. One hour of somebody else's time is the whole price.
+
+Second used to be A3. A3 is closed. Second is now **A4**, because it is the only
+remaining item that a payment closes rather than a person.
 
 ---
 
@@ -92,12 +101,13 @@ These two should stay `NOT TESTED` **forever**, and a future milestone that
 
 Not open. Listed so a reader counting `NOT TESTED` rows does not count them twice.
 
-| #   | Claim                                     | Closed by                                      |
-| --- | ----------------------------------------- | ---------------------------------------------- |
-| C1  | OS-level isolation of a child             | alpha.5 — "Subagent + Container green"         |
-| C2  | host-scoped network allowlist enforcement | alpha.6 — the scoped egress proxy              |
-| C3  | Tool usability: success rate, step counts | alpha.7 §B — the friction table and the runner |
-| C4  | a release tag whose own gate is green     | alpha.9 CLOSURE A — `v0.1.0-alpha.8.1`         |
+| #   | Claim                                      | Closed by                                        |
+| --- | ------------------------------------------ | ------------------------------------------------ |
+| C1  | OS-level isolation of a child              | alpha.5 — "Subagent + Container green"           |
+| C2  | host-scoped network allowlist enforcement  | alpha.6 — the scoped egress proxy                |
+| C3  | Tool usability: success rate, step counts  | alpha.7 §B — the friction table and the runner   |
+| C4  | a release tag whose own gate is green      | alpha.9 CLOSURE A — `v0.1.0-alpha.8.1`           |
+| C5  | a live-model dogfood on the native backend | alpha.11 — `docs/alpha11-native-live-dogfood.md` |
 
 ---
 

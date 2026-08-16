@@ -35,6 +35,7 @@
 import type { FakeStep } from '../../src/model/adapters/fake.ts';
 import type { Kernel } from '../../src/kernel.ts';
 import type { GoldenTask } from '../tasks/golden.ts';
+import { installReadInterference, type InterferenceLog, type InterferencePlan } from './interference.ts';
 
 export type Arm = 'undo-available' | 'undo-withheld';
 
@@ -68,6 +69,14 @@ interface Base {
   /** How the task is solved. Identical in both arms; neither needs `Undo`. */
   script(receipt: (suffix: string) => string): FakeStep[];
   checks: GoldenTask['checks'];
+  /**
+   * A file that changes underneath the model, unprovoked (alpha.11 §10).
+   *
+   * Only the first task has one. It is the whole repair: alpha.10's version of
+   * this task asked the *model* to run a script that rewrote the file, so a
+   * competent model read afterwards and the difficulty never happened.
+   */
+  interference?: InterferencePlan;
 }
 
 const read = (path: string): FakeStep => ({
@@ -100,29 +109,61 @@ const turnCompleted: GoldenTask['checks'][number] = {
   },
 };
 
+/**
+ * The assertion alpha.10 §17 did not have, and the reason its result was empty.
+ *
+ * > A null result is still the answer; what is not acceptable is a null result
+ * > from a fixture that could not have produced anything else.
+ *
+ * So the difficulty is asserted, per attempt, in both arms. If a run reports
+ * "Undo was called 0 times" **and** this check passed, the zero means something.
+ * If this check fails, the attempt says nothing about undo and must not be
+ * counted as though it did.
+ */
+const difficultyOccurred = (read: () => InterferenceLog | undefined): GoldenTask['checks'][number] => ({
+  name: 'the file actually changed underneath the model, and a call was refused for it',
+  run() {
+    const log = read();
+    if (!log) return 'the interference seam was never installed';
+    if (log.fired === 0) return 'the file was never changed underneath the model';
+    if (!log.observedStaleRefusal) {
+      return `the file changed ${log.fired}x but no call was refused as stale — the model never met the difficulty`;
+    }
+    return undefined;
+  },
+});
+
 const BASES: Base[] = [
   {
     // A difficulty with a correct answer that is *not* undo. The file changes
     // under the model between its read and its edit, so the edit is refused for
     // a stale receipt. Re-reading fixes it; reversing anything does not.
-    id: 'recover-from-a-stale-receipt',
-    description: 'An edit is refused for a stale receipt; the fix is to read again.',
-    files: {
-      'src/config.ts': 'export const retries = 1;\n',
-      'tools/bump.sh': '#!/bin/sh\nprintf "export const retries = 2;\\n" > src/config.ts\n',
-    },
-    prompt: 'Set retries to 5, after running the bump script.',
+    //
+    // **Rebuilt in alpha.11.** The alpha.10 version handed the model a shell
+    // script and asked it to run one, which meant the model chose when the file
+    // changed — and both models chose to read afterwards, so no call was ever
+    // refused and §17 measured nothing. Nothing in the prompt now mentions a
+    // change at all: it is an ordinary edit that is refused for a reason the
+    // model did not cause and cannot anticipate.
+    id: 'recover-from-a-file-that-changed-underneath',
+    description: 'A file changes between the read and the edit; the fix is to read again.',
+    files: { 'src/config.ts': 'export const retries = 1;\n' },
+    prompt: 'Set retries to 5.',
     livePrompt:
-      'First run `sh tools/bump.sh`, which rewrites src/config.ts. Then set `retries` to 5 in ' +
-      'src/config.ts. If a tool call is refused, read the error and act on what it says.',
+      'Set `retries` to 5 in src/config.ts. If a tool call is refused, read the error and act on ' +
+      'what it says.',
+    interference: {
+      target: 'src/config.ts',
+      becomes: (firing) => `export const retries = ${1 + firing};\n`,
+    },
     script: (receipt) => [
       read('src/config.ts'),
-      { kind: 'tools', calls: [{ name: 'Shell', arguments: { argv: ['sh', 'tools/bump.sh'] } }] },
-      // Refused: the receipt describes bytes that are no longer there.
+      // Refused: the receipt describes bytes that are no longer there, because
+      // the harness replaced them the instant the receipt was issued.
       edit('src/config.ts', 'export const retries = 1;', 'export const retries = 5;', receipt('config.ts')),
       read('src/config.ts'),
       edit('src/config.ts', 'export const retries = 2;', 'export const retries = 5;', receipt('config.ts')),
-      done('Re-read the file after the script changed it, then applied the edit.'),
+      done('The file had changed under me; I read it again and applied the edit.'),
     ],
     checks: [turnCompleted, fileEquals('src/config.ts', 'export const retries = 5;\n')],
   },
@@ -183,24 +224,32 @@ export function undoUtilityTasks(): UndoUtilityTask[] {
   for (const b of BASES) {
     for (const arm of ['undo-available', 'undo-withheld'] as const) {
       const withheld = arm === 'undo-withheld';
+      // One log per task object, replaced on every `prepare` — which the runner
+      // calls once per attempt — so a check reads the attempt it belongs to and
+      // never the previous one's.
+      let log: InterferenceLog | undefined;
+
       out.push({
         id: `${b.id}--${arm}`,
         baseId: b.id,
         arm,
         family: 'model-capability',
-        fixtureVersion: 1,
+        // Bumped: the first task is a different task now, not a tuned one, and a
+        // result from fixture 1 cannot be compared against a result from this.
+        fixtureVersion: 2,
         description: b.description,
         files: b.files,
         prompt: b.prompt,
         livePrompt: b.livePrompt,
         script: b.script,
-        checks: b.checks,
+        checks: b.interference ? [...b.checks, difficultyOccurred(() => log)] : b.checks,
         approvals: [{ decision: 'allow', scope: 'session' }],
         prepare: (kernel: Kernel) => {
           if (withheld) {
             for (const tool of ALPHA10_UNDO_TOOLS) kernel.toolRegistry.unregister(tool);
           }
           assertCatalogue(kernel, arm);
+          log = b.interference ? installReadInterference(kernel, b.interference) : undefined;
         },
       });
     }

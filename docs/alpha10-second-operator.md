@@ -88,8 +88,6 @@ finding even though nothing broke.
 
 ---
 
----
-
 ## Predictions, recorded before the run
 
 **Committed 2026-08-16, during alpha.11, with the run still unperformed.** They
