@@ -22,7 +22,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, readdirSync, statSync, rmSync } from 'node:fs';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -74,6 +74,26 @@ async function main(argv: readonly string[]): Promise<number> {
         'A release artifact must describe an exact commit. Commit or stash first.\n',
     );
     return 3;
+  }
+
+  // Emit the JavaScript the package actually runs (ADR-0019 §1, revised).
+  //
+  // Not optional and not cached: `dist/` is derived from `src/` at *this* commit,
+  // and packing a stale `dist/` would ship code that no gate in this repository
+  // has ever seen. Rebuilt every time for the same reason the launcher manifest
+  // hashes its source rather than trusting an mtime.
+  process.stdout.write('building dist/…\n');
+  rmSync(path.join(ROOT, 'dist'), { recursive: true, force: true });
+  // The compiler's own JS entry point, not the `.bin` shim: that shim is a shell
+  // script on POSIX, and `node` cannot run it.
+  const build = spawnSync(
+    process.execPath,
+    [path.join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', 'tsconfig.build.json'],
+    { cwd: ROOT, encoding: 'utf8' },
+  );
+  if (build.status !== 0) {
+    process.stderr.write(`build failed:\n${build.stdout}${build.stderr}\n`);
+    return 6;
   }
 
   const infoPath = path.join(ROOT, 'build-info.json');

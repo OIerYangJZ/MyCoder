@@ -1,4 +1,4 @@
-# ADR-0019 — Distribution: publish the sources Node strips, and fail loudly on an old runtime
+# ADR-0019 — Distribution: ship what runs, beside what it was built from, and fail loudly on an old runtime
 
 **Status:** accepted · **Date:** 2026-08-16 · **Milestone:** v0.1.0-alpha.8
 
@@ -22,23 +22,61 @@ decides.
 
 ## Decision
 
-### 1. Published form: the TypeScript sources, stripped by Node at runtime
+### 1. Published form: emitted JavaScript, shipped beside the sources it came from
 
-No build step, no emitted JavaScript, no bundler. The package contains the same
-`src/**/*.ts` the test suite runs against.
+> **Revised during alpha.8, by the install dogfood.** The first version of this
+> ADR decided the opposite — publish the TypeScript sources and let Node strip
+> the types — and the reasoning is kept below because the revision only makes
+> sense against it.
 
-The alternative — `tsc`-emitted JS — was rejected because it breaks the property
-this whole milestone exists to establish. alpha.8 §3 requires "a build whose
-evidence was produced by exactly that commit". Every gate in this repository
-(`pnpm test`, `pnpm lint`, `pnpm evidence`) runs against the sources. If the
-published artifact were emitted output, the thing a user executes would not be
-the thing the evidence examined, and closing that gap would mean re-running every
-suite against the emitted tree — a second evidence surface, for a benefit
-(supporting an older Node) we can obtain more honestly by declaring a floor.
+**What the first decision said.** No build step, no emitted JavaScript, no
+bundler; the package contains the same `src/**/*.ts` the test suite runs against.
+`tsc`-emitted JS was rejected because it breaks the property this milestone exists
+to establish: alpha.8 §3 requires "a build whose evidence was produced by exactly
+that commit", every gate here runs against the sources, and if the published
+artifact were emitted output then the thing a user executes would not be the thing
+the evidence examined.
 
-ADR-0009 reinforces it from the other side: with zero runtime dependencies there
-is no bundling problem to solve, so a build step would buy compatibility and
-nothing else.
+**Why it was wrong.** §25's install dogfood — a real `npm install -g` on a machine
+with no checkout — failed on its first command with:
+
+```text
+Stripping types is currently unsupported for files under node_modules,
+for ".../lib/node_modules/mycoder/src/cli/main.ts"
+```
+
+Node refuses to strip types anywhere under `node_modules`, and the refusal is
+unconditional: neither `--experimental-strip-types` nor
+`--experimental-transform-types` lifts it. A globally installed npm package lives
+under `node_modules` by construction. So the decision was not a trade-off with a
+cost; it was a design that could not run at all.
+
+Nothing in the repository could have caught it. Every test, every gate and every
+prior dogfood ran from a git checkout, where the same code works perfectly — which
+is exactly why §25 asks for a machine with no development tree, and why it says
+the defects found that way are the primary evidence the milestone produces.
+
+**What is decided now.** `tsc -p tsconfig.build.json` emits `dist/` at pack time,
+and `bin`/`exports` point there. `rewriteRelativeImportExtensions` does the work:
+the source says `./foo.ts`, which is what lets Node run a checkout directly, and
+the emitted JavaScript says `./foo.js`.
+
+The package ships **both** `dist/` and `src/`. That is not indecision:
+
+- `dist/` is what runs, because it must be;
+- `src/` is what a reader audits, and it is what every evidence document refers
+  to. For a kernel whose whole claim is a small auditable surface, "you can read
+  what you ran" is worth the megabyte.
+
+The original objection is answered rather than abandoned. `dist/` is derived
+mechanically from `src/` at a commit that `build-info.json` records; `pnpm pack`
+deletes and rebuilds it every time, so a stale `dist/` cannot ship; and the
+release workflow rebuilds it at the checked-out commit and compares. ADR-0009 is
+untouched — `typescript` was already a devDependency, and the _runtime_ dependency
+set is still empty.
+
+The entry shim picks between them by asking one question — is `dist/` present? —
+so a checkout and an install take the same code path with no install-mode flag.
 
 ### 2. Minimum runtime: Node >= 22.18.0
 
@@ -48,7 +86,7 @@ default**. Below it, type stripping exists but needs
 so `>= 22.6` (the version that introduced the feature) is a floor the CLI cannot
 actually honour, and `engines` claiming it was wrong.
 
-### 3. How a lower runtime fails
+### 3. How a lower runtime fails, and why the entry point has no `isMain` guard
 
 The `bin` entry is **`bin/mycoder.mjs`, plain JavaScript with no type
 annotations**. This is the whole point: a `bin` pointing directly at a `.ts` file
@@ -71,24 +109,40 @@ mycoder: RUNTIME_UNSUPPORTED
 ```
 
 and exits `5` (`EXIT_UNAVAILABLE`, ADR-0021). Only after that check does it
-`import()` the TypeScript entry point.
+`import()` the kernel entry point — `dist/cli/main.js` in a package,
+`src/cli/main.ts` in a checkout.
 
 The shim is written in ES2018 and uses no syntax newer than that, for the same
 reason it is not TypeScript: a version check that cannot be parsed by the version
 it is checking for is not a version check.
+
+It also has **no `isMain` guard**, and that is the second defect the install
+dogfood found. `npm install -g` links `<prefix>/bin/mycoder` as a _symlink_ to the
+real file under `lib/node_modules/`; Node sets `process.argv[1]` to the link and
+`import.meta.url` to the target, so the usual
+`import.meta.url === pathToFileURL(process.argv[1]).href` comparison is false on
+every global install. The shim ran nothing, printed nothing, and exited 0 — the
+installed command was a no-op that reported success.
+
+The guard existed only so the test suite could import `checkRuntime` without
+starting a session. Those functions now live in `bin/runtime-check.mjs`, which
+removes the need for a guard at all: `mycoder.mjs` is unconditionally an entry
+point, because that is what it is. The same bug shape as the Windows-backslash one
+the guard's original comment describes, in a place nobody had looked.
 
 ### 4. What the package contains
 
 An explicit `files` allowlist, never `.npmignore`:
 
 ```text
-bin/          the runtime-check shim
-src/          the kernel
+bin/          the entry shim and the runtime check
+dist/         the emitted JavaScript — what actually runs
+src/          the TypeScript it was emitted from — what a reader audits
 native/       the launcher source (ADR-0020)
 scripts/build-sandbox.ts
 docs/adr/     the decisions, which are part of understanding the boundaries
 docs/*.md     the user-facing guides
-README.md  LICENSE  package.json
+README.md  LICENSE  package.json  build-info.json
 ```
 
 ### 5. What it must never contain

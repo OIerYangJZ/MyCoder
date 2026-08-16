@@ -15,33 +15,26 @@
  * cannot be parsed by the version it is checking for is not a version check.
  *
  * So: no type annotations, no syntax newer than ES2018, no top-level `await`, and
- * nothing imported from `src/` until after the check has passed.
+ * nothing from `src/` or `dist/` imported until after the check has passed.
  *
- * The floor itself is **not** duplicated here. It is read from `engines.node` in
- * package.json, which is the field npm already enforces and the one a reader will
- * look at first. Two copies of a version floor is one copy that goes stale.
+ * Two things this file deliberately does **not** do, both because the install
+ * dogfood found what happens when it did:
+ *
+ *   **No `isMain` guard.** `npm install -g` links `<prefix>/bin/mycoder` as a
+ *   symlink; Node sets `argv[1]` to the link and `import.meta.url` to the target,
+ *   so the usual guard is false on every global install. The shim ran nothing,
+ *   printed nothing and exited 0. The pure functions live in `runtime-check.mjs`
+ *   so this file can simply be an entry point.
+ *
+ *   **No hard-coded version floor.** It is read from `engines.node`, which npm
+ *   already enforces and a reader will look at first. Two copies of a version
+ *   floor is one copy that goes stale.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-/** Exit code 5 = UNAVAILABLE (ADR-0021): the machine cannot provide it. */
-var EXIT_UNAVAILABLE = 5;
-
-function parseVersion(text) {
-  var m = /(\d+)\.(\d+)\.(\d+)/.exec(String(text));
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3])];
-}
-
-/** True when `a` is strictly older than `b`. */
-function isOlder(a, b) {
-  for (var i = 0; i < 3; i += 1) {
-    if (a[i] < b[i]) return true;
-    if (a[i] > b[i]) return false;
-  }
-  return false;
-}
+import { checkRuntime, parseVersion, EXIT_UNAVAILABLE } from './runtime-check.mjs';
 
 function readFloor() {
   try {
@@ -54,42 +47,17 @@ function readFloor() {
 }
 
 /**
- * The message §8 asks for: what is wrong, what is required, and what to do.
+ * Which build to load: the emitted JavaScript, or the TypeScript sources.
  *
- * Exported so the regression matrix can assert its content without spawning a
- * different Node — `tests/integration/runtime-version.test.ts` calls this
- * directly, which is the only way to test the message for a version this process
- * is not running.
+ * `dist/` in a published package; `src/` in a git checkout, where Node strips the
+ * types happily because the checkout is not under `node_modules`. The same
+ * decision, made the same way, in both — there is no install-mode flag and no
+ * environment variable, only "is the emitted build present".
  */
-export function runtimeUnsupportedMessage(found, required) {
-  return [
-    'mycoder: RUNTIME_UNSUPPORTED',
-    '',
-    '  This is Node ' + found + '. MyCoder needs Node >= ' + required + '.',
-    '',
-    '  Why: MyCoder ships TypeScript sources and lets Node strip the types at',
-    '  runtime (ADR-0019). That is on by default from Node ' + required + '; below it',
-    '  the type annotations in this package are a syntax error.',
-    '',
-    '  To fix, install a supported Node and re-run:',
-    '',
-    '    nvm install 22 && nvm use 22        # nvm',
-    '    brew install node@22                # macOS / Homebrew',
-    '    https://nodejs.org/en/download      # everyone else',
-    '',
-    '  To verify:  node --version',
-    '',
-  ].join('\n');
-}
-
-export function checkRuntime(foundText, floor) {
-  var found = parseVersion(foundText);
-  if (!found || !floor) return { ok: true };
-  if (!isOlder(found, floor)) return { ok: true };
-  return {
-    ok: false,
-    message: runtimeUnsupportedMessage(found.join('.'), floor.join('.')),
-  };
+function entryUrl() {
+  var dist = new URL('../dist/cli/main.js', import.meta.url);
+  if (existsSync(fileURLToPath(dist))) return dist;
+  return new URL('../src/cli/main.ts', import.meta.url);
 }
 
 function run() {
@@ -100,25 +68,17 @@ function run() {
     return;
   }
 
-  // Only now. Every module below this line may contain type annotations.
-  import('../src/cli/main.ts')
-    .then(
-      function (mod) {
-        return mod.main(process.argv.slice(2)).then(function (code) {
-          process.exitCode = code;
-        });
-      },
-      function (e) {
-        process.stderr.write('mycoder: failed to start: ' + (e && e.message ? e.message : String(e)) + '\n');
-        process.exitCode = 6; // INTERNAL
-      },
-    )
+  // Only now. Everything below this line may contain type annotations.
+  import(entryUrl().href)
+    .then(function (mod) {
+      return mod.main(process.argv.slice(2)).then(function (code) {
+        process.exitCode = code;
+      });
+    })
     .catch(function (e) {
-      process.stderr.write('mycoder: fatal: ' + (e && e.stack ? e.stack : String(e)) + '\n');
-      process.exitCode = 6;
+      process.stderr.write('mycoder: failed to start: ' + (e && e.message ? e.message : String(e)) + '\n');
+      process.exitCode = 6; // INTERNAL
     });
 }
 
-// `argv[1]` is this file when invoked as the `mycoder` binary. Guarded so the
-// test suite can import `checkRuntime` without starting a session.
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) run();
+run();

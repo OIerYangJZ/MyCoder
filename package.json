@@ -12,10 +12,11 @@
     "mycoder": "./bin/mycoder.mjs"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./dist/index.js"
   },
   "scripts": {
     "agent": "node src/cli/main.ts",
+    "build": "tsc -p tsconfig.build.json",
     "build:sandbox": "node scripts/build-sandbox.ts",
     "eval": "node evals/runners/run.ts",
     "eval:delegation-utility": "node evals/experiments/delegation-utility.ts",
@@ -58,6 +59,7 @@
   "comment:dependencies": "v0.1 intentionally ships with zero RUNTIME dependencies; typescript, @types/node and prettier are devDependencies used only by `pnpm typecheck` and `pnpm format:check`. `pnpm lint` is scripts/lint.ts, a zero-dependency architecture linter — see its header for why it is not ESLint. Node >=22.6 strips TypeScript types natively and provides node:test, fetch, crypto and fs/promises. Glob matching, unified diff, TOML parsing and JSON Schema validation are implemented in src/util/ so that the kernel — and in particular its security tests — can run fully offline with no supply chain surface. See docs/adr/ADR-0009-zero-runtime-dependencies.md.",
   "files": [
     "bin/",
+    "dist/",
     "src/",
     "native/",
     "scripts/build-sandbox.ts",

@@ -81,18 +81,43 @@ describe('the packaged artifact', { timeout: 60_000 }, () => {
     const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
       bin: Record<string, string>;
       files: string[];
+      exports: Record<string, string>;
       engines: { node: string };
     };
 
     assert.equal(pkg.bin.mycoder, './bin/mycoder.mjs');
     assert.ok(pkg.bin.mycoder.endsWith('.mjs'), 'the bin entry must be parseable without type stripping');
 
+    // ADR-0019 §1, revised: `exports` must point at the emitted build. Node
+    // refuses to strip types under `node_modules`, so a `.ts` entry here is an
+    // installed package that cannot be imported at all.
+    assert.ok(
+      pkg.exports['.']?.startsWith('./dist/'),
+      `exports must point at dist/, not ${pkg.exports['.']}`,
+    );
+
     const shim = readFileSync('bin/mycoder.mjs', 'utf8');
     // The check has to happen before anything with type annotations is loaded.
     const checkAt = shim.indexOf('checkRuntime(process.versions.node');
-    const importAt = shim.indexOf("import('../src/cli/main.ts')");
+    const importAt = shim.indexOf('import(entryUrl().href)');
     assert.ok(checkAt > 0 && importAt > 0, 'the shim should check the runtime and then import the kernel');
-    assert.ok(checkAt < importAt, 'the version check must run before the TypeScript entry point is imported');
+    assert.ok(checkAt < importAt, 'the version check must run before the kernel entry point is imported');
+  });
+
+  test('the shim has no isMain guard — a global install makes one always false', () => {
+    // The second defect the install dogfood found (ADR-0019 §3). `npm install -g`
+    // links `<prefix>/bin/mycoder` as a symlink, so `process.argv[1]` is the link
+    // and `import.meta.url` is the target: the usual guard is false on every
+    // global install, and the command silently did nothing and exited 0.
+    // Comments stripped first: this file *explains* the guard it must not have,
+    // and a naive match would fail on the explanation. Same reason
+    // `scripts/lint.ts` blanks comments before scanning.
+    const shim = readFileSync('bin/mycoder.mjs', 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+
+    assert.doesNotMatch(shim, /isMain|import\.meta\.url ===/);
+    assert.match(shim, /^run\(\);$/m, 'the shim must run unconditionally');
   });
 
   test('the declared engine floor is the one the shim enforces', () => {

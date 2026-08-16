@@ -21,7 +21,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 
-import { checkRuntime, runtimeUnsupportedMessage } from '../../bin/mycoder.mjs';
+import { checkRuntime, runtimeUnsupportedMessage } from '../../bin/runtime-check.mjs';
 
 const FLOOR = [22, 18, 0] as const;
 
@@ -66,7 +66,7 @@ describe('the runtime version check', () => {
   test('the exit code is UNAVAILABLE, not a generic failure', () => {
     // ADR-0021: "the machine cannot provide it" is 5, and a wrapper retrying
     // after an install is right to branch on that rather than on prose.
-    const shim = readFileSync(path.join(process.cwd(), 'bin', 'mycoder.mjs'), 'utf8');
+    const shim = readFileSync(path.join(process.cwd(), 'bin', 'runtime-check.mjs'), 'utf8');
     assert.match(shim, /EXIT_UNAVAILABLE = 5/);
   });
 

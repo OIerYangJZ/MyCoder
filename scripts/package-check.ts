@@ -89,6 +89,9 @@ export const FORBIDDEN: Forbidden[] = [
     why:
       'the native launcher is built by an explicit step on the target machine (ADR-0020); ' +
       'a shipped binary would be an unsigned prebuilt we have no provenance story for',
+    // `dist/` is deliberately *not* here: it is the code the package runs. The
+    // native launcher is a different question — a compiled binary with no
+    // provenance story, which ADR-0020 says is built on the target machine.
     match: (p) => p === 'build/mycoder-sandbox' || p.endsWith('.manifest.json'),
   },
 ];
@@ -103,6 +106,14 @@ export const FORBIDDEN: Forbidden[] = [
 export const REQUIRED = [
   'package.json',
   'bin/mycoder.mjs',
+  'bin/runtime-check.mjs',
+  // What actually runs on an installed package. Node refuses to strip types for
+  // anything under `node_modules`, which is where a global install lives — the
+  // install dogfood found that in its first command (ADR-0019 §1, revised).
+  'dist/cli/main.js',
+  'dist/index.js',
+  'dist/kernel.js',
+  // And the sources it was derived from, so a reader can audit what they ran.
   'src/cli/main.ts',
   'src/index.ts',
   'src/kernel.ts',

@@ -2,10 +2,14 @@
 
 ## Requirements
 
-**Node >= 22.18.0.** MyCoder ships TypeScript sources and lets Node strip the
-types at runtime — that is on by default from 22.18.0, and below it the package's
-type annotations are a syntax error. The `mycoder` command checks this before it
-loads anything and tells you what to install if it is not met (ADR-0019).
+**Node >= 22.18.0.** The `mycoder` command checks this before it loads anything
+and tells you what to install if it is not met (ADR-0019).
+
+The package ships the emitted JavaScript it runs (`dist/`) _and_ the TypeScript it
+was emitted from (`src/`), so you can read what you are running. It has to ship
+the emitted form: Node refuses to strip types for anything under `node_modules`,
+which is where an installed package lives — a fact the alpha.8 install dogfood
+discovered the hard way, on its first command.
 
 Nothing else. There are zero runtime dependencies (ADR-0009).
 
