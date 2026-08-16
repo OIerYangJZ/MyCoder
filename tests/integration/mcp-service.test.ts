@@ -144,10 +144,9 @@ describe('a server that will not start (ADR-0022 §5)', () => {
     );
   });
 
-  test('an HTTP server is refused explicitly, not silently skipped', async () => {
-    // Not implemented in this build. A declared server that quietly does not
-    // exist is precisely what §5 is about, so it refuses like any other failure
-    // — and `optional` still applies, which is the documented way to proceed.
+  test('an HTTP server with no egress gate is refused, not routed around', async () => {
+    // There is not supposed to be another way to the network (AGENTS.md rule 9),
+    // so a session that cannot offer the gate does not offer the server.
     await assert.rejects(
       McpService.start({
         servers: { tickets: { transport: 'http', url: 'https://tickets.example.com/mcp' } },
@@ -156,7 +155,7 @@ describe('a server that will not start (ADR-0022 §5)', () => {
       }),
       (e: unknown) => {
         assert.ok(e instanceof KernelErrorException);
-        assert.match(e.kernelError.message, /HTTP transport, which this build does not implement/);
+        assert.match(e.kernelError.message, /no path to the network that goes around it/);
         return true;
       },
     );

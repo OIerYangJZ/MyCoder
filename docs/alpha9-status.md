@@ -225,14 +225,35 @@ unreviewable in exactly the way the function exists to prevent.
 ### What is not done, and what that costs
 
 ```text
-HTTP transport through the EgressGate (§10)     not built
-secrets via SecretBroker (§15)                   partial: the env canary passes,
-                                                 no injection path exists
 friction metric on MCP tools (§17)               not built
 the two-arm experiment, either model (§17, §18)  not run
 third-party server dogfood (§5)                  not run
 CLOSURE B — the golden set's denial arm (§20)    not built
+the canary suite beyond the environment route    not built
 ```
+
+The HTTP transport now exists and goes through the `EgressGate` — no new network
+client, and `EgressKind` finally has the `mcp` consumer it has carried since the
+first commit. Four things must agree before a byte leaves, and each is asked
+separately with a reverse control: the host is allowlisted, the gate's budget and
+secret inspection pass, ADR-0017 §23's address check finds every resolved address
+global, and the scheme is HTTP or HTTPS. Loopback, private, metadata and
+benchmarking addresses are all refused; a _global_ one is not, which is the arm
+that keeps the check falsifiable.
+
+It speaks the stateless POST form only — one request per JSON-RPC message, no SSE
+stream, no session resumption. A server needing the streaming half of Streamable
+HTTP fails at `initialize` and is refused by name. That is the honest outcome; a
+half-implemented transport that works until the server does something ordinary
+would be worse.
+
+The credential path is built for that transport. `credential_ref` resolves
+through `SecretBroker` as a **fresh lease per request**, written into the header
+by `lease.applyAuthorization` — so the value is never a variable this code holds,
+never a tool argument, never a description, and the redactor learns it each time.
+A `credential_ref` the broker cannot resolve refuses the server at attach time
+rather than on the first tool call: contacting it unauthenticated would be a
+silent downgrade, and failing mid-task reads as the server's fault.
 
 `McpService` closed the gap that used to head this list. A **stdio** server
 declared in user config now attaches end to end: started through the

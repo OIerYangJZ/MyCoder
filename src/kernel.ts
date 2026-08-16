@@ -17,7 +17,7 @@ import * as path from 'node:path';
 import { PROJECT_DIR, projectDir } from './app.ts';
 import { canonicalize, displayPath, type CanonicalPath } from './util/paths.ts';
 import { kernelError, KernelErrorException, toKernelError } from './util/errors.ts';
-import { newSessionId, type SessionId } from './util/ids.ts';
+import { newSessionId, newTurnId, type SessionId } from './util/ids.ts';
 import { createLogger, installLogSanitizer, type Logger, type LogLevel } from './util/logger.ts';
 import { systemClock, type Clock } from './util/clock.ts';
 import { resolveKernelDirs, sessionsDir, type KernelDirs } from './util/platform.ts';
@@ -732,6 +732,14 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   const context = new ContextEngine({ repository, freshness, now: () => clock.now() });
   const editJournal = new EditJournal();
 
+  // The session id is minted here rather than with the session store below,
+  // because MCP startup is egress and the gate audits every request against a
+  // session and a turn. A startup turn id is synthesised for the same reason:
+  // attaching a server happens before the first turn exists, and an audit record
+  // with no turn would be the one request in the log that cannot be placed.
+  const sessionId = (opts.resumeSessionId as SessionId | undefined) ?? newSessionId(clock.now());
+  const mcpStartupTurn = newTurnId(clock.now());
+
   // 10b. MCP servers, before the projector, because attaching one changes what
   // the boundary description is allowed to say (ADR-0023 §6). A server that will
   // not start refuses the session here, which is why this is above every
@@ -741,6 +749,16 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     backend: backend.process,
     workspaceRoot,
     logger: logger.child('mcp'),
+    // An HTTP server needs all four: the gate to send through, the broker to
+    // resolve its credential, and the session/turn ids the gate audits against.
+    // Absent any of them, `McpService` refuses the server rather than finding
+    // another way to the network — there is not supposed to be another way.
+    egress,
+    secrets,
+    sessionId,
+    turnId: mcpStartupTurn,
+    ...(config.egress.allowBenchmarkRange === true ? { allowBenchmarkRange: true } : {}),
+    ...(opts.webLookup ? { lookup: opts.webLookup } : {}),
   });
   config.warnings.push(...mcp.warnings);
 
@@ -827,7 +845,6 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   // 12. Session store.
   const store = opts.store ?? new FileSessionStore({ rootDir: sessionsDir(dirs), redactor, clock });
 
-  const sessionId = (opts.resumeSessionId as SessionId | undefined) ?? newSessionId(clock.now());
   let resumedState: SessionTerminalState | undefined;
   let resumedUsage: SessionMetadata['usage'] | undefined;
 

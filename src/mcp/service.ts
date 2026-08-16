@@ -23,8 +23,13 @@ import type { CanonicalPath } from '../util/paths.ts';
 import type { ProcessBackend } from '../execution/backend.ts';
 import type { McpServerConfig } from '../config/schema.ts';
 import type { ToolDefinition } from '../tools/contract.ts';
-import { McpClient, DEFAULT_CALL_TIMEOUT_MS } from './client.ts';
+import type { EgressGate } from '../security/egress-gate.ts';
+import type { SecretBroker } from '../security/secret-broker.ts';
+import type { LookupFn } from '../security/egress/resolve.ts';
+import type { SessionId, TurnId } from '../util/ids.ts';
+import { McpClient, DEFAULT_CALL_TIMEOUT_MS, type McpTransport } from './client.ts';
 import { StdioTransport } from './transport-stdio.ts';
+import { HttpTransport } from './transport-http.ts';
 import { buildToolDefinitions } from './tool.ts';
 
 export interface McpServiceOptions {
@@ -33,6 +38,14 @@ export interface McpServiceOptions {
   workspaceRoot: CanonicalPath;
   logger?: Logger;
   signal?: AbortSignal;
+  /** Required before an HTTP server can be attached. */
+  egress?: EgressGate;
+  /** Resolves `credential_ref`. Without it, a server needing one is refused. */
+  secrets?: SecretBroker;
+  sessionId?: SessionId;
+  turnId?: TurnId;
+  allowBenchmarkRange?: boolean;
+  lookup?: LookupFn;
 }
 
 export interface AttachedServer {
@@ -101,35 +114,23 @@ export class McpService {
   }
 
   private async attach(name: string, declared: McpServerConfig, opts: McpServiceOptions): Promise<void> {
-    if (declared.transport === 'http') {
-      // Not built. Refused explicitly rather than silently skipped, because a
-      // server the user declared and that quietly does not exist is the failure
-      // mode ADR-0022 §5 is about — and `optional` still applies above, so a
-      // user who wants the session anyway has a documented way to say so.
-      throw new KernelErrorException(
-        kernelError(
-          'CONFIG_INVALID',
-          `MCP server "${name}" uses the HTTP transport, which this build does not implement. ` +
-            'Only stdio servers can be attached.',
-          { blame: 'user', safeDetails: { server: name } },
-        ),
-      );
-    }
-
-    const command = declared.command ?? [];
-    const transport = await StdioTransport.start(
-      name,
-      opts.backend,
-      {
-        argv: command,
-        cwd: opts.workspaceRoot,
-        // AGENTS.md rule 8. A server the kernel starts on the user's behalf is a
-        // subprocess, and gets no ambient environment for being one.
-        env: scrubEnv({ cwd: opts.workspaceRoot }).env,
-        timeoutMs: declared.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
-      },
-      opts.signal,
-    );
+    const transport =
+      declared.transport === 'http'
+        ? await this.connectHttp(name, declared, opts)
+        : await StdioTransport.start(
+            name,
+            opts.backend,
+            {
+              argv: declared.command ?? [],
+              cwd: opts.workspaceRoot,
+              // AGENTS.md rule 8. A server the kernel starts on the user's
+              // behalf is a subprocess, and gets no ambient environment for
+              // being one.
+              env: scrubEnv({ cwd: opts.workspaceRoot }).env,
+              timeoutMs: declared.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+            },
+            opts.signal,
+          );
 
     const client = new McpClient(name, transport, declared.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
     this.clients.set(name, client);
@@ -145,6 +146,81 @@ export class McpService {
       name,
       transport: client.transportKind,
       toolNames: definitions.map((d) => d.name),
+    });
+  }
+
+  /**
+   * Build an HTTP transport, resolving the credential through `SecretBroker`.
+   *
+   * The credential is fetched **here** and handed to the transport as a header
+   * value, and that is the whole of the credential's journey (alpha.9 §15): it
+   * never becomes a tool argument, never enters a description, never reaches the
+   * model's context, and the gate's redactor owns the log. A server that
+   * declared a `credential_ref` the broker cannot resolve is refused rather than
+   * contacted without it — sending an unauthenticated request to a server the
+   * user configured with a credential would be a silent downgrade.
+   */
+  private async connectHttp(
+    name: string,
+    declared: McpServerConfig,
+    opts: McpServiceOptions,
+  ): Promise<McpTransport> {
+    if (opts.egress === undefined || opts.sessionId === undefined || opts.turnId === undefined) {
+      throw new KernelErrorException(
+        kernelError(
+          'CONFIG_INVALID',
+          `MCP server "${name}" is an HTTP server, and this session has no egress gate to send ` +
+            'through. There is no path to the network that goes around it.',
+          { blame: 'kernel', safeDetails: { server: name } },
+        ),
+      );
+    }
+
+    // A fresh lease per request, written straight into the headers by the
+    // broker. The value is never a variable in this file, never in the tool
+    // arguments, never in a description, and the redactor learns it each time.
+    const ref = declared.credentialRef;
+    const secrets = opts.secrets;
+    let authorize: ((headers: Record<string, string>) => Promise<void>) | undefined;
+
+    if (ref !== undefined) {
+      if (secrets === undefined) {
+        throw new KernelErrorException(
+          kernelError(
+            'SECRET_ACCESS_DENIED',
+            `MCP server "${name}" declares credential_ref = "${ref}", and this session has no ` +
+              'secret broker to resolve it. The server was not contacted: sending an ' +
+              'unauthenticated request to a server you configured with a credential would be a ' +
+              'silent downgrade.',
+            { blame: 'kernel', safeDetails: { server: name, ref } },
+          ),
+        );
+      }
+      // Resolved once here so a missing or unreadable credential refuses at
+      // attach time rather than on the first tool call, when the model is
+      // already mid-task and the failure reads as the server's fault.
+      const probe = await secrets.resolve(ref as never, 'egress.header');
+      probe.release();
+
+      authorize = async (headers) => {
+        const lease = await secrets.resolve(ref as never, 'egress.header');
+        try {
+          lease.applyAuthorization(headers, 'Bearer');
+        } finally {
+          lease.release();
+        }
+      };
+    }
+
+    return HttpTransport.connect({
+      serverName: name,
+      url: declared.url ?? '',
+      egress: opts.egress,
+      sessionId: opts.sessionId,
+      turnId: opts.turnId,
+      ...(authorize !== undefined ? { authorize } : {}),
+      ...(opts.allowBenchmarkRange !== undefined ? { allowBenchmarkRange: opts.allowBenchmarkRange } : {}),
+      ...(opts.lookup ? { lookup: opts.lookup } : {}),
     });
   }
 

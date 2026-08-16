@@ -45,25 +45,25 @@ enforced inside it.
 What is still missing is the HTTP transport, the credential path, and every
 measurement §17 and §18 ask for.
 
-| Area                                            | State                                                                    |
-| ----------------------------------------------- | ------------------------------------------------------------------------ |
-| CLOSURE A — a tag whose gate is green           | **done** — `v0.1.0-alpha.8.1`, run `31935882150`                         |
-| ADR-0022, ADR-0023, ADR-0024                    | **done**                                                                 |
-| the capability question (§8)                    | **done** — `mcp.invoke`, decided and tested                              |
-| server declaration, user-config only (§11)      | **done**                                                                 |
-| stdio transport through the backend (§9)        | **done** — local backend; other backends refuse                          |
-| naming and provenance (§13)                     | **done**                                                                 |
-| untrusted descriptions (§12)                    | **done**                                                                 |
-| enforcement descriptors (§14)                   | **done**, and wired: the kernel applies it before building the prompt    |
-| HTTP transport through the EgressGate (§10)     | **NOT BUILT**                                                            |
-| secrets via `SecretBroker` (§15)                | **partial** — the env canary passes; no credential injection path exists |
-| lifecycle and failure (§16)                     | **done**                                                                 |
-| registry/session wiring                         | **done** — `McpService`, wired into `createKernel`                       |
-| friction metric on MCP tools (§17)              | **NOT BUILT**                                                            |
-| the two-arm experiment, either model (§17, §18) | **NOT RUN**                                                              |
-| third-party server dogfood (§5)                 | **NOT RUN**                                                              |
-| CLOSURE B — the golden set's denial arm (§20)   | **NOT BUILT**                                                            |
-| CLOSURE C — the clean-resolver non-claim (§21)  | **restated**, not closed — see §8                                        |
+| Area                                            | State                                                                           |
+| ----------------------------------------------- | ------------------------------------------------------------------------------- |
+| CLOSURE A — a tag whose gate is green           | **done** — `v0.1.0-alpha.8.1`, run `31935882150`                                |
+| ADR-0022, ADR-0023, ADR-0024                    | **done**                                                                        |
+| the capability question (§8)                    | **done** — `mcp.invoke`, decided and tested                                     |
+| server declaration, user-config only (§11)      | **done**                                                                        |
+| stdio transport through the backend (§9)        | **done** — local backend; other backends refuse                                 |
+| naming and provenance (§13)                     | **done**                                                                        |
+| untrusted descriptions (§12)                    | **done**                                                                        |
+| enforcement descriptors (§14)                   | **done**, and wired: the kernel applies it before building the prompt           |
+| HTTP transport through the EgressGate (§10)     | **done** — stateless POST form; no SSE stream                                   |
+| secrets via `SecretBroker` (§15)                | **done** for the HTTP header path; the canary suite is still only the env route |
+| lifecycle and failure (§16)                     | **done**                                                                        |
+| registry/session wiring                         | **done** — `McpService`, wired into `createKernel`                              |
+| friction metric on MCP tools (§17)              | **NOT BUILT**                                                                   |
+| the two-arm experiment, either model (§17, §18) | **NOT RUN**                                                                     |
+| third-party server dogfood (§5)                 | **NOT RUN**                                                                     |
+| CLOSURE B — the golden set's denial arm (§20)   | **NOT BUILT**                                                                   |
+| CLOSURE C — the clean-resolver non-claim (§21)  | **restated**, not closed — see §8                                               |
 
 **§25's success definition is therefore not met.** The sentence it asks for
 contains "the friction of the foreign surface is measured on two models and
@@ -158,28 +158,30 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 
 ## 6. Transports and lifecycle (§9, §10, §16)
 
-| Requirement                                                | Status     | Evidence                                                                        | Notes                                                                            |
-| ---------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| a stdio server is a real subprocess through the backend    | PASS       | test:initialize, tools/list and tools/call all round-trip                       | `ProcessBackend.session()`, ADR-0007 amended                                     |
-| **a backend that cannot host one is refused**              | PASS       | test:a backend with no session() is refused, not worked around                  | Not spawned around the sandbox — §9's weaker fallback was declined               |
-| NEGATIVE CONTROL: a backend that can, does                 | PASS       | test:NEGATIVE CONTROL: the same spec on a backend WITH session() starts         | A `start` that always threw would pass the row above                             |
-| a server that never answers times out, turn survives       | PASS       | test:one that never answers times out, and the turn survives                    | `TOOL_TIMEOUT`, and the client is still usable                                   |
-| a server that dies mid-call is named                       | PASS       | test:one that dies mid-call fails that call, naming the server                  | `TOOL_FAILED`, with its stderr attached                                          |
-| a server that floods is capped at the framer               | PASS       | test:one that floods without framing is cut off rather than buffered            | 8 MB with no newline                                                             |
-| a server that lists 500 tools is capped **and discloses**  | PASS       | test:a server that lists 500 tools is capped, and the cap is disclosed          |                                                                                  |
-| a cancelled turn aborts the call and kills the tree        | PASS       | test:a cancelled turn aborts the call in flight                                 | Process group kill, alpha.7 §31                                                  |
-| an unsupported protocol version refuses the server         | PASS       | test:an unsupported protocol version refuses the server                         |                                                                                  |
-| NEGATIVE CONTROL: a supported version starts               | PASS       | test:NEGATIVE CONTROL: a supported version starts, and an older one is accepted | A client refusing every version would pass the row above                         |
-| a catalogue that changes disables the server               | PASS       | test:a changed description is detected, not adopted                             | Names, descriptions and schemas are all in the hash                              |
-| a disabled server refuses further calls, naming why        | PASS       | test:a disabled server refuses further calls, naming why                        |                                                                                  |
-| NEGATIVE CONTROL: an unchanged catalogue reconciles        | PASS       | test:NEGATIVE CONTROL: an unchanged catalogue reconciles cleanly                | An always-"changed" comparison would pass both rows above                        |
-| **an HTTP server goes through the EgressGate**             | NOT TESTED | artifact:docs/alpha9-status.md                                                  | Not built. §5 requires it; §10 specifies it. This is a gap, not a scope cut      |
-| **an HTTP host that is not allowlisted is refused**        | NOT TESTED | artifact:docs/alpha9-status.md                                                  | Depends on the row above                                                         |
-| **an HTTP host resolving to a private address is refused** | NOT TESTED | artifact:docs/alpha9-status.md                                                  | ADR-0017 §23 would apply; untested because unbuilt                               |
-| a server that fails to start refuses the session           | PASS       | test:refuses the session by default, naming the server and the remedy           | Names the server and the remedy, per ADR-0022 section 5                          |
-| `optional = true` starts the session without it, loudly    | PASS       | test:`optional = true` starts the session without it, loudly                    | A warning and no tools, never a silent gap                                       |
-| a refusal does not leave other servers half-attached       | PASS       | test:one failing server does not leave the others half-attached                 | Leaking the process the refusal avoids would be worse than the failure           |
-| an unimplemented transport is refused, not skipped         | PASS       | test:an HTTP server is refused explicitly, not silently skipped                 | HTTP is unbuilt; a declared server that quietly does not exist is section 5 case |
+| Requirement                                                | Status | Evidence                                                                        | Notes                                                                          |
+| ---------------------------------------------------------- | ------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| a stdio server is a real subprocess through the backend    | PASS   | test:initialize, tools/list and tools/call all round-trip                       | `ProcessBackend.session()`, ADR-0007 amended                                   |
+| **a backend that cannot host one is refused**              | PASS   | test:a backend with no session() is refused, not worked around                  | Not spawned around the sandbox — §9's weaker fallback was declined             |
+| NEGATIVE CONTROL: a backend that can, does                 | PASS   | test:NEGATIVE CONTROL: the same spec on a backend WITH session() starts         | A `start` that always threw would pass the row above                           |
+| a server that never answers times out, turn survives       | PASS   | test:one that never answers times out, and the turn survives                    | `TOOL_TIMEOUT`, and the client is still usable                                 |
+| a server that dies mid-call is named                       | PASS   | test:one that dies mid-call fails that call, naming the server                  | `TOOL_FAILED`, with its stderr attached                                        |
+| a server that floods is capped at the framer               | PASS   | test:one that floods without framing is cut off rather than buffered            | 8 MB with no newline                                                           |
+| a server that lists 500 tools is capped **and discloses**  | PASS   | test:a server that lists 500 tools is capped, and the cap is disclosed          |                                                                                |
+| a cancelled turn aborts the call and kills the tree        | PASS   | test:a cancelled turn aborts the call in flight                                 | Process group kill, alpha.7 §31                                                |
+| an unsupported protocol version refuses the server         | PASS   | test:an unsupported protocol version refuses the server                         |                                                                                |
+| NEGATIVE CONTROL: a supported version starts               | PASS   | test:NEGATIVE CONTROL: a supported version starts, and an older one is accepted | A client refusing every version would pass the row above                       |
+| a catalogue that changes disables the server               | PASS   | test:a changed description is detected, not adopted                             | Names, descriptions and schemas are all in the hash                            |
+| a disabled server refuses further calls, naming why        | PASS   | test:a disabled server refuses further calls, naming why                        |                                                                                |
+| NEGATIVE CONTROL: an unchanged catalogue reconciles        | PASS   | test:NEGATIVE CONTROL: an unchanged catalogue reconciles cleanly                | An always-"changed" comparison would pass both rows above                      |
+| **an HTTP server goes through the EgressGate**             | PASS   | test:a full session works, and every byte went through the gate                 | No new network client; `EgressKind` finally has its `mcp` consumer             |
+| **an HTTP host that is not allowlisted is refused**        | PASS   | test:a host that is not allowlisted is refused                                  | And the transport is never reached                                             |
+| **an HTTP host resolving to a private address is refused** | PASS   | test:a host that resolves to a private address is refused before connecting     | Loopback, private, metadata and benchmarking, all four                         |
+| NEGATIVE CONTROL: a global address is not refused          | PASS   | test:NEGATIVE CONTROL: a global address is NOT refused                          | A check refusing every address would pass the row above and make HTTP unusable |
+| a non-HTTP scheme is refused                               | PASS   | test:a non-HTTP scheme is refused                                               |                                                                                |
+| a server that fails to start refuses the session           | PASS   | test:refuses the session by default, naming the server and the remedy           | Names the server and the remedy, per ADR-0022 section 5                        |
+| `optional = true` starts the session without it, loudly    | PASS   | test:`optional = true` starts the session without it, loudly                    | A warning and no tools, never a silent gap                                     |
+| a refusal does not leave other servers half-attached       | PASS   | test:one failing server does not leave the others half-attached                 | Leaking the process the refusal avoids would be worse than the failure         |
+| an HTTP server with no gate is refused, not routed around  | PASS   | test:an HTTP server with no egress gate is refused, not routed around           | There is not supposed to be another way to the network                         |
 
 ---
 
@@ -190,7 +192,10 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 | an ambient credential does not reach a stdio server     | PASS       | test:a credential-shaped variable in the ambient environment does not reach it | Asked **of the server**, which reports its own environment                     |
 | NEGATIVE CONTROL: the fixture can see what it is given  | PASS       | test:NEGATIVE CONTROL: the echo-env fixture can see what it IS given           | A fixture returning `{}` would pass the row above whatever the kernel did      |
 | a literal credential in config is refused               | PASS       | test:a literal credential is ignored and warned about                          |                                                                                |
-| **a credential reaches a server only via SecretBroker** | NOT TESTED | artifact:docs/alpha9-status.md                                                 | No injection path is built; `credential_ref` parses and is unused              |
+| **a credential reaches a server only via SecretBroker** | PASS       | test:authorize writes the header, and it is the only place the value appears   | A fresh lease per request; the value is never a variable this code holds       |
+| a credential never reaches the request body             | PASS       | test:authorize writes the header, and it is the only place the value appears   | A tool argument is the route section 15 forbids first                          |
+| NEGATIVE CONTROL: no credential, no header              | PASS       | test:NEGATIVE CONTROL: with no authorize, no authorization header is sent      |                                                                                |
+| an unresolvable credential_ref refuses the server       | PASS       | test:an HTTP server with no egress gate is refused, not routed around          | Contacting it unauthenticated would be a silent downgrade                      |
 | **the canary suite is extended to MCP sinks**           | NOT TESTED | artifact:docs/alpha9-status.md                                                 | The env route is covered above; argument, description and error routes are not |
 | **the friction metric covers MCP tools**                | NOT TESTED | artifact:docs/alpha9-status.md                                                 | Not built                                                                      |
 | **a two-arm experiment, server present vs absent**      | NOT TESTED | artifact:docs/alpha9-status.md                                                 | Not run, on either model                                                       |
@@ -223,7 +228,7 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 
 | Gate               | Result                                                   |
 | ------------------ | -------------------------------------------------------- |
-| offline suite      | 1128 · 1035 pass · 0 fail · 93 skip                      |
+| offline suite      | 1135 · 1042 pass · 0 fail · 93 skip                      |
 | architecture lint  | 16 rules, 0 violations                                   |
 | lint self-tests    | green, including 2 new workflow-hazard checks            |
 | evidence gate      | 7 matrices, 85 alpha.9 rows, every claim resolves        |
