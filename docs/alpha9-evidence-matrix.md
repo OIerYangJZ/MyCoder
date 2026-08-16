@@ -260,8 +260,8 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 | typecheck / format | clean                                                    |
 | release gate       | green at `c701a31` (run `31935882150`), tagged alpha.8.1 |
 
-The release gate was also dispatched against this branch's head, `5eda8fb`
-(run `31937426583`), and every tier passed — offline on both tier-1 platforms,
+The release gate was also dispatched against this branch's head, `a5b7046`
+(run `31941937804`), and every tier passed — offline on both tier-1 platforms,
 container and native each under their `_REQUIRED` variable, and the artifact
 packed, installed into a clean prefix and driven.
 
