@@ -222,12 +222,29 @@ the exact commit being tagged is re-gated rather than a docs-only commit landing
 after a green run.
 
 ```text
-code commit        (see §8.1)
-gate at that commit
-tag
-gate at the tag
+code commit          f68f8901d595e57a0e303e03a07e8cd9067bff64
+gate at that commit  dispatch run 31956777900 — green on every tier
+tag                  v0.1.0-alpha.11 -> f68f8901d595e57a0e303e03a07e8cd9067bff64
+gate at the tag      tag-push run 31956907248 — green on every tier
 ```
 
 ### 8.1 Runs
 
-_Filled in below as they complete._
+Both runs, at the same commit, each green on all six jobs:
+
+| Run           | Trigger             | Ref                                        | Result |
+| ------------- | ------------------- | ------------------------------------------ | ------ |
+| `31956777900` | `workflow_dispatch` | `f68f8901d595e57a0e303e03a07e8cd9067bff64` | green  |
+| `31956907248` | tag push            | `v0.1.0-alpha.11`                          | green  |
+
+Jobs in each: offline gates on ubuntu **and** macOS, `Container Tier @ exact
+commit (REQUIRED)`, `Native Tier @ exact commit (REQUIRED)`, and the artifact
+build. `_REQUIRED` on both enforcement tiers, so a missing runtime fails rather
+than skips — a green run whose enforcement evidence silently skipped is the
+thing release.yml exists to prevent.
+
+**The tag does not move.** This section was written after both runs completed and
+is committed on top of the tagged commit, which is why the tag points at
+`f68f890` and this paragraph does not. A docs-only commit landing _before_ the
+gate would have meant tagging an ungated tree; a docs-only commit landing _after_
+it, as this one does, leaves the gated commit exactly as it was gated.
