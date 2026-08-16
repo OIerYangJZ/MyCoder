@@ -1,6 +1,6 @@
 # Kernel v0.1
 
-A coding agent kernel implementing `research/kernel_v0.1_technical_spec.md`.
+A coding agent kernel. `docs/kernel-v0.1-spec.md` is the normative specification.
 
 The goal is not to reproduce a particular product's feature list. It is a kernel
 that is **small, verifiable, and explicit about where its security boundaries

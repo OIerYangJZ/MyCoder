@@ -389,18 +389,20 @@ repository is the complete record of the change.
 
 > **Read this before following the reference.** The milestone plans live in
 > `research/`, which is a **sibling of this repository, not part of it** — it is
-> in no git repository at all, and `research/**` is on `package-check`'s
-> forbidden list so it never ships either. The plan document therefore has no
-> history, no diff, and no guarantee of surviving. It is the input to a
-> milestone, and it is not evidence. Where the plan and this document disagree,
-> this one is authoritative, because this one is the one under version control.
+> in no git repository, and `research/**` is on `package-check`'s forbidden list
+> so it never ships. That is deliberate: plans are intermediate products, and
+> they are expected to be **deleted once development is done**.
 >
-> That is not a new condition — every milestone's `Plan:` header has pointed
-> outside the repository since alpha.2 — but alpha.9 is the first time a
-> _decision_ was recorded there, and a decision with no history is not recorded.
+> The rule that follows, and the one alpha.9 nearly broke: **anything _decided_
+> in a plan must be reproduced in this repository before the plan goes away.** A
+> plan may be an input, a sketch, or wrong. It may not be the only record of a
+> decision, because it has no history, no diff, and a scheduled end. Both §25
+> clauses are therefore quoted in full below, and nothing in this repository
+> requires the plan to still exist.
 
-The plan's own copy has the original at §25.1, the reason at §25.2, the
-replacement at §25.3 and the Trust Stop's replacement at §25.4. The new clause is
+While the plan exists, its own copy has the original at §25.1, the reason at
+§25.2, the replacement at §25.3 and the Trust Stop's replacement at §25.4 — but
+that copy is a convenience, not the record. The new clause is
 stricter in one respect than the one it replaces: it requires the limitation to
 be **stated in the product**, not merely to be true.
 
@@ -526,6 +528,35 @@ found in the same pass:
   `evals/results/experiments/`, because that directory's `.gitignore` negation is
   directory-wide and a smoke run looks like an experiment. They back no write-up.
   Removed, and the rule is written next to the negation.
+
+### Open after 9.1: the normative spec is a pointer into `research/`
+
+Found in the same pass and **not fixed here**, because it is a decision rather
+than a correction.
+
+`docs/kernel-v0.1-spec.md` **ships** — it is in `package.json`'s `files` — and
+AGENTS.md rule 1 calls it _the normative specification_. Its entire content is a
+pointer:
+
+```text
+The normative specification is:
+
+    ../research/kernel_v0.1_technical_spec.md
+```
+
+Its reasoning is sound as far as it goes ("two copies of a normative document
+drift"). But the trade only held while `research/` sat next to the repository and
+was expected to stay. Under the stated plan — plans are intermediate products and
+get deleted when development finishes — this leaves an installed user holding a
+2 330-line specification's _address_ and not its text, and it leaves the project
+without a normative spec at all once the directory goes.
+
+The anti-duplication argument does not object to the obvious fix. **Moving** the
+spec into `docs/kernel-v0.1-spec.md` produces one copy, not two, and the
+references already point at the right place: AGENTS.md rule 1 names the in-repo
+path, `package.json` already ships it, and no code refers to the `research/` path
+at all. `README.md`'s dangling reference was fixed in 9.1; this one was left,
+because relocating what a project calls normative is not a patch-tag change.
 
 ### The lesson worth keeping
 
