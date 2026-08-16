@@ -222,6 +222,43 @@ Reported side by side, never averaged. Full write-up: `docs/alpha8-cross-model.m
 
 ---
 
+## 8b. Every defect has a regression (§28 step 15)
+
+The milestone's own rule: fix **and** regress. Audited at the end, which found
+three defects fixed without a test — including all four in the release machinery,
+where nothing had ever read a workflow file.
+
+| Defect                                         | Status | Regression                                                                        |
+| ---------------------------------------------- | ------ | --------------------------------------------------------------------------------- |
+| 1 stale evidence row                           | PASS   | suite:evidence                                                                    |
+| 2 no type stripping under `node_modules`       | PASS   | test:the entry point is the plain-JS shim, not a TypeScript file                  |
+| 3 `isMain` false on a symlinked bin            | PASS   | test:the shim has no isMain guard                                                 |
+| 4 fresh install ran the fake model             | PASS   | test:no provider configured exits CONFIG (3), with a remedy and no session        |
+| 5 unusable credential still opened a session   | PASS   | test:a missing credential blocks the start and names the variable                 |
+| 6 launcher staleness by mtime                  | PASS   | test:a launcher rebuilt from changed source is stale even when its mtime is newer |
+| 7 streamed provider error unattributable       | PASS   | test:an unpaid account is the account holder, not the provider                    |
+| 8 CLI helper ran inside this repository        | PASS   | test:no provider configured exits CONFIG (3), with a remedy and no session        |
+| 9 credential briefly written in the workspace  | PASS   | test:refuses to write inside the workspace, before writing anything               |
+| **10** denial check measured model manners     | PASS   | test:every marked task still has a check that holds without an attempt            |
+| **11** refusal recommended the path it refused | PASS   | test:refuses to write inside the workspace, before writing anything               |
+| 12 `-m fake` refused with no config            | PASS   | test:-m fake is an explicit choice, even with no config at all                    |
+| **13** gate ran package:check with no build    | PASS   | test:defect 13: nothing runs package:check without building dist first            |
+| **14** pack shadowed by a pnpm builtin         | PASS   | test:defect 14: no package.json script is shadowed by a pnpm builtin              |
+| **15** tee dirtied the tree it then checked    | PASS   | test:defect 15: no workflow tees a log into the repository                        |
+| **16** pipefail made an assertion always fail  | PASS   | test:defect 16: no pipefail block asserts with                                    |
+
+`tests/lint/workflow-hazards.test.ts` is the new file, and its existence is the
+finding: **a workflow is code that nothing tests.** Each of its four checks
+carries a planted bad sample, because a checker that stopped matching would report
+a clean repository — which is what a clean repository looks like.
+
+Writing it found two things immediately: `ci.yml` has tee'd `*.log` into the root
+since alpha.5 (harmless — `.gitignore` covers it, so `git status` never reports it,
+and the check now asks git rather than guessing), and the defect-16 check flagged
+its own explanatory comment on its first run.
+
+---
+
 ## 9. Outstanding non-claims (§24)
 
 | Requirement                                      | Status     | Evidence                       | Notes                                                                                                                                                                                            |
