@@ -780,9 +780,33 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     // produced which receipt, which edit changed which hash, which command ran.
     // Without them the log can tell you a file changed but not why.
     onRecord: (record) => {
+      const scope = { turnId: record.turnId, stepId: record.stepId };
+
+      // A failed call, with the reason attached.
+      //
+      // `tool.result` already records *that* a call failed, but not which tool it
+      // was — the name is on `tool.call` — and not why. Joining two events to
+      // learn "Edit was rejected for a stale receipt" was possible and nobody did
+      // it, which is why the tool surface had no usability evidence while the
+      // security surface had four documents. This event is what the eval runner
+      // aggregates into a friction table (§B). Payload is a code and a count:
+      // nothing here carries content, so the §21.2 rule is unchanged.
+      if (record.isError) {
+        void store.append(sessionId, {
+          type: 'tool.error',
+          payload: {
+            toolCallId: record.toolCallId,
+            name: record.name,
+            errorCode: record.errorCode ?? 'UNKNOWN',
+            durationMs: record.durationMs,
+            contentBytes: record.contentBytes,
+          },
+          ...scope,
+        });
+      }
+
       const meta = record.metadata;
       if (!meta) return;
-      const scope = { turnId: record.turnId, stepId: record.stepId };
 
       if (record.name === 'Read' && typeof meta.receiptId === 'string') {
         void store.append(sessionId, {

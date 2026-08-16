@@ -1,0 +1,596 @@
+{
+  "generatedAt": "2026-08-15T11:06:08.419Z",
+  "experiment": "tool-utility",
+  "question": "Do Write, Delete and Move change what a real model does, and what do they cost in friction?",
+  "mode": "live",
+  "provider": "deepseek",
+  "model": "deepseek-chat",
+  "runsPerCell": 5,
+  "toolsUnderTest": [
+    "Write",
+    "Delete",
+    "Move"
+  ],
+  "arms": [
+    {
+      "arm": "tools-available",
+      "attempts": 15,
+      "solved": 15,
+      "attemptsUsingNewTools": 14,
+      "modelRequests": {
+        "median": 7,
+        "min": 0,
+        "max": 9
+      },
+      "toolCalls": {
+        "median": 9,
+        "min": 0,
+        "max": 13
+      },
+      "approvalPrompts": {
+        "median": 1,
+        "min": 0,
+        "max": 2
+      },
+      "tokens": {
+        "median": 26529,
+        "min": 0,
+        "max": 37258
+      },
+      "costUsd": 0.0024521784000000003,
+      "wastedCallRatio": 0.09917355371900827,
+      "toolFriction": {
+        "Read": {
+          "calls": 52,
+          "errors": 0,
+          "repeats": 13,
+          "codes": {}
+        },
+        "Write": {
+          "calls": 5,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 20,
+          "errors": 10,
+          "repeats": 0,
+          "codes": {
+            "TOOL_INVALID_ARGS": 10
+          }
+        },
+        "Shell": {
+          "calls": 3,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_DENIED": 1
+          }
+        },
+        "Grep": {
+          "calls": 17,
+          "errors": 0,
+          "repeats": 6,
+          "codes": {}
+        },
+        "Glob": {
+          "calls": 13,
+          "errors": 0,
+          "repeats": 4,
+          "codes": {}
+        },
+        "Delete": {
+          "calls": 5,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Move": {
+          "calls": 5,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "GitDiff": {
+          "calls": 1,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_FAILED": 1
+          }
+        }
+      }
+    },
+    {
+      "arm": "tools-withheld",
+      "attempts": 15,
+      "solved": 15,
+      "attemptsUsingNewTools": 0,
+      "modelRequests": {
+        "median": 6,
+        "min": 0,
+        "max": 9
+      },
+      "toolCalls": {
+        "median": 9,
+        "min": 0,
+        "max": 11
+      },
+      "approvalPrompts": {
+        "median": 1,
+        "min": 0,
+        "max": 2
+      },
+      "tokens": {
+        "median": 20401,
+        "min": 0,
+        "max": 32420
+      },
+      "costUsd": 0.0021857584,
+      "wastedCallRatio": 0.043478260869565216,
+      "toolFriction": {
+        "Read": {
+          "calls": 49,
+          "errors": 0,
+          "repeats": 14,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 24,
+          "errors": 4,
+          "repeats": 0,
+          "codes": {
+            "TOOL_INVALID_ARGS": 4
+          }
+        },
+        "Grep": {
+          "calls": 16,
+          "errors": 0,
+          "repeats": 6,
+          "codes": {}
+        },
+        "Shell": {
+          "calls": 13,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_DENIED": 1
+          }
+        },
+        "Glob": {
+          "calls": 13,
+          "errors": 0,
+          "repeats": 5,
+          "codes": {}
+        }
+      }
+    }
+  ],
+  "cells": [
+    {
+      "baseId": "regenerate-generated-file",
+      "arm": "tools-available",
+      "attempts": 5,
+      "solved": 5,
+      "kernelCorrect": 5,
+      "attemptsUsingNewTools": 4,
+      "modelRequests": {
+        "median": 4,
+        "min": 0,
+        "max": 6
+      },
+      "toolCalls": {
+        "median": 4,
+        "min": 0,
+        "max": 6
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 14092,
+        "min": 0,
+        "max": 22578
+      },
+      "costUsd": 0.0017869376000000001,
+      "wallTimeMs": {
+        "median": 4192,
+        "min": 0,
+        "max": 6995
+      },
+      "wastedCallRatio": 0.047619047619047616,
+      "toolFriction": {
+        "Read": {
+          "calls": 14,
+          "errors": 0,
+          "repeats": 4,
+          "codes": {}
+        },
+        "Write": {
+          "calls": 4,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 2,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_INVALID_ARGS": 1
+          }
+        },
+        "Shell": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "regenerate-generated-file",
+      "arm": "tools-withheld",
+      "attempts": 5,
+      "solved": 5,
+      "kernelCorrect": 5,
+      "attemptsUsingNewTools": 0,
+      "modelRequests": {
+        "median": 4,
+        "min": 0,
+        "max": 5
+      },
+      "toolCalls": {
+        "median": 4,
+        "min": 0,
+        "max": 5
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 12313,
+        "min": 0,
+        "max": 15728
+      },
+      "costUsd": 0.0015412376000000004,
+      "wallTimeMs": {
+        "median": 4883,
+        "min": 0,
+        "max": 5525
+      },
+      "wastedCallRatio": 0.047619047619047616,
+      "toolFriction": {
+        "Read": {
+          "calls": 15,
+          "errors": 0,
+          "repeats": 5,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 6,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_INVALID_ARGS": 1
+          }
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "remove-dead-module",
+      "arm": "tools-available",
+      "attempts": 5,
+      "solved": 5,
+      "kernelCorrect": 5,
+      "attemptsUsingNewTools": 5,
+      "modelRequests": {
+        "median": 7,
+        "min": 0,
+        "max": 9
+      },
+      "toolCalls": {
+        "median": 9,
+        "min": 0,
+        "max": 12
+      },
+      "approvalPrompts": {
+        "median": 1,
+        "min": 0,
+        "max": 1
+      },
+      "tokens": {
+        "median": 26529,
+        "min": 0,
+        "max": 36806
+      },
+      "costUsd": 0.0024521784000000003,
+      "wallTimeMs": {
+        "median": 8134,
+        "min": 0,
+        "max": 10113
+      },
+      "wastedCallRatio": 0.08695652173913043,
+      "toolFriction": {
+        "Read": {
+          "calls": 18,
+          "errors": 0,
+          "repeats": 4,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 8,
+          "errors": 0,
+          "repeats": 2,
+          "codes": {}
+        },
+        "Glob": {
+          "calls": 5,
+          "errors": 0,
+          "repeats": 1,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 8,
+          "errors": 4,
+          "repeats": 0,
+          "codes": {
+            "TOOL_INVALID_ARGS": 4
+          }
+        },
+        "Delete": {
+          "calls": 5,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Shell": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Write": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "remove-dead-module",
+      "arm": "tools-withheld",
+      "attempts": 5,
+      "solved": 5,
+      "kernelCorrect": 5,
+      "attemptsUsingNewTools": 0,
+      "modelRequests": {
+        "median": 7,
+        "min": 0,
+        "max": 9
+      },
+      "toolCalls": {
+        "median": 9,
+        "min": 0,
+        "max": 11
+      },
+      "approvalPrompts": {
+        "median": 1,
+        "min": 0,
+        "max": 2
+      },
+      "tokens": {
+        "median": 24349,
+        "min": 0,
+        "max": 32420
+      },
+      "costUsd": 0.0021857584,
+      "wallTimeMs": {
+        "median": 8038,
+        "min": 0,
+        "max": 10654
+      },
+      "wastedCallRatio": 0.09523809523809523,
+      "toolFriction": {
+        "Read": {
+          "calls": 16,
+          "errors": 0,
+          "repeats": 4,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 1,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 8,
+          "errors": 3,
+          "repeats": 0,
+          "codes": {
+            "TOOL_INVALID_ARGS": 3
+          }
+        },
+        "Shell": {
+          "calls": 8,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_DENIED": 1
+          }
+        },
+        "Glob": {
+          "calls": 4,
+          "errors": 0,
+          "repeats": 1,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "rename-module-file",
+      "arm": "tools-available",
+      "attempts": 5,
+      "solved": 5,
+      "kernelCorrect": 5,
+      "attemptsUsingNewTools": 5,
+      "modelRequests": {
+        "median": 7,
+        "min": 0,
+        "max": 9
+      },
+      "toolCalls": {
+        "median": 11,
+        "min": 0,
+        "max": 13
+      },
+      "approvalPrompts": {
+        "median": 1,
+        "min": 0,
+        "max": 2
+      },
+      "tokens": {
+        "median": 27109,
+        "min": 0,
+        "max": 37258
+      },
+      "costUsd": 0.0026333832000000005,
+      "wallTimeMs": {
+        "median": 8193,
+        "min": 0,
+        "max": 11218
+      },
+      "wastedCallRatio": 0.12962962962962962,
+      "toolFriction": {
+        "Glob": {
+          "calls": 8,
+          "errors": 0,
+          "repeats": 3,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 9,
+          "errors": 0,
+          "repeats": 4,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 20,
+          "errors": 0,
+          "repeats": 5,
+          "codes": {}
+        },
+        "Move": {
+          "calls": 5,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 10,
+          "errors": 5,
+          "repeats": 0,
+          "codes": {
+            "TOOL_INVALID_ARGS": 5
+          }
+        },
+        "Shell": {
+          "calls": 1,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_DENIED": 1
+          }
+        },
+        "GitDiff": {
+          "calls": 1,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_FAILED": 1
+          }
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "rename-module-file",
+      "arm": "tools-withheld",
+      "attempts": 5,
+      "solved": 5,
+      "kernelCorrect": 5,
+      "attemptsUsingNewTools": 0,
+      "modelRequests": {
+        "median": 6,
+        "min": 0,
+        "max": 7
+      },
+      "toolCalls": {
+        "median": 10,
+        "min": 0,
+        "max": 11
+      },
+      "approvalPrompts": {
+        "median": 1,
+        "min": 0,
+        "max": 1
+      },
+      "tokens": {
+        "median": 20781,
+        "min": 0,
+        "max": 24806
+      },
+      "costUsd": 0.0023798208,
+      "wallTimeMs": {
+        "median": 8539,
+        "min": 0,
+        "max": 8743
+      },
+      "wastedCallRatio": 0,
+      "toolFriction": {
+        "Grep": {
+          "calls": 10,
+          "errors": 0,
+          "repeats": 5,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 18,
+          "errors": 0,
+          "repeats": 5,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 10,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Shell": {
+          "calls": 5,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Glob": {
+          "calls": 9,
+          "errors": 0,
+          "repeats": 4,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    }
+  ]
+}

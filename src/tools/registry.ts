@@ -41,6 +41,21 @@ export class ToolRegistry {
     this.tools.set(definition.name, definition as ToolDefinition<never>);
   }
 
+  /**
+   * Remove a registration. Narrowing only — there is no way to add capability
+   * through this method, and `view({ allowed })` is still the supported way for a
+   * skill or agent to see fewer tools.
+   *
+   * It exists for the tool-utility experiment, whose control arm has to be a
+   * model that **cannot see** a tool rather than one choosing not to use it —
+   * the same shape as the delegation experiment's "no agents" control, where the
+   * kernel genuinely does not register `Delegate`. Measuring "did the tool help"
+   * against an arm that still had the tool would answer nothing.
+   */
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
   get(name: string): ToolDefinition<never> | undefined {
     return this.tools.get(name);
   }

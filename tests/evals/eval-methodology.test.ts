@@ -22,6 +22,10 @@ import assert from 'node:assert/strict';
 import {
   KERNEL_FAULTS,
   classifyFailure,
+  mergeFriction,
+  stripUntrustedContent,
+  toolFrictionFromLog,
+  wastedCallRatio,
   countFailureClasses,
   distribution,
   median,
@@ -67,6 +71,10 @@ function attempt(over: Partial<TaskMetrics> = {}): TaskMetrics {
     parentDirectCostUsd: 0,
     capabilityDenials: 0,
     delegationFailureStatuses: [],
+    // §B: empty rather than optional, for the same reason as the delegation
+    // block above — a summary that forgets the friction table should not
+    // typecheck.
+    toolFriction: {},
     ...over,
   };
 }
@@ -429,3 +437,85 @@ async function readRunner(): Promise<string> {
   const { readFile } = await import('node:fs/promises');
   return readFile(new URL('../../evals/runners/run.ts', import.meta.url), 'utf8');
 }
+
+// --- §B: the tool-friction metric ------------------------------------------
+
+describe('tool friction, read from the event log (§B)', () => {
+  const log = [
+    { type: 'tool.call', payload: { toolCallId: 'a', name: 'Edit', argsHash: 'h1' } },
+    { type: 'tool.error', payload: { toolCallId: 'a', name: 'Edit', errorCode: 'STALE_FILE' } },
+    { type: 'tool.call', payload: { toolCallId: 'b', name: 'Edit', argsHash: 'h1' } },
+    { type: 'tool.error', payload: { toolCallId: 'b', name: 'Edit', errorCode: 'STALE_FILE' } },
+    { type: 'tool.call', payload: { toolCallId: 'c', name: 'Read', argsHash: 'h2' } },
+  ]
+    .map((e) => JSON.stringify(e))
+    .join('\n');
+
+  test('counts calls, rejections and error codes per tool', () => {
+    const table = toolFrictionFromLog(log);
+    assert.equal(table.Edit?.calls, 2);
+    assert.equal(table.Edit?.errors, 2);
+    assert.deepEqual(table.Edit?.codes, { STALE_FILE: 2 });
+    assert.equal(table.Read?.calls, 1);
+    assert.equal(table.Read?.errors, 0);
+  });
+
+  test('an identical call issued twice is counted as a repeat', () => {
+    // The signal that a rejection told the model nothing it could act on.
+    assert.equal(toolFrictionFromLog(log).Edit?.repeats, 1);
+  });
+
+  test('the rejected-call ratio is over calls, not over tasks', () => {
+    assert.equal(wastedCallRatio(toolFrictionFromLog(log)), 2 / 3);
+  });
+
+  test('merging preserves counts across attempts', () => {
+    const merged = mergeFriction([toolFrictionFromLog(log), toolFrictionFromLog(log)]);
+    assert.equal(merged.Edit?.calls, 4);
+    assert.equal(merged.Edit?.codes.STALE_FILE, 4);
+  });
+
+  test('a malformed line is skipped rather than throwing', () => {
+    const table = toolFrictionFromLog(`not json\n${log}`);
+    assert.equal(table.Edit?.calls, 2);
+  });
+});
+
+describe('fetched content is not evidence about the kernel (§B)', () => {
+  // A live defect, not a hypothetical: the web fixture's page documents a
+  // `TypeError`, and the classifier read it out of the transcript and reported a
+  // healthy run as KERNEL_BUG.
+  const transcript =
+    'WebFetch result\n' +
+    '--- begin untrusted web content ---\n' +
+    'Calling it with one argument throws TypeError: taxRate is required.\n' +
+    '--- end untrusted web content ---\n';
+
+  test('the untrusted block is removed before classification', () => {
+    assert.doesNotMatch(stripUntrustedContent(transcript), /TypeError/);
+    assert.match(stripUntrustedContent(transcript), /fetched content omitted/);
+  });
+
+  test('a page that names a kernel error does not produce a kernel fault', () => {
+    const cls = classifyFailure(
+      ['the call passes a tax rate: expected computeTotal(items, 0.2)'],
+      transcript,
+      {
+        turnState: 'completed',
+        originalFiles: {},
+        delegations: [],
+      },
+    );
+    assert.notEqual(cls, 'KERNEL_BUG');
+    assert.ok(!KERNEL_FAULTS.has(cls!), `a fetched page must not blame the kernel, got ${cls}`);
+  });
+
+  test('NEGATIVE CONTROL: a real TypeError outside the block still classifies', () => {
+    const cls = classifyFailure(['check threw TypeError: x is not a function'], '', {
+      turnState: 'failed',
+      originalFiles: {},
+      delegations: [],
+    });
+    assert.equal(cls, 'KERNEL_BUG');
+  });
+});
