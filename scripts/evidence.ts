@@ -50,7 +50,23 @@ const MATRICES = [
   'docs/alpha5-evidence-matrix.md',
   'docs/tool-surface-evidence-matrix.md',
   'docs/alpha7-evidence-matrix.md',
+  'docs/alpha8-evidence-matrix.md',
 ];
+
+/**
+ * The header alpha.8 §19 requires every matrix to carry.
+ *
+ * "12/12 solved" without a model name is the same category of unfalsifiable
+ * statement as "zero tool defects" was before the friction metric existed. §19
+ * asks that each behavioural claim gain the model it was measured on, and a rule
+ * that lives only in a review checklist is a rule that holds until the first busy
+ * week — so it is checked here instead.
+ *
+ * A matrix satisfies it by carrying a `Model provenance` section that names the
+ * model, or by stating explicitly that it makes no behavioural claims. Both are
+ * acceptable answers; "the reader can probably infer it" is not.
+ */
+const PROVENANCE_HEADING = /^#{1,4}\s*Model provenance/im;
 
 export const STATUSES = ['PASS', 'FAIL', 'NOT TESTED', 'NOT APPLICABLE'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -299,7 +315,19 @@ async function main(argv: readonly string[]): Promise<number> {
       process.stderr.write(`evidence gate: no table rows found in ${matrix}\n`);
       return 2;
     }
-    reports.push({ matrix, rows, problems: await checkRows(rows, options) });
+
+    const problems = await checkRows(rows, options);
+    if (!PROVENANCE_HEADING.test(markdown)) {
+      problems.push({
+        line: 1,
+        requirement: '(whole document)',
+        message:
+          'no "Model provenance" section (alpha.8 §19). Every behavioural number has to name the model ' +
+          'it was measured on; a matrix that makes no behavioural claims should say so under that heading.',
+      });
+    }
+
+    reports.push({ matrix, rows, problems });
   }
 
   if (reports.length === 0) {

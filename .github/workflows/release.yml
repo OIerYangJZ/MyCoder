@@ -1,0 +1,276 @@
+name: Release Gate
+
+# alpha.8 §18 and §27's Release Stop, mechanised.
+#
+# The problem this exists to solve is the one §65 of the alpha.8 plan named as the
+# largest gap in the project: every evidence document described a *working tree*,
+# so none of it could be independently re-run. A tag pointed at nothing in
+# particular, and re-running the gates at the commit it named was not something
+# anybody had tried — when alpha.8 finally did, alpha.6's evidence gate turned out
+# to have been red since the milestone shipped.
+#
+# So this workflow runs on a tag, checks out **that exact commit**, and refuses to
+# report success unless every tier actually ran. The `_REQUIRED` variables exist
+# precisely so a release job cannot pass by skipping: without them a runner with
+# no Docker and no Landlock produces a green run whose enforcement evidence is
+# entirely absent, which is indistinguishable from a green run that proved
+# something.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Dispatchable so a release can be rehearsed against a commit before the tag is
+  # placed. A tag is the one thing in this repository that must never move, so
+  # finding out it was premature has to be possible *before* it exists.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit SHA or tag to gate'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  offline:
+    name: Offline Gates @ exact commit
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both tier-1 platforms from ADR-0019 §7. A release claim that only held
+        # on Linux would be a release claim for half the supported matrix.
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          persist-credentials: false
+          # Tags and history, so `scripts/pack.ts` can name the commit and the
+          # tag pointing at it.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Record exactly what is being gated
+        run: |
+          echo "commit: $(git rev-parse HEAD)"
+          echo "tag:    $(git describe --exact-match --tags HEAD 2>/dev/null || echo '(none)')"
+          echo "node:   $(node --version)"
+          git status --porcelain
+
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm lint:selftest
+      - run: pnpm format:check
+
+      # The gate that failed at alpha.6's commit and nobody had run there.
+      - run: pnpm evidence
+
+      - run: pnpm package:check
+
+      - name: Offline suite
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm test 2>&1 | tee offline-${{ matrix.os }}.log
+
+      - name: Upload the offline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-offline-${{ matrix.os }}
+          path: offline-${{ matrix.os }}.log
+          retention-days: 90
+
+  container-tier:
+    name: Container Tier @ exact commit (REQUIRED)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - run: docker version && uname -a
+      - run: docker pull node:22-bookworm
+
+      # alpha.5 §37: a native Linux Docker Engine is the only configuration the
+      # isolation claim rests on. Docker Desktop on the maintainer's macOS is
+      # explicitly not equivalent (§38), which is why this job is here and not a
+      # local run.
+      - name: Container enforcement
+        env:
+          KERNEL_CONTAINER: '1'
+          KERNEL_CONTAINER_REQUIRED: '1'
+        run: |
+          node --test --experimental-strip-types \
+            "tests/unit/container-plan.test.ts" \
+            "tests/live/container-live.test.ts" \
+            "tests/live/container-composition.test.ts" \
+            "tests/live/container-canary.test.ts" \
+            "tests/integration/backend-conformance.test.ts" 2>&1 | tee container.log
+
+      - name: Assert no container leaked
+        if: always()
+        run: |
+          leaked=$(docker ps -a --filter 'name=mycoder-' --format '{{.Names}} {{.Status}}')
+          if [ -n "$leaked" ]; then echo "leaked: $leaked"; exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-container
+          path: container.log
+          retention-days: 90
+
+  native-tier:
+    name: Native Tier @ exact commit (REQUIRED)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Record the kernel and Landlock state
+        run: |
+          uname -a
+          cat /sys/kernel/security/lsm 2>/dev/null || echo "no lsm file"
+
+      - run: pnpm build:sandbox
+      - run: node bin/mycoder.mjs --sandbox-status --json
+
+      - name: Native sandbox enforcement
+        env:
+          KERNEL_NATIVE: '1'
+          KERNEL_NATIVE_REQUIRED: '1'
+        run: |
+          node --test --experimental-strip-types \
+            "tests/live/native-sandbox.test.ts" \
+            "tests/live/native-composition.test.ts" \
+            "tests/integration/backend-conformance.test.ts" 2>&1 | tee native.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-native
+          path: native.log
+          retention-days: 90
+
+  artifact:
+    name: Build and verify the artifact
+    runs-on: ubuntu-latest
+    needs: [offline, container-tier, native-tier]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # `--release` refuses a dirty tree. An artifact whose recorded commit does
+      # not describe its contents is worse than one with no commit at all,
+      # because it looks checkable (ADR-0019 §6).
+      - name: Pack
+        run: pnpm pack --release | tee pack.txt
+
+      # The install path a real user takes, on a machine with no checkout of this
+      # repository — §25's shape, as far as CI can carry it.
+      - name: Install the artifact into a clean prefix and run it
+        run: |
+          set -euo pipefail
+          tarball=$(ls mycoder-*.tgz)
+          workdir=$(mktemp -d)
+          npm install --global --prefix "$workdir/prefix" "./$tarball"
+          export PATH="$workdir/prefix/bin:$PATH"
+
+          cd "$workdir"
+          mkdir -p project && cd project
+
+          mycoder --version
+          mycoder --help > /dev/null
+
+          # No configuration: §10's second outcome, with the documented exit code.
+          set +e
+          mycoder doctor
+          doctor_status=$?
+          set -e
+          if [ "$doctor_status" -ne 3 ]; then
+            echo "expected doctor to exit 3 (CONFIG) on an unconfigured install, got $doctor_status"
+            exit 1
+          fi
+
+          # And it must say what to do, not merely that something is wrong.
+          mycoder doctor 2>&1 | grep -q 'config.toml' || {
+            echo "doctor did not name the file to create"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifact
+          path: |
+            mycoder-*.tgz
+            pack.txt
+          retention-days: 90
+
+  gate:
+    name: Release Gate
+    runs-on: ubuntu-latest
+    needs: [offline, container-tier, native-tier, artifact]
+    if: always()
+
+    steps:
+      # The whole point of this job. `needs` alone is not enough: a skipped
+      # dependency is not a failed one, and "the container tier was skipped
+      # because the runner had no Docker" must never read as a release that
+      # proved container enforcement.
+      - name: Every tier must have run and passed
+        run: |
+          set -eu
+          for tier in \
+            "offline=${{ needs.offline.result }}" \
+            "container=${{ needs.container-tier.result }}" \
+            "native=${{ needs.native-tier.result }}" \
+            "artifact=${{ needs.artifact.result }}"
+          do
+            name="${tier%%=*}"
+            result="${tier#*=}"
+            echo "$name: $result"
+            if [ "$result" != "success" ]; then
+              echo "RELEASE BLOCKED: the $name tier is '$result', not 'success'."
+              echo "A tier that skipped is a tier that proved nothing (alpha.8 §18)."
+              exit 1
+            fi
+          done
+          echo "every tier ran and passed at this exact commit"

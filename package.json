@@ -65,6 +65,7 @@
     "docs/kernel-v0.1-spec.md",
     "docs/threat-model.md",
     "docs/cli-contract.md",
+    "docs/configuration-audit.md",
     "docs/installing.md",
     "docs/configuring-a-provider.md",
     "docs/web-access.md",
