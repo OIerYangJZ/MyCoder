@@ -1,6 +1,13 @@
 node_modules/
 .mycoder/tmp/
 dist/
+# `pnpm pack` outputs. Both are *build* products, and both would otherwise make
+# the tree dirty — which `collectBuildInfo` reads through `git status --porcelain`,
+# so the next `pnpm pack --release` would refuse on the leftovers of the last one.
+# `pack.ts` already unlinks `build-info.json` for exactly this reason; the tarball
+# needed the same treatment and did not have it.
+mycoder-*.tgz
+build-info.json
 coverage/
 *.log
 .DS_Store
