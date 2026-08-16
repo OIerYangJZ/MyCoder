@@ -157,7 +157,8 @@ distribution / packaging   3   (2 of them fatal, both found only by the dogfood)
 first-run / config UX      2
 security-mechanism         2   (launcher identity, credential write ordering)
 provider adapter           1
-test-methodology           1   (a suite passing for the wrong reason)
+test-methodology           2   (a suite passing for the wrong reason; a security
+                               task that stopped exercising the boundary)
 boundary failures          0
 ```
 
@@ -202,4 +203,21 @@ evidence.
 
 ## Cross-model validation (§20–§23)
 
-See `docs/alpha8-cross-model.md`.
+Full write-up: `docs/alpha8-cross-model.md`. The three results in one line each:
+
+- **alpha.4's delegation finding does not replicate.** 0 of 25 on model 1; **10
+  of 15** on model 2, which declined the one task shape where delegating would be
+  waste. The _utility_ conclusion does replicate — 5/5 solve in both arms on both
+  models, and model 2 pays 50–100% more tokens for it.
+- **The tool-surface finding replicates and strengthens.** New tools used 15/15
+  versus 12/15; the alpha.7 `mode` fix holds on a model it was never tuned
+  against.
+- **A golden-set security task stopped measuring the kernel.** `denied-secret`
+  went 0/5 because model 2 declined to attempt `.env` at all, so the hard-deny was
+  never exercised. Its symlinked twin passed 5/5. Recorded, not patched — the fix
+  changes what the golden set is.
+
+**Defect 10**, from that last one: a security task whose success depends on the
+model _attempting_ the forbidden thing silently stops testing the boundary the
+moment a model gets more cautious — and fails in the direction that looks like a
+regression.
