@@ -107,6 +107,13 @@ jobs:
       # wrong, which is the only case worth a CI job. A packaging bug that ships
       # `reference/**` violates spec §23 on a consumer's disk, and one that ships
       # `tests/**` puts our canary secrets into every secret scanner's index.
+      - run: pnpm install --frozen-lockfile
+
+      # `dist/` is what an installed package runs (ADR-0019 §1, revised), so the
+      # content assertion has to run against a built tree — checking an unbuilt
+      # one would assert something about a tarball nobody can install.
+      - run: pnpm build
+
       - run: pnpm package:check
 
       # ADR-0019 §3: the entry shim has to parse on a runtime that cannot strip

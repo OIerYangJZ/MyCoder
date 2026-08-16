@@ -13,16 +13,35 @@
  * control configuration.
  */
 
-import { test, describe } from 'node:test';
+import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import * as path from 'node:path';
 
 import { checkPackedFiles, packedFileList, FORBIDDEN, REQUIRED } from '../../scripts/package-check.ts';
 
-// npm has to shell out and stat the tree; slower than a unit test and still well
-// under a second on a warm cache.
-describe('the packaged artifact', { timeout: 60_000 }, () => {
-  const files = packedFileList();
+// npm has to shell out and stat the tree, and `dist/` may need building first —
+// so this is slower than a unit test, and still a few seconds cold.
+describe('the packaged artifact', { timeout: 180_000 }, () => {
+  let files: string[] = [];
+
+  before(() => {
+    // `dist/` is a build output and is gitignored, so a clean checkout does not
+    // have one — and the package cannot work without it (ADR-0019 §1, revised).
+    // Build it here rather than asserting it is absent: the artifact under test
+    // is the *built* one, and a test that passed on an unbuildable tree would be
+    // asserting nothing about what a consumer installs.
+    if (!existsSync(path.join(process.cwd(), 'dist', 'cli', 'main.js'))) {
+      const build = spawnSync(
+        process.execPath,
+        [path.join(process.cwd(), 'node_modules', 'typescript', 'bin', 'tsc'), '-p', 'tsconfig.build.json'],
+        { cwd: process.cwd(), encoding: 'utf8' },
+      );
+      assert.equal(build.status, 0, `dist/ could not be built:\n${build.stdout}${build.stderr}`);
+    }
+    files = packedFileList();
+  });
 
   test('contains nothing forbidden and nothing is missing', () => {
     const result = checkPackedFiles(files);
