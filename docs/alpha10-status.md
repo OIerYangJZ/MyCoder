@@ -183,22 +183,37 @@ avoided.**
 
 ## 6. Release
 
-`v0.1.0-alpha.10`, tagged at the commit whose gate is recorded below.
+`v0.1.0-alpha.10`.
 
 Three ways to get the last step wrong, all documented in this repository and two
-already fallen into: `release.yml`'s dispatch `ref` needs a full 40-character
-SHA (an abbreviated one fails every tier at checkout, which looks like a
-catastrophic regression); a docs-only commit after a green gate means the tag
-points at an ungated commit; and never edit a document with an unasserted string
-replacement. The exact commit was re-gated before tagging.
+already fallen into: `release.yml`'s dispatch `ref` needs a full 40-character SHA
+(an abbreviated one fails every tier at checkout, which looks like a catastrophic
+regression); a docs-only commit after a green gate means the tag would point at
+an ungated commit; and never edit a document with an unasserted string
+replacement.
 
-| Item                 | Value                                      |
-| -------------------- | ------------------------------------------ |
-| tagged commit        | see the tag; the gate below ran against it |
-| release gate run     | recorded at tag time                       |
-| offline, 2 platforms | pass                                       |
-| container tier       | `KERNEL_CONTAINER_REQUIRED=1`              |
-| native Linux tier    | `_REQUIRED`                                |
+The second of those is why there are two runs below rather than one. The code
+commit was gated, this document then recorded that run — which produced a new
+commit — and **that** commit was gated again before the tag was placed. The tag
+points at the second one.
+
+| Gate                             | Commit                                     | Run                                                                                         |
+| -------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| the code commit                  | `f57979d827fb36d479d70ff06f31e63645be1d4d` | [31952254018](https://github.com/OIerYangJZ/MyCoder/actions/runs/31952254018) — success     |
+| **the commit the tag points at** | recorded at the tag                        | re-dispatched after this document was written; the tag push re-runs it again on the tag ref |
+
+Both runs cover every tier at the exact commit checked out, with no tier allowed
+to pass by skipping:
+
+```text
+Offline Gates @ exact commit (ubuntu-latest)   success
+Offline Gates @ exact commit (macos-latest)    success
+Container Tier @ exact commit (REQUIRED)       success
+Native Tier   @ exact commit (REQUIRED)        success
+Build and verify the artifact                  success
+```
+
+`v0.1.0-alpha.9.2` is not moved, and no tag in this repository ever is.
 
 ---
 
