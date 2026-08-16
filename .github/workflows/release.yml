@@ -80,6 +80,14 @@ jobs:
       # The gate that failed at alpha.6's commit and nobody had run there.
       - run: pnpm evidence
 
+      # `dist/` before `package:check`, because `package:check` asserts it is
+      # *there* (ADR-0019 §1). The first real run of this workflow failed exactly
+      # here: the CI `packaging` job had been given `pnpm build` and this one had
+      # not, so the release gate blocked its own release on a build output it had
+      # never produced. Third time in this milestone that a step was only wrong
+      # when actually run.
+      - run: pnpm build
+
       - run: pnpm package:check
 
       - name: Offline suite

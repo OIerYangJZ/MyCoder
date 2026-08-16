@@ -155,7 +155,8 @@ millisecond has still existed in a repository.
 ## Defect distribution, for the alpha.9 decision (§30)
 
 ```text
-distribution / packaging   3   (2 of them fatal, both found only by the dogfood)
+distribution / packaging   4   (2 of them fatal; 3 found only by a real install
+                               or a real workflow run, never by a test)
 first-run / config UX      4   (2 of them found only by doing the real thing:
                                placing a credential, and running the eval gate)
 security-mechanism         2   (launcher identity, credential write ordering)
@@ -164,8 +165,10 @@ test-methodology           2   (a suite passing for the wrong reason; a security
                                task that stopped exercising the boundary)
 boundary failures          0
 
-Twelve, not ten. Two more arrived *after* the tag, both from doing the real thing
-rather than testing it — the same pattern as the two that justified the milestone.
+Thirteen, not ten. Three more arrived *after* the tag — placing a real credential,
+running the eval gate, and running the release workflow — all from doing the real
+thing rather than testing it, which is the same pattern as the two that justified
+the milestone in the first place.
 ```
 
 §30 says: "If alpha.8 finds mostly install/config defects, that is evidence the
