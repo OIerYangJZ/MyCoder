@@ -53,7 +53,17 @@ export const MAX_TOOLS_PER_SERVER = 64;
 /** Default ceiling for one `tools/call`. Per-server override in config. */
 export const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 
-/** Ceiling for `initialize` and `tools/list`. Startup must not hang a session. */
+/**
+ * Default ceiling for `initialize` and `tools/list`. Startup must not hang a
+ * session — but it must also be reachable for a server that is slow to start.
+ *
+ * alpha.9 defect 4, found by the §5 dogfood on the first real third-party
+ * server. `npx -y <package>` *downloads the package* before the server exists,
+ * which takes well over ten seconds on a cold cache. The refusal fired correctly
+ * and said the right thing, and the server could not be made to work by any
+ * configuration, because this constant ignored the per-server `timeout_ms` the
+ * user had already set. A ceiling nobody can raise is not a default.
+ */
 export const HANDSHAKE_TIMEOUT_MS = 10_000;
 
 export interface McpCatalogue {
@@ -96,11 +106,18 @@ export class McpClient {
   readonly serverName: string;
   private readonly transport: McpTransport;
   private readonly callTimeoutMs: number;
+  private readonly handshakeTimeoutMs: number;
 
-  constructor(serverName: string, transport: McpTransport, callTimeoutMs: number = DEFAULT_CALL_TIMEOUT_MS) {
+  constructor(
+    serverName: string,
+    transport: McpTransport,
+    callTimeoutMs: number = DEFAULT_CALL_TIMEOUT_MS,
+    handshakeTimeoutMs: number = HANDSHAKE_TIMEOUT_MS,
+  ) {
     this.serverName = serverName;
     this.transport = transport;
     this.callTimeoutMs = callTimeoutMs;
+    this.handshakeTimeoutMs = handshakeTimeoutMs;
   }
 
   get transportKind(): 'stdio' | 'http' {
@@ -138,7 +155,7 @@ export class McpClient {
         capabilities: {},
         clientInfo: { name: 'mycoder', version: '0.1.0' },
       },
-      HANDSHAKE_TIMEOUT_MS,
+      this.handshakeTimeoutMs,
       signal,
     );
 
@@ -159,7 +176,7 @@ export class McpClient {
 
     await this.transport.notify('notifications/initialized', {});
 
-    const listed = await this.transport.request('tools/list', {}, HANDSHAKE_TIMEOUT_MS, signal);
+    const listed = await this.transport.request('tools/list', {}, this.handshakeTimeoutMs, signal);
     const { tools: all, dropped } = parseToolsList(listed);
 
     if (dropped > 0) {
@@ -201,7 +218,7 @@ export class McpClient {
   async reconcileAfterRestart(signal?: AbortSignal): Promise<{ ok: boolean; reason?: string }> {
     if (this.catalogue === undefined) return { ok: false, reason: 'never started' };
 
-    const listed = await this.transport.request('tools/list', {}, HANDSHAKE_TIMEOUT_MS, signal);
+    const listed = await this.transport.request('tools/list', {}, this.handshakeTimeoutMs, signal);
     const { tools: all } = parseToolsList(listed);
     const tools = all.length > MAX_TOOLS_PER_SERVER ? all.slice(0, MAX_TOOLS_PER_SERVER) : all;
 

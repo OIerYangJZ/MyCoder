@@ -132,7 +132,16 @@ export class McpService {
             opts.signal,
           );
 
-    const client = new McpClient(name, transport, declared.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+    // The configured timeout governs startup as well as calls. A server that
+    // fetches itself before it exists — `npx -y <package>` on a cold cache — is
+    // slow exactly once, and defect 4 was that no configuration could allow for
+    // it (see HANDSHAKE_TIMEOUT_MS).
+    const client = new McpClient(
+      name,
+      transport,
+      declared.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+      declared.timeoutMs,
+    );
     this.clients.set(name, client);
 
     await client.start(opts.signal);
