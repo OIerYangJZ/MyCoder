@@ -65,9 +65,9 @@ measurement §17 and §18 ask for.
 | registry/session wiring                        | **done** — `McpService`, wired into `createKernel`                    |
 | friction metric on MCP tools (§17)             | **done** — the builtin/foreign partition                              |
 | the two-arm experiment, both models (§17, §18) | **done** — N=3, side by side, `docs/alpha9-mcp-utility.md`            |
-| third-party server dogfood (§5)                | **NOT RUN**                                                           |
-| CLOSURE B — the golden set's denial arm (§20)  | **NOT BUILT**                                                         |
-| CLOSURE C — the clean-resolver non-claim (§21) | **restated**, not closed — see §8                                     |
+| third-party server dogfood (§5)                | **done** — and it found defect 4                                      |
+| CLOSURE B — the golden set's denial arm (§20)  | **done** — two arms, both reported                                    |
+| CLOSURE C — the clean-resolver non-claim (§21) | **restated**, not closed — no such host exists here                   |
 
 **§25's success definition was amended** on 2026-08-16, after the work, because
 one clause of it — "a foreign tool reaches nothing a builtin would have been

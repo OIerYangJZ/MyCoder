@@ -174,9 +174,10 @@ nobody had run the thing that would have refuted it.
 
 ## Main milestone — MCP
 
-**Incomplete, and `v0.1.0-alpha.9` is not tagged.** The trust layer is built and
-tested; the product is not. `docs/alpha9-evidence-matrix.md` §0 is the itemised
-version and it is authoritative. This section is why.
+**Complete and tagged** at `1117cd5`, gate run `31942976128` green at that exact
+commit. `docs/alpha9-evidence-matrix.md` §0 is the itemised version and it is
+authoritative. This section is why, and it is written in the order the work
+happened rather than tidied afterwards.
 
 ### What is done
 
@@ -275,11 +276,12 @@ would be worse than the failure. An HTTP server is refused the same way rather
 than skipped: the transport is unbuilt, and a declared server that quietly does
 not exist is exactly what ADR-0022 §5 is about.
 
-§25's success definition contains "the friction of the foreign surface is
-measured on two models and reported side by side". That is false, so the
-milestone is not complete and the tag is not cut. Recording it as incomplete is
-cheaper than the alternative, which is the failure mode alpha.8 existed to name:
-a claim whose evidence was never run.
+§25's success definition asks for "the friction of the foreign surface measured
+on two models and reported side by side", and at the time this paragraph was
+first written that was false and the milestone was not tagged. It is now true —
+see the measurement below — and a separate clause of §25 turned out to be
+unsatisfiable by any implementation, which is the amendment recorded at the end
+of this document.
 
 ### The measurement, and what it found
 
@@ -320,13 +322,15 @@ description to the catalogue the model sees each step, and ADR-0024's label is
 deliberately verbose. That cost is the price of the honesty rather than an
 accident of it. A shorter label would measure better and say less.
 
-### CLOSURE B — not built (§20)
+### CLOSURE B — closed (§20)
 
-alpha.8 defect 10 stands unchanged: `denied-secret` asks a model to read `.env`,
-a model may decline, no `PROTECTED_PATH` is produced, and `requiresAttempt`
-reports `not exercised` rather than failing. That is honest and it is not a fix.
-The scripted arm that would force the kernel's hard-deny every run does not
-exist.
+alpha.8 defect 10: `denied-secret` asks a model to read `.env`, a model may
+decline, no `PROTECTED_PATH` is produced, and `requiresAttempt` reports
+`not exercised` rather than failing a well-behaved model. Honest, and not a fix —
+the consequence was that a live release run exercised the kernel's hard-deny
+**zero times**. There are now two arms, reported separately and never merged; the
+scripted one is a gate rather than a measurement, so a failure there returns
+non-zero even in live mode. Details in the section below.
 
 ### CLOSURE C — restated for a third milestone (§21)
 
@@ -345,12 +349,13 @@ One Linux host with an ordinary resolver closes it in about half an hour. That
 host did not appear during alpha.9 either. It is not closed, it is not quietly
 dropped, and it is now three milestones old — which is itself the finding.
 
-### Order in which to resume
+### Where this went next
 
-`research/v0.1.0-alpha.9_mcp_and_foreign_tool_trust.md` §24, resuming at step 8.
-The next commit should be the `McpService` that joins config to client, because
-until that exists every remaining item — HTTP, secrets, friction, both
-experiments, the dogfood — has nothing to attach to.
+Every §24 step from 8 onward landed before the tag: `McpService`, the HTTP
+transport, the credential path, the friction partition, both experiments, the
+third-party dogfood and CLOSURE B. What did not is CLOSURE C, and the next
+milestone's plan escalates it from "restate" to "decide" — see
+`research/v0.1.0-alpha.10_undo_and_the_second_operator.md` §15.
 
 ---
 
@@ -379,11 +384,25 @@ it. §8:
 > Say that plainly or do not ship it.
 
 So §25 and §8 contradicted each other from the day the plan was written. **§25 has
-been amended** — the original clause is kept visible in `research/v0.1.0-alpha.9_mcp_and_foreign_tool_trust.md`
-§25.1, the reason in §25.2, the replacement in §25.3, and the Trust Stop's
-replacement in §25.4. The new clause is stricter in one respect than the one it
-replaces: it requires the limitation to be **stated in the product**, not merely
-to be true.
+been amended**, and both clauses are reproduced in full below so that this
+repository is the complete record of the change.
+
+> **Read this before following the reference.** The milestone plans live in
+> `research/`, which is a **sibling of this repository, not part of it** — it is
+> in no git repository at all, and `research/**` is on `package-check`'s
+> forbidden list so it never ships either. The plan document therefore has no
+> history, no diff, and no guarantee of surviving. It is the input to a
+> milestone, and it is not evidence. Where the plan and this document disagree,
+> this one is authoritative, because this one is the one under version control.
+>
+> That is not a new condition — every milestone's `Plan:` header has pointed
+> outside the repository since alpha.2 — but alpha.9 is the first time a
+> _decision_ was recorded there, and a decision with no history is not recorded.
+
+The plan's own copy has the original at §25.1, the reason at §25.2, the
+replacement at §25.3 and the Trust Stop's replacement at §25.4. The new clause is
+stricter in one respect than the one it replaces: it requires the limitation to
+be **stated in the product**, not merely to be true.
 
 ```text
 was:  A foreign tool reaches nothing a builtin would have been denied.
@@ -454,3 +473,65 @@ tested, in four scopes, with a global address as the control that must pass.
 No clean-resolver host is available, so it is restated rather than closed, and it
 is the one `NOT TESTED` row in the alpha.9 matrix. One Linux host with an
 ordinary resolver closes it in about half an hour.
+
+---
+
+## Post-tag: defect 7, found by re-reading this document
+
+`v0.1.0-alpha.9` points at `1117cd5`, and **the tree at that tag contains six
+stale claims in these two documents** — including `docs/alpha9-status.md` saying
+"Incomplete, and `v0.1.0-alpha.9` is not tagged", and the evidence matrix's §0
+summary table listing the third-party dogfood as `NOT RUN` and CLOSURE B as
+`NOT BUILT` **while its own detail rows recorded both as PASS**. The tag is not
+moved. This section is the record, in the same spirit as alpha.8's §7.1.
+
+### What happened
+
+The milestone was written incrementally, and each time an item closed, the
+summary prose was updated by a scripted string replacement. Several of those
+replacements were written **without asserting that they matched**, and by then
+`pnpm format` had reflowed the table columns and paragraph wrapping. The
+replacements found nothing, changed nothing, reported nothing, and the work
+continued.
+
+That is alpha.9 defect 3 exactly — _a checker whose correctness depended on
+source layout, which the formatter is authoritative over_ — with the checker
+replaced by an edit script and the source replaced by the documents describing
+the milestone. Having written that defect up, the same mistake was made four more
+times in the act of writing it up.
+
+### Why nothing caught it
+
+The evidence gate parses tables with a `Status` column and validates every
+reference. §0's summary is a **state table with no evidence column**, so the gate
+never reads it. The detail rows it does read were correct throughout. A document
+whose gated half is right and whose human-readable half is wrong, with everything
+green — which is defect 6, `/status`, in a different medium.
+
+Three of the six were in the _conclusion_ sections a reader reaches first.
+
+### Fixed
+
+All six corrected, every replacement asserted this time. Two related things
+found in the same pass:
+
+- **The plan documents are in no git repository.** `research/` is a sibling of
+  this repository, not part of it, and `research/**` is on `package-check`'s
+  forbidden list. Until alpha.9 that was harmless, because plans are inputs. But
+  §25's amendment — the single most consequential decision of the milestone — was
+  recorded there and nowhere else, which means it had no history and no diff. The
+  amendment is now reproduced in full above, and the caveat about where plans
+  live is stated where a reader will hit it.
+- **Three `--scripted` harness smoke artifacts were committed** to
+  `evals/results/experiments/`, because that directory's `.gitignore` negation is
+  directory-wide and a smoke run looks like an experiment. They back no write-up.
+  Removed, and the rule is written next to the negation.
+
+### The lesson worth keeping
+
+Every automated edit to a document should fail loudly when it does not apply.
+`s.replace(old, new)` returns the original string when `old` is absent, which is
+indistinguishable from success at every layer above it. The four that were
+asserted all landed; the four that were not all silently did nothing. The ratio
+is not a coincidence and the fix is not discipline — it is that the operation
+should not have a silent-success mode.

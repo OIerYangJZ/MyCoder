@@ -23,5 +23,8 @@ evals/results/*
 !evals/results/release/
 # An experiment artifact backing a documented conclusion has to be readable for the
 # same reason a release artifact does: the numbers in the write-up are only checkable
-# if the run behind them is.
+# if the run behind them is. The converse is not automatic: a `--scripted` harness
+# smoke run backs no write-up, and three of them were committed during alpha.9
+# purely because this negation is directory-wide. Commit the runs a document cites;
+# delete the rest.
 !evals/results/experiments/
