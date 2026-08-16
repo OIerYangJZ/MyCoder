@@ -24,6 +24,7 @@ import { FakeModel } from '../../src/model/adapters/fake.ts';
 import { ScriptedPrompter } from '../../src/cli/prompter.ts';
 import { resolveKernelDirs } from '../../src/util/platform.ts';
 import { fetchTransport, type EgressResponse, type EgressTransport } from '../../src/security/egress-gate.ts';
+import { MCP_TOOL_PREFIX } from '../../src/mcp/naming.ts';
 import type { ModelMessage } from '../../src/model/ir.ts';
 import { GOLDEN_TASKS, type EvalFamily, type GoldenTask, type GoldenTaskContext } from '../tasks/golden.ts';
 import { startWebFixture } from '../tasks/web-fixture.ts';
@@ -486,6 +487,33 @@ export function toolFrictionFromLog(log: string): Record<string, ToolFriction> {
   }
 
   return byTool;
+}
+
+/**
+ * Split a friction table into the kernel's own tools and the foreign ones
+ * (alpha.9 §17).
+ *
+ * `toolFrictionFromLog` already counts MCP tools without knowing it does — they
+ * are keyed by name like everything else, and `mcp__wiki__search` is a name. So
+ * this adds no counting; it adds the *partition*, which is the thing §17 asks a
+ * question about and the table alone cannot answer.
+ *
+ * The question is not "how much friction did the MCP tools cause". It is
+ * alpha.7's finding restated: **adding a tool can make a _different_ tool harder
+ * to call.** Answering that needs the builtin half measured separately in both
+ * arms, so that a rise in `Read` rejections when a server is attached is visible
+ * rather than averaged into the total.
+ */
+export function splitFriction(table: Record<string, ToolFriction>): {
+  builtin: Record<string, ToolFriction>;
+  foreign: Record<string, ToolFriction>;
+} {
+  const builtin: Record<string, ToolFriction> = {};
+  const foreign: Record<string, ToolFriction> = {};
+  for (const [name, friction] of Object.entries(table)) {
+    (name.startsWith(MCP_TOOL_PREFIX) ? foreign : builtin)[name] = friction;
+  }
+  return { builtin, foreign };
 }
 
 /** Merge per-attempt friction into one table. */

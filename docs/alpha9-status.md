@@ -225,8 +225,6 @@ unreviewable in exactly the way the function exists to prevent.
 ### What is not done, and what that costs
 
 ```text
-friction metric on MCP tools (§17)               not built
-the two-arm experiment, either model (§17, §18)  not run
 third-party server dogfood (§5)                  not run
 CLOSURE B — the golden set's denial arm (§20)    not built
 ```
@@ -284,14 +282,44 @@ milestone is not complete and the tag is not cut. Recording it as incomplete is
 cheaper than the alternative, which is the failure mode alpha.8 existed to name:
 a claim whose evidence was never run.
 
-**The measurement gap is the one that matters most**, and not because it is
-large. §18 exists because alpha.4's "0 of 25 delegations" did not replicate on a
-second model — the standing proof that a single-model behavioural claim about
-_tool choice_ is worth very little. "Does the model use the MCP tools, and does
-having them make it better, worse or merely busier" is exactly that kind of
-claim, and this milestone has no answer to it. Every row in the alpha.9 matrix is
-structural, which is why the Model provenance section says so rather than listing
-a model that was never run.
+### The measurement, and what it found
+
+The two-arm experiment ran on **both** models at N=3, reported side by side, no
+per-model tuning. Full write-up: `docs/alpha9-mcp-utility.md`.
+
+```text
+                              model 1 (deepseek)   model 2 (gpt-5.6-terra)
+                              attached  absent     attached  absent
+solved                        9/9       8/9        9/9       9/9
+attempts using a foreign tool 0         0          0         0
+builtin wasted-call ratio     7.89%     5.00%      6.35%     5.17%
+```
+
+Two things, and the second is the one worth keeping.
+
+**Neither model called the foreign tool once, in eighteen attempts each.** That
+is the expected answer here rather than a surprising one, and the write-up says
+why: the fixture server offers `echo`, which is useless for a bug fix, a
+test-driven fix or a rename. So this measures what an _irrelevant_ foreign tool
+costs — catalogue noise — and not whether a model would reach for a useful one.
+Stating that is the difference between a measurement and a press release.
+
+**Both models spent more calls on the kernel's own tools when a server was
+attached.** That is alpha.7's finding again — adding a tool makes a _different_
+tool harder to call — and it **replicates in direction on both models**, which is
+precisely where it differs from alpha.4's delegation result. §18 exists because
+that one did not replicate; this one does, and a single-model version of the
+write-up would have looked identical while being worth much less.
+
+It is not significant at N=3 and the write-up says so in its own section, along
+with the fact that the 8/9 belongs to the arm _without_ the server — reporting
+that as "MCP improves solve rate" would be reading noise in the flattering
+direction.
+
+The mechanism is not mysterious: every attached tool adds a labelled, untrusted
+description to the catalogue the model sees each step, and ADR-0024's label is
+deliberately verbose. That cost is the price of the honesty rather than an
+accident of it. A shorter label would measure better and say less.
 
 ### CLOSURE B — not built (§20)
 

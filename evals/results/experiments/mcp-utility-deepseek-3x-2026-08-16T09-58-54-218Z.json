@@ -1,0 +1,242 @@
+{
+  "experiment": "mcp-utility",
+  "question": "Does attaching an MCP server make the model better, worse, or merely busier — and does it make the kernel's own tools harder to call?",
+  "model": "deepseek",
+  "runs": 3,
+  "generatedAt": "2026-08-16T09:58:54.217Z",
+  "perCell": [
+    {
+      "baseId": "single-file-bug-fix",
+      "arm": "server-attached",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0,
+      "foreignWasted": 0,
+      "totalWasted": 0,
+      "builtinCalls": 9,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Read": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Shell": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    },
+    {
+      "baseId": "single-file-bug-fix",
+      "arm": "server-absent",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0,
+      "foreignWasted": 0,
+      "totalWasted": 0,
+      "builtinCalls": 9,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Read": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Shell": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    },
+    {
+      "baseId": "test-driven-fix",
+      "arm": "server-attached",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0.25,
+      "foreignWasted": 0,
+      "totalWasted": 0.25,
+      "builtinCalls": 12,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Shell": {
+          "calls": 6,
+          "errors": 3,
+          "repeats": 3,
+          "codes": {
+            "TOOL_FAILED": 3
+          }
+        },
+        "Read": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    },
+    {
+      "baseId": "test-driven-fix",
+      "arm": "server-absent",
+      "n": 3,
+      "solved": 2,
+      "usedForeignTool": 0,
+      "builtinWasted": 0.15384615384615385,
+      "foreignWasted": 0,
+      "totalWasted": 0.15384615384615385,
+      "builtinCalls": 13,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Shell": {
+          "calls": 6,
+          "errors": 2,
+          "repeats": 3,
+          "codes": {
+            "TOOL_FAILED": 2
+          }
+        },
+        "Glob": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    },
+    {
+      "baseId": "multi-file-rename",
+      "arm": "server-attached",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0,
+      "foreignWasted": 0,
+      "totalWasted": 0,
+      "builtinCalls": 17,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Glob": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 4,
+          "errors": 0,
+          "repeats": 1,
+          "codes": {}
+        }
+      }
+    },
+    {
+      "baseId": "multi-file-rename",
+      "arm": "server-absent",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0,
+      "foreignWasted": 0,
+      "totalWasted": 0,
+      "builtinCalls": 18,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Grep": {
+          "calls": 5,
+          "errors": 0,
+          "repeats": 2,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Glob": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    }
+  ],
+  "arms": {
+    "server-attached": {
+      "solved": "9/9",
+      "attemptsUsingAForeignTool": 0,
+      "builtinWasted": 0.07894736842105263
+    },
+    "server-absent": {
+      "solved": "8/9",
+      "attemptsUsingAForeignTool": 0,
+      "builtinWasted": 0.05
+    }
+  },
+  "friction": [
+    "Shell         18 calls    5 err   6 repeat  TOOL_FAILED 5",
+    "Read          24 calls    0 err   0 repeat  ",
+    "Edit          24 calls    0 err   0 repeat  ",
+    "Grep           9 calls    0 err   3 repeat  ",
+    "Glob           3 calls    0 err   0 repeat  "
+  ]
+}

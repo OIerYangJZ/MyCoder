@@ -1,0 +1,292 @@
+{
+  "experiment": "mcp-utility",
+  "question": "Does attaching an MCP server make the model better, worse, or merely busier — and does it make the kernel's own tools harder to call?",
+  "model": "relay",
+  "runs": 3,
+  "generatedAt": "2026-08-16T10:09:49.761Z",
+  "perCell": [
+    {
+      "baseId": "single-file-bug-fix",
+      "arm": "server-attached",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0.07142857142857142,
+      "foreignWasted": 0,
+      "totalWasted": 0.07142857142857142,
+      "builtinCalls": 14,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Glob": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Shell": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 2,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_INVALID_ARGS": 1
+          }
+        }
+      }
+    },
+    {
+      "baseId": "single-file-bug-fix",
+      "arm": "server-absent",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0,
+      "foreignWasted": 0,
+      "totalWasted": 0,
+      "builtinCalls": 14,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Glob": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 2,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Shell": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    },
+    {
+      "baseId": "test-driven-fix",
+      "arm": "server-attached",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0.1875,
+      "foreignWasted": 0,
+      "totalWasted": 0.1875,
+      "builtinCalls": 16,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Glob": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Shell": {
+          "calls": 6,
+          "errors": 3,
+          "repeats": 3,
+          "codes": {
+            "TOOL_FAILED": 3
+          }
+        },
+        "Read": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    },
+    {
+      "baseId": "test-driven-fix",
+      "arm": "server-absent",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0.2,
+      "foreignWasted": 0,
+      "totalWasted": 0.2,
+      "builtinCalls": 15,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Shell": {
+          "calls": 6,
+          "errors": 3,
+          "repeats": 3,
+          "codes": {
+            "TOOL_FAILED": 3
+          }
+        },
+        "Grep": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Glob": {
+          "calls": 2,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    },
+    {
+      "baseId": "multi-file-rename",
+      "arm": "server-attached",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0,
+      "foreignWasted": 0,
+      "totalWasted": 0,
+      "builtinCalls": 33,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Glob": {
+          "calls": 12,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 9,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    },
+    {
+      "baseId": "multi-file-rename",
+      "arm": "server-absent",
+      "n": 3,
+      "solved": 3,
+      "usedForeignTool": 0,
+      "builtinWasted": 0,
+      "foreignWasted": 0,
+      "totalWasted": 0,
+      "builtinCalls": 29,
+      "foreignCalls": 0,
+      "toolFriction": {
+        "Glob": {
+          "calls": 8,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 1,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 8,
+          "errors": 0,
+          "repeats": 2,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Shell": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    }
+  ],
+  "arms": {
+    "server-attached": {
+      "solved": "9/9",
+      "attemptsUsingAForeignTool": 0,
+      "builtinWasted": 0.06349206349206349
+    },
+    "server-absent": {
+      "solved": "9/9",
+      "attemptsUsingAForeignTool": 0,
+      "builtinWasted": 0.05172413793103448
+    }
+  },
+  "friction": [
+    "Shell         19 calls    6 err   6 repeat  TOOL_FAILED 6",
+    "Grep          21 calls    1 err   1 repeat  TOOL_INVALID_ARGS 1",
+    "Glob          31 calls    0 err   0 repeat  ",
+    "Read          26 calls    0 err   2 repeat  ",
+    "Edit          24 calls    0 err   0 repeat  "
+  ]
+}

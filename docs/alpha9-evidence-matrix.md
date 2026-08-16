@@ -23,11 +23,15 @@ either reaches the model labelled or it does not; a name either collides with a
 builtin or it does not; a descriptor either says `none` or it does not. None of
 it depends on which model is driving.
 
-That is not a virtue — it is the gap. §17 and §18 require the _behavioural_
-claim — does a foreign tool surface make a model better, worse or merely busier —
-measured on two models and reported side by side. **No behavioural measurement
-was taken.** There is no MCP row anywhere below that names a model, because no
-run happened. See §0 and the `NOT TESTED` rows in §7.
+The exception is §7, which is behavioural and names two models explicitly:
+
+- **Model 1 — `deepseek-chat`** (DeepSeek, `openai-chat`);
+- **Model 2 — `gpt-5.6-terra`** through the relay at `api1.aisz.mom`
+  (`openai-chat`) — a relay, and the write-up says so again.
+
+Same fixtures, same prompts, same N=3, no per-model tuning. Reported side by side
+and never averaged (§22). Full write-up: `docs/alpha9-mcp-utility.md`, which also
+states what the numbers do **not** support.
 
 Host tier: offline suite on macOS arm64 (Darwin 25.5.0). Release gate on GitHub
 runners, ubuntu-latest and macos-latest.
@@ -45,25 +49,25 @@ enforced inside it.
 What is still missing is the HTTP transport, the credential path, and every
 measurement §17 and §18 ask for.
 
-| Area                                            | State                                                                 |
-| ----------------------------------------------- | --------------------------------------------------------------------- |
-| CLOSURE A — a tag whose gate is green           | **done** — `v0.1.0-alpha.8.1`, run `31935882150`                      |
-| ADR-0022, ADR-0023, ADR-0024                    | **done**                                                              |
-| the capability question (§8)                    | **done** — `mcp.invoke`, decided and tested                           |
-| server declaration, user-config only (§11)      | **done**                                                              |
-| stdio transport through the backend (§9)        | **done** — local backend; other backends refuse                       |
-| naming and provenance (§13)                     | **done**                                                              |
-| untrusted descriptions (§12)                    | **done**                                                              |
-| enforcement descriptors (§14)                   | **done**, and wired: the kernel applies it before building the prompt |
-| HTTP transport through the EgressGate (§10)     | **done** — stateless POST form; no SSE stream                         |
-| secrets via `SecretBroker` (§15)                | **done**, and the canary suite covers all four routes                 |
-| lifecycle and failure (§16)                     | **done**                                                              |
-| registry/session wiring                         | **done** — `McpService`, wired into `createKernel`                    |
-| friction metric on MCP tools (§17)              | **NOT BUILT**                                                         |
-| the two-arm experiment, either model (§17, §18) | **NOT RUN**                                                           |
-| third-party server dogfood (§5)                 | **NOT RUN**                                                           |
-| CLOSURE B — the golden set's denial arm (§20)   | **NOT BUILT**                                                         |
-| CLOSURE C — the clean-resolver non-claim (§21)  | **restated**, not closed — see §8                                     |
+| Area                                           | State                                                                 |
+| ---------------------------------------------- | --------------------------------------------------------------------- |
+| CLOSURE A — a tag whose gate is green          | **done** — `v0.1.0-alpha.8.1`, run `31935882150`                      |
+| ADR-0022, ADR-0023, ADR-0024                   | **done**                                                              |
+| the capability question (§8)                   | **done** — `mcp.invoke`, decided and tested                           |
+| server declaration, user-config only (§11)     | **done**                                                              |
+| stdio transport through the backend (§9)       | **done** — local backend; other backends refuse                       |
+| naming and provenance (§13)                    | **done**                                                              |
+| untrusted descriptions (§12)                   | **done**                                                              |
+| enforcement descriptors (§14)                  | **done**, and wired: the kernel applies it before building the prompt |
+| HTTP transport through the EgressGate (§10)    | **done** — stateless POST form; no SSE stream                         |
+| secrets via `SecretBroker` (§15)               | **done**, and the canary suite covers all four routes                 |
+| lifecycle and failure (§16)                    | **done**                                                              |
+| registry/session wiring                        | **done** — `McpService`, wired into `createKernel`                    |
+| friction metric on MCP tools (§17)             | **done** — the builtin/foreign partition                              |
+| the two-arm experiment, both models (§17, §18) | **done** — N=3, side by side, `docs/alpha9-mcp-utility.md`            |
+| third-party server dogfood (§5)                | **NOT RUN**                                                           |
+| CLOSURE B — the golden set's denial arm (§20)  | **NOT BUILT**                                                         |
+| CLOSURE C — the clean-resolver non-claim (§21) | **restated**, not closed — see §8                                     |
 
 **§25's success definition is therefore not met.** The sentence it asks for
 contains "the friction of the foreign surface is measured on two models and
@@ -187,25 +191,33 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 
 ## 7. Secrets, measurement and the dogfood (§15, §17, §18, §5)
 
-| Requirement                                             | Status     | Evidence                                                                            | Notes                                                                       |
-| ------------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| an ambient credential does not reach a stdio server     | PASS       | test:a credential-shaped variable in the ambient environment does not reach it      | Asked **of the server**, which reports its own environment                  |
-| NEGATIVE CONTROL: the fixture can see what it is given  | PASS       | test:NEGATIVE CONTROL: the echo-env fixture can see what it IS given                | A fixture returning `{}` would pass the row above whatever the kernel did   |
-| a literal credential in config is refused               | PASS       | test:a literal credential is ignored and warned about                               |                                                                             |
-| **a credential reaches a server only via SecretBroker** | PASS       | test:authorize writes the header, and it is the only place the value appears        | A fresh lease per request; the value is never a variable this code holds    |
-| a credential never reaches the request body             | PASS       | test:authorize writes the header, and it is the only place the value appears        | A tool argument is the route section 15 forbids first                       |
-| NEGATIVE CONTROL: no credential, no header              | PASS       | test:NEGATIVE CONTROL: with no authorize, no authorization header is sent           |                                                                             |
-| an unresolvable credential_ref refuses the server       | PASS       | test:an HTTP server with no egress gate is refused, not routed around               | Contacting it unauthenticated would be a silent downgrade                   |
-| **the canary suite is extended to MCP sinks**           | PASS       | test:neither canary is on the wire, in any request the kernel sent                  | Two canaries: one the kernel knows, one it does not                         |
-| the environment route carries neither canary            | PASS       | test:neither canary reaches a stdio server through the environment                  | Asked of the server, not of `scrubEnv`                                      |
-| a description asking for a secret gets no secret        | PASS       | test:a description that asks for a secret gets a labelled description, not a secret | There is no code path from a description to an argument                     |
-| an error echoing the request carries no secret out      | PASS       | test:an error result echoing the request does not carry a secret out                | The route easiest to forget, since it is written after something went wrong |
-| NEGATIVE CONTROL: the recorder does capture traffic     | PASS       | test:NEGATIVE CONTROL: the recording gate does capture request bodies               | An empty wire would prove every row above                                   |
-| NEGATIVE CONTROL: the fixture reports its environment   | PASS       | test:NEGATIVE CONTROL: the fixture does report the environment it is given          | A fixture returning nothing would pass the environment row                  |
-| **the friction metric covers MCP tools**                | NOT TESTED | artifact:docs/alpha9-status.md                                                      | Not built                                                                   |
-| **a two-arm experiment, server present vs absent**      | NOT TESTED | artifact:docs/alpha9-status.md                                                      | Not run, on either model                                                    |
-| **the same three suites on both models (§18)**          | NOT TESTED | artifact:docs/alpha9-status.md                                                      | Not run. alpha.8 §20-§23 stand and are unmet here                           |
-| **a dogfood against a third-party server**              | NOT TESTED | artifact:docs/alpha9-status.md                                                      | Not run                                                                     |
+| Requirement                                             | Status     | Evidence                                                                                 | Notes                                                                           |
+| ------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| an ambient credential does not reach a stdio server     | PASS       | test:a credential-shaped variable in the ambient environment does not reach it           | Asked **of the server**, which reports its own environment                      |
+| NEGATIVE CONTROL: the fixture can see what it is given  | PASS       | test:NEGATIVE CONTROL: the echo-env fixture can see what it IS given                     | A fixture returning `{}` would pass the row above whatever the kernel did       |
+| a literal credential in config is refused               | PASS       | test:a literal credential is ignored and warned about                                    |                                                                                 |
+| **a credential reaches a server only via SecretBroker** | PASS       | test:authorize writes the header, and it is the only place the value appears             | A fresh lease per request; the value is never a variable this code holds        |
+| a credential never reaches the request body             | PASS       | test:authorize writes the header, and it is the only place the value appears             | A tool argument is the route section 15 forbids first                           |
+| NEGATIVE CONTROL: no credential, no header              | PASS       | test:NEGATIVE CONTROL: with no authorize, no authorization header is sent                |                                                                                 |
+| an unresolvable credential_ref refuses the server       | PASS       | test:an HTTP server with no egress gate is refused, not routed around                    | Contacting it unauthenticated would be a silent downgrade                       |
+| **the canary suite is extended to MCP sinks**           | PASS       | test:neither canary is on the wire, in any request the kernel sent                       | Two canaries: one the kernel knows, one it does not                             |
+| the environment route carries neither canary            | PASS       | test:neither canary reaches a stdio server through the environment                       | Asked of the server, not of `scrubEnv`                                          |
+| a description asking for a secret gets no secret        | PASS       | test:a description that asks for a secret gets a labelled description, not a secret      | There is no code path from a description to an argument                         |
+| an error echoing the request carries no secret out      | PASS       | test:an error result echoing the request does not carry a secret out                     | The route easiest to forget, since it is written after something went wrong     |
+| NEGATIVE CONTROL: the recorder does capture traffic     | PASS       | test:NEGATIVE CONTROL: the recording gate does capture request bodies                    | An empty wire would prove every row above                                       |
+| NEGATIVE CONTROL: the fixture reports its environment   | PASS       | test:NEGATIVE CONTROL: the fixture does report the environment it is given               | A fixture returning nothing would pass the environment row                      |
+| **the friction metric covers MCP tools**                | PASS       | test:calls, errors, repeats and codes are all counted for an MCP tool                    | Counted already; alpha.9 adds the builtin/foreign partition                     |
+| the builtin half is readable in both arms               | PASS       | test:the builtin half is readable in both arms, which is the actual question             | The total hides the number the question is about                                |
+| NEGATIVE CONTROL: the split is real                     | PASS       | test:NEGATIVE CONTROL: the split is not a rename of the whole table                      | A split putting everything in one half would pass the arm comparison            |
+| **a two-arm experiment, server present vs absent**      | PASS       | eval:evals/experiments/mcp-utility.ts                                                    | 3 tasks x 2 arms x N=3; each arm asserts its own premise                        |
+| each arm asserts its own premise before the turn        | PASS       | artifact:evals/experiments/mcp-utility-fixtures.ts                                       | A silent prepare failure would compare the control against itself               |
+| **the experiment is run on both models (section 18)**   | PASS       | artifact:docs/alpha9-mcp-utility.md                                                      | Same fixtures, same prompts, same N, no per-model tuning                        |
+| results are reported side by side, never averaged       | PASS       | artifact:docs/alpha9-mcp-utility.md                                                      | Model 2 is named as a relay again                                               |
+| model 1 artifact is readable                            | PASS       | artifact:evals/results/experiments/mcp-utility-deepseek-3x-2026-08-16T09-58-54-218Z.json |                                                                                 |
+| model 2 artifact is readable                            | PASS       | artifact:evals/results/experiments/mcp-utility-relay-3x-2026-08-16T10-09-49-762Z.json    |                                                                                 |
+| the finding replicates across models                    | PASS       | artifact:docs/alpha9-mcp-utility.md                                                      | Builtin friction rises in both arms on both models -- unlike alpha.4 delegation |
+| the write-up states what it does NOT support            | PASS       | artifact:docs/alpha9-mcp-utility.md                                                      | Not significant at N=3; zero uses is partly by construction                     |
+| **a dogfood against a third-party server**              | NOT TESTED | artifact:docs/alpha9-status.md                                                           | Not run                                                                         |
 
 ---
 
@@ -233,7 +245,7 @@ reported side by side", and that is false. `v0.1.0-alpha.9` is not tagged.
 
 | Gate               | Result                                                   |
 | ------------------ | -------------------------------------------------------- |
-| offline suite      | 1141 · 1048 pass · 0 fail · 93 skip                      |
+| offline suite      | 1146 · 1053 pass · 0 fail · 93 skip                      |
 | architecture lint  | 16 rules, 0 violations                                   |
 | lint self-tests    | green, including 2 new workflow-hazard checks            |
 | evidence gate      | 7 matrices, 85 alpha.9 rows, every claim resolves        |
