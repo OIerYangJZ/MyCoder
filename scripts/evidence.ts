@@ -51,6 +51,7 @@ const MATRICES = [
   'docs/tool-surface-evidence-matrix.md',
   'docs/alpha7-evidence-matrix.md',
   'docs/alpha8-evidence-matrix.md',
+  'docs/alpha9-evidence-matrix.md',
 ];
 
 /**

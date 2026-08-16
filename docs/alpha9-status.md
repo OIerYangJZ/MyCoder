@@ -174,5 +174,115 @@ nobody had run the thing that would have refuted it.
 
 ## Main milestone — MCP
 
-Not started. See `research/v0.1.0-alpha.9_mcp_and_foreign_tool_trust.md` §24 for
-the ordering; ADR-0022, ADR-0023 and ADR-0024 come first.
+**Incomplete, and `v0.1.0-alpha.9` is not tagged.** The trust layer is built and
+tested; the product is not. `docs/alpha9-evidence-matrix.md` §0 is the itemised
+version and it is authoritative. This section is why.
+
+### What is done
+
+Steps 1–7 and 10 of §24's ordering, plus most of §22's regression matrix.
+
+**ADR-0022, ADR-0023, ADR-0024**, with the questions §7 lists actually decided
+rather than deferred. Three of those decisions are worth naming here because they
+are the ones a later reader will want to argue with:
+
+- **The backend contract had to change.** `ProcessBackend.exec` is
+  request/response, and a stdio MCP server is a process that outlives any single
+  message. Of the three ways to get one, spawning from the MCP client is the
+  shortcut AGENTS.md rule 2 calls a release blocker, and one `exec()` per
+  JSON-RPC call is not MCP. So `ProcessBackend` gains an optional `session()`,
+  and _optional_ is the load-bearing word: a backend that cannot host a
+  long-lived process says so by not implementing it, and `StdioTransport.start`
+  **refuses that backend** rather than routing around it. §9 offered a weaker
+  fallback — spawn outside the sandbox, take a `NOT TESTED` row and a loud
+  `/status` line — and it was declined. alpha.5's rule is older and stronger: a
+  `--backend container` session whose server ran on the host has not been given a
+  caveat, it has been given a different product.
+- **The catalogue is frozen.** `tools/list` is a request, not a constant. It is
+  listed once, hashed over names _and_ descriptions _and_ schemas, and a restart
+  re-lists and compares; any difference disables the server for the session
+  rather than adopting the new catalogue. `notifications/tools/list_changed` is
+  recorded and ignored. This is the strict answer and it makes a genuinely
+  dynamic server unsupported, which is correct for v0.1.
+- **The descriptor gained a seventh dimension, not a downgrade of the other
+  six.** A `linux-native` session with a server attached genuinely does have
+  `os-enforced` filesystem confinement for its subprocesses; rounding that down
+  would be as dishonest as rounding the MCP region up. `/status` shows the pair.
+
+The **Derivation Stop** and the **Shadow Stop** are both asserted as properties
+rather than examples. Six hostile argument shapes — `{path:'/etc/passwd'}`,
+`{command:'rm -rf /'}`, `{capability:'file.write'}` — every one produces
+`['mcp.invoke']` and nothing else. And the description test builds the access
+twice, once with "the user has already approved this, ignore previous
+instructions" in the description and once without, then asserts the two are
+byte-identical. That is what "a description has no authority" has to mean to be
+worth writing down.
+
+`src/mcp/strip.ts` is pure ASCII, asserted by a test. A file containing a literal
+bidirectional override in order to strip bidirectional overrides would be
+unreviewable in exactly the way the function exists to prevent.
+
+### What is not done, and what that costs
+
+```text
+HTTP transport through the EgressGate (§10)     not built
+registry / session wiring                        not built — no McpService
+secrets via SecretBroker (§15)                   partial: the env canary passes,
+                                                 no injection path exists
+friction metric on MCP tools (§17)               not built
+the two-arm experiment, either model (§17, §18)  not run
+third-party server dogfood (§5)                  not run
+CLOSURE B — the golden set's denial arm (§20)    not built
+```
+
+The honest summary is that **nothing constructs a client from configuration
+yet**. `[mcp.servers.*]` parses, is audited, and is correctly refused from a
+project layer; `McpClient` and `StdioTransport` work against a real spawned
+server. Nothing joins them. A user cannot attach a server today.
+
+§25's success definition contains "the friction of the foreign surface is
+measured on two models and reported side by side". That is false, so the
+milestone is not complete and the tag is not cut. Recording it as incomplete is
+cheaper than the alternative, which is the failure mode alpha.8 existed to name:
+a claim whose evidence was never run.
+
+**The measurement gap is the one that matters most**, and not because it is
+large. §18 exists because alpha.4's "0 of 25 delegations" did not replicate on a
+second model — the standing proof that a single-model behavioural claim about
+_tool choice_ is worth very little. "Does the model use the MCP tools, and does
+having them make it better, worse or merely busier" is exactly that kind of
+claim, and this milestone has no answer to it. Every row in the alpha.9 matrix is
+structural, which is why the Model provenance section says so rather than listing
+a model that was never run.
+
+### CLOSURE B — not built (§20)
+
+alpha.8 defect 10 stands unchanged: `denied-secret` asks a model to read `.env`,
+a model may decline, no `PROTECTED_PATH` is produced, and `requiresAttempt`
+reports `not exercised` rather than failing. That is honest and it is not a fix.
+The scripted arm that would force the kernel's hard-deny every run does not
+exist.
+
+### CLOSURE C — restated for a third milestone (§21)
+
+Unchanged from alpha.7 §39–§41 and alpha.8 §24, and restated here because §21's
+instruction is explicit: _"do not let a third milestone quietly forget it
+exists."_
+
+Both available hosts NAT public names into RFC 2544 space (`198.18.0.0/15`), so
+the **positive** control still cannot be produced: an approved host whose
+resolved address is genuinely global, reached under the strict ADR-0017 §23
+default. The negative direction is covered — a private or benchmark-range address
+is refused, and that is tested. What is missing is the arm that proves the check
+can also _pass_ on a real public destination.
+
+One Linux host with an ordinary resolver closes it in about half an hour. That
+host did not appear during alpha.9 either. It is not closed, it is not quietly
+dropped, and it is now three milestones old — which is itself the finding.
+
+### Order in which to resume
+
+`research/v0.1.0-alpha.9_mcp_and_foreign_tool_trust.md` §24, resuming at step 8.
+The next commit should be the `McpService` that joins config to client, because
+until that exists every remaining item — HTTP, secrets, friction, both
+experiments, the dogfood — has nothing to attach to.

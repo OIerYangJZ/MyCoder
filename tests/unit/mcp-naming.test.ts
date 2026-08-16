@@ -22,7 +22,7 @@ import {
 import { stripDescription } from '../../src/mcp/strip.ts';
 
 describe('a server cannot make its tool answer to a builtin name (§13)', () => {
-  test('a tool called Read is registered as mcp__wiki__Read', () => {
+  test('a tool called Read is namespaced and does not become the builtin', () => {
     const r = composeToolName('wiki', 'Read');
     assert.equal(r.ok, true);
     assert.equal(r.ok && r.name, 'mcp__wiki__Read');
