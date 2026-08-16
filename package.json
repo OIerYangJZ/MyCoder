@@ -64,7 +64,6 @@
     "native/",
     "scripts/build-sandbox.ts",
     "docs/adr/",
-    "docs/kernel-v0.1-spec.md",
     "docs/threat-model.md",
     "docs/cli-contract.md",
     "docs/configuration-audit.md",

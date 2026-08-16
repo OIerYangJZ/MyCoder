@@ -216,6 +216,55 @@ macOS is tier 1 for the kernel and explicitly **not** an evidence host for
 container isolation: alpha.5 §38 says Docker Desktop is not equivalent to a
 native Linux Engine, and that survives packaging.
 
+### 8. The package may not _depend_ on `research/` either (added alpha.9.1)
+
+§5 keeps `research/` out of the package. That is not the same property as the
+package not needing it, and the difference was live: `docs/kernel-v0.1-spec.md`
+shipped, AGENTS.md rule 1 called it _the normative specification_, and its entire
+content was an address under `research/`. A consumer installing the package
+received the address of a 2 330-line document they did not have.
+
+`research/` is a sibling of the repository, is in no version control, and is
+expected to be **deleted once development finishes**. So the address was going to
+stop resolving for everyone, not just for consumers.
+
+Two ways out were available. Move the spec into the repository — rejected, not
+because it is wrong but because it is not this ADR's call to make: relocating
+what a project calls normative is an architecture decision, and the maintainer
+chose the other option. **Isolate the package instead.**
+
+```text
+docs/kernel-v0.1-spec.md   no longer in `files`; a development pointer, repo-only
+README.md                  no longer names it; it describes the product
+packaged content           may not reference any file under research/
+```
+
+The last line is enforced rather than reviewed, by `checkPackedContents`, which
+scans the text of every packed `.md`/`.json`/`.ts`/`.mjs`/`.c` file. It is a
+_content_ rule where §5's are _path_ rules, and it exists because the failure
+here was never a path — the offending file was legitimately in the package and
+pointed outward from inside it.
+
+`research/**` is deliberately still permitted in packaged text, including in §5's
+own table above. Naming the tree in order to say it is excluded is the opposite
+of depending on it; naming a **file inside it** is the dependency. The rule
+encodes exactly that distinction, and its negative control asserts both halves —
+a planted reference to a named file under that tree is caught, and the glob is
+not.
+
+The first run of the rule flagged **this paragraph**, because the sentence above
+originally spelled the planted example out as a literal path. That is the same
+false positive the workflow-hazard checks hit twice in alpha.8 and alpha.9: a
+document describing a hazard contains the hazard. The rule was left alone and the
+prose was changed, which is the correct direction — a checker taught to ignore
+the file that explains it is a checker with a hole shaped like its own
+documentation.
+
+What this costs: an installed consumer has no specification. That is the intended
+consequence and not an oversight. The spec is development material; the package
+is a product; the repository is where a person auditing the claims will be
+anyway, which is the same argument §5 already makes for `tests/**`.
+
 ## Rationale
 
 - The strongest argument for emitted JS is a wider runtime floor. The strongest

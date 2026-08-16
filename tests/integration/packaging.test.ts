@@ -19,7 +19,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import * as path from 'node:path';
 
-import { checkPackedFiles, packedFileList, FORBIDDEN, REQUIRED } from '../../scripts/package-check.ts';
+import {
+  checkPackedFiles,
+  checkPackedContents,
+  packedFileList,
+  FORBIDDEN,
+  REQUIRED,
+} from '../../scripts/package-check.ts';
 
 // npm has to shell out and stat the tree, and `dist/` may need building first —
 // so this is slower than a unit test, and still a few seconds cold.
@@ -162,6 +168,50 @@ describe('the packaged artifact', { timeout: 180_000 }, () => {
     assert.ok(
       major > 22 || (major === 22 && minor >= 18),
       `engines.node is ${pkg.engines.node}, below 22.18.0`,
+    );
+  });
+
+  // --- ADR-0019 §8 -----------------------------------------------------------
+  test('the spec pointer is not shipped', () => {
+    // `docs/kernel-v0.1-spec.md` is a development pointer whose whole content is
+    // an address under `research/`. Shipping it hands a consumer the address of
+    // a document they do not have and that will be deleted.
+    assert.equal(
+      files.includes('docs/kernel-v0.1-spec.md'),
+      false,
+      'the spec pointer must not ship; it resolves to a tree the package excludes',
+    );
+  });
+
+  test('no packaged file references a file under research/', () => {
+    const dangling = checkPackedContents(files, (p) => readFileSync(p, 'utf8'));
+    assert.deepEqual(
+      dangling.map((d) => `${d.path} -> ${d.match}`),
+      [],
+      'a shipped file points into a tree that is not in the package and will not exist',
+    );
+  });
+
+  test('NEGATIVE CONTROL: the check catches a reference and permits the exclusion', () => {
+    // Without this, a checker whose regex stopped matching would report a clean
+    // package forever — which is what a clean package looks like.
+    const planted = checkPackedContents(['a.md'], () => 'see research/kernel_v0.1_technical_spec.md');
+    assert.equal(planted.length, 1, 'a real reference must be caught');
+    assert.match(planted[0]!.match, /research\/kernel_v0\.1_technical_spec\.md/);
+
+    // `research/**` is naming the tree in order to exclude it, which every
+    // contents table in ADR-0019 does. Flagging that would make the rule
+    // unusable, and a rule people delete protects nothing.
+    assert.deepEqual(
+      checkPackedContents(['a.md'], () => 'research/** is never shipped'),
+      [],
+    );
+
+    // And a file with no mention at all is not flagged, so the rule is not
+    // simply firing on everything.
+    assert.deepEqual(
+      checkPackedContents(['a.md'], () => 'ordinary prose'),
+      [],
     );
   });
 });

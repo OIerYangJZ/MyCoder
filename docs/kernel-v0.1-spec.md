@@ -1,5 +1,13 @@
 # Kernel v0.1 specification — pointer
 
+> **Not shipped.** This file is a development pointer and is deliberately absent
+> from the published package (ADR-0019 §8). It resolves to `research/`, which is
+> a sibling of this repository, is in no version control, and is expected to be
+> deleted once development finishes. A packaged artifact that carried a pointer
+> into it would hand a consumer an address instead of a document — so the package
+> carries neither, and `package-check` now fails if any packaged file references
+> a file under `research/` at all.
+
 The normative specification is:
 
     ../research/kernel_v0.1_technical_spec.md

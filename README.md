@@ -1,6 +1,7 @@
 # Kernel v0.1
 
-A coding agent kernel. `docs/kernel-v0.1-spec.md` is the normative specification.
+A coding agent kernel: small, verifiable, and explicit about where its security
+boundaries are.
 
 The goal is not to reproduce a particular product's feature list. It is a kernel
 that is **small, verifiable, and explicit about where its security boundaries

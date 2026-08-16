@@ -22,6 +22,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = process.cwd();
@@ -122,6 +123,45 @@ export const REQUIRED = [
   'README.md',
 ];
 
+/**
+ * A packaged file may not point at anything under `research/` (ADR-0019 §8).
+ *
+ * The path rules above keep `research/` *out* of the package. This keeps the
+ * package from *depending* on it, which is a different property and the one that
+ * actually bites: `research/` is a sibling of this repository, is in no version
+ * control, and is expected to be deleted when development finishes. A shipped
+ * file naming a file in there hands a consumer an address that resolved on
+ * nobody's disk but the author's, and will soon resolve on theirs either.
+ *
+ * `research/**` is deliberately allowed. Naming the tree in order to say it is
+ * excluded — which ADR-0019's own contents table does — is the opposite of
+ * depending on it. Naming a *file* in it is the dependency. That is the whole
+ * distinction the lookahead encodes.
+ */
+const RESEARCH_REFERENCE = /research\/(?!\*)[^\s`'")\]]+/;
+
+export function checkPackedContents(
+  files: readonly string[],
+  read: (path: string) => string,
+): Array<{ path: string; match: string }> {
+  const offenders: Array<{ path: string; match: string }> = [];
+  for (const file of files) {
+    // Only text the reader would follow. A `.js` in dist/ is generated from
+    // sources whose comments are checked in the repo, and scanning binaries is
+    // not the point.
+    if (!/\.(md|json|ts|mjs|c)$/.test(file)) continue;
+    let content: string;
+    try {
+      content = read(file);
+    } catch {
+      continue;
+    }
+    const m = RESEARCH_REFERENCE.exec(content);
+    if (m) offenders.push({ path: file, match: m[0] });
+  }
+  return offenders;
+}
+
 export interface CheckResult {
   files: string[];
   violations: Array<{ path: string; rule: string; why: string }>;
@@ -157,10 +197,11 @@ export function packedFileList(cwd = ROOT): string[] {
 
 async function main(argv: readonly string[]): Promise<number> {
   const result = checkPackedFiles(packedFileList());
+  const dangling = checkPackedContents(result.files, (p) => readFileSync(p, 'utf8'));
 
   if (argv.includes('--json')) {
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    return result.violations.length === 0 && result.missing.length === 0 ? 0 : 1;
+    process.stdout.write(`${JSON.stringify({ ...result, dangling }, null, 2)}\n`);
+    return result.violations.length === 0 && result.missing.length === 0 && dangling.length === 0 ? 0 : 1;
   }
 
   process.stdout.write(`package contents: ${result.files.length} file(s)\n`);
@@ -177,8 +218,18 @@ async function main(argv: readonly string[]): Promise<number> {
     }
   }
 
-  if (result.violations.length === 0 && result.missing.length === 0) {
-    process.stdout.write('nothing forbidden, nothing missing\n');
+  if (dangling.length > 0) {
+    process.stdout.write(`\n${dangling.length} packaged file(s) referencing research/:\n`);
+    for (const d of dangling) {
+      process.stdout.write(
+        `  ${d.path}\n      points at "${d.match}", which is not in the package and will not ` +
+          'exist once development finishes\n',
+      );
+    }
+  }
+
+  if (result.violations.length === 0 && result.missing.length === 0 && dangling.length === 0) {
+    process.stdout.write('nothing forbidden, nothing missing, nothing dangling\n');
     return 0;
   }
   return 1;

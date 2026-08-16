@@ -259,11 +259,26 @@ the product_, not merely to be true. See `docs/alpha9-status.md`.
 
 ---
 
+## 8.1 Package isolation from `research/` (alpha.9.1, ADR-0019 §8)
+
+Not in the alpha.9 plan. Found by checking, after the tag, whether anything in
+the repository would break once the milestone plans are deleted — which the
+maintainer intends to do, since plans are intermediate products.
+
+| Requirement                                        | Status | Evidence                                                                       | Notes                                                                       |
+| -------------------------------------------------- | ------ | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| the spec pointer never ships                       | PASS   | test:the spec pointer is not shipped                                           | It resolved into a tree the package excludes and that will be deleted       |
+| no packaged file references a file under research/ | PASS   | test:no packaged file references a file under research/                        | A **content** rule, not a path rule: the offender was legitimately packaged |
+| NEGATIVE CONTROL: the rule catches, and permits    | PASS   | test:NEGATIVE CONTROL: the check catches a reference and permits the exclusion | Caught ADR-0019 §8 itself on its first run; the prose changed, not the rule |
+| the decision is recorded where it is enforced      | PASS   | artifact:docs/adr/ADR-0019-distribution-and-runtime-version-policy.md          | §8, including what it costs: an installed consumer has no specification     |
+
+---
+
 ## 9. Gates at this commit
 
 | Gate               | Result                                                   |
 | ------------------ | -------------------------------------------------------- |
-| offline suite      | 1156 · 1063 pass · 0 fail · 93 skip                      |
+| offline suite      | 1159 · 1066 pass · 0 fail · 93 skip                      |
 | architecture lint  | 16 rules, 0 violations                                   |
 | lint self-tests    | green, including 2 new workflow-hazard checks            |
 | evidence gate      | 7 matrices, 85 alpha.9 rows, every claim resolves        |

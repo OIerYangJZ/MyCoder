@@ -529,7 +529,7 @@ found in the same pass:
   directory-wide and a smoke run looks like an experiment. They back no write-up.
   Removed, and the rule is written next to the negation.
 
-### Open after 9.1: the normative spec is a pointer into `research/`
+### Resolved in 9.1: the package is isolated from `research/`
 
 Found in the same pass and **not fixed here**, because it is a decision rather
 than a correction.
@@ -551,12 +551,33 @@ get deleted when development finishes — this leaves an installed user holding 
 2 330-line specification's _address_ and not its text, and it leaves the project
 without a normative spec at all once the directory goes.
 
-The anti-duplication argument does not object to the obvious fix. **Moving** the
-spec into `docs/kernel-v0.1-spec.md` produces one copy, not two, and the
-references already point at the right place: AGENTS.md rule 1 names the in-repo
-path, `package.json` already ships it, and no code refers to the `research/` path
-at all. `README.md`'s dangling reference was fixed in 9.1; this one was left,
-because relocating what a project calls normative is not a patch-tag change.
+Two ways out. **Move** the spec into the repository — one copy, not two, and
+every reference already names the in-repo path. Or **isolate the package**, and
+accept that an installed consumer has no specification.
+
+The maintainer chose isolation, on the grounds that the spec is development
+material and the package is a product. So:
+
+```text
+docs/kernel-v0.1-spec.md   dropped from `files`; repo-only, and it says so
+README.md                  no longer names it; it describes the product
+packaged content           may not reference any file under research/
+```
+
+The last line is the one that matters, because it is the general form of the
+bug rather than the instance. §5 of ADR-0019 keeps `research/` _out_ of the
+package; nothing kept the package from _depending_ on it, and the offending file
+was legitimately packaged and pointed outward from inside. `checkPackedContents`
+now scans the text of every packed `.md`/`.json`/`.ts`/`.mjs`/`.c` file and
+fails on a reference to a named file under that tree, while permitting the glob —
+because naming the tree to exclude it is the opposite of depending on it.
+
+It bit immediately, on ADR-0019's own §8, which had spelled the planted example
+out as a literal path. Same false positive as the workflow-hazard checks in
+alpha.8 and alpha.9: a document describing a hazard contains it. The prose
+changed and the rule did not, which is the correct direction — a checker taught
+to ignore the file that explains it has a hole shaped like its own
+documentation.
 
 ### The lesson worth keeping
 
