@@ -343,6 +343,62 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     warnings: config.warnings,
   });
 
+  // alpha.8 §10: the credential for the model this session will *use* must work,
+  // or the session does not start.
+  //
+  // Until alpha.8 every credential problem was a warning and the session started
+  // anyway, on the reasoning that "the user might have wanted to fix the file"
+  // from inside it. That reasoning has expired: `mycoder doctor` and
+  // `--print-config` now answer without building a kernel, so the case it was
+  // protecting is served without the failure mode it produced — a session that
+  // prints a status screen, accepts a task, and fails on the first turn with
+  // `MODEL_AUTH_ERROR`. That is §10's "an empty prompt that fails on the first
+  // turn", listed there as a thing that must never happen.
+  //
+  // Scoped to the *selected* provider on purpose. A config with three providers,
+  // one of which has a bad key file, should still let you work with the other
+  // two; blocking on any broken credential anywhere would punish people for
+  // keeping configuration around.
+  const activeAlias = config.model.default ?? 'fake';
+  const activeProvider = config.model.aliases?.[activeAlias]?.provider;
+  if (activeProvider) {
+    const credential = credentials.byProvider.get(activeProvider);
+    if (!credential?.source) {
+      // The specific reason is already in `config.warnings`, put there by
+      // `resolveProviderCredentials` with the remedy attached — the mode, the
+      // `chmod` line, or the variable that is not set. Repeating it here would
+      // mean two places to keep true, so it is quoted rather than rewritten.
+      // Trim the "requests will fail" tail: it is accurate in the warning, which
+      // also covers providers this session is not using, and misleading here,
+      // where there will be no requests because there will be no session.
+      const detail = config.warnings
+        .find((w) => w.includes(`provider "${activeProvider}"`))
+        ?.replace(
+          /\s*(Requests to it will fail with MODEL_AUTH_ERROR\.?|requests to it will fail with MODEL_AUTH_ERROR)\s*$/,
+          '',
+        );
+      throw new KernelErrorException(
+        kernelError(
+          'PROVIDER_NOT_CONFIGURED',
+          `The model "${activeAlias}" uses provider "${activeProvider}", which has no usable credential.`,
+          {
+            blame: 'user',
+            retryable: false,
+            safeDetails: {
+              problem: 'credential-unusable',
+              provider: activeProvider,
+              remedy:
+                (detail ? `${detail}\n\n` : '') +
+                'Run `mycoder doctor` for the full picture. Nothing was changed: the kernel never\n' +
+                'repairs a credential file, because a tool that silently fixes a permission problem\n' +
+                'trains people not to look at it.',
+            },
+          },
+        ),
+      );
+    }
+  }
+
   const protectedPaths = new ProtectedPaths({
     home: dirs.home,
     configDir: dirs.config,

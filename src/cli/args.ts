@@ -297,6 +297,8 @@ export const CONTRACT_FLAGS: readonly string[] = [
   '--non-interactive',
   '--print-config',
   '--log-level',
+  // The *flag* is contract; one of its values is not. See CONTRACT_BACKENDS.
+  '--backend',
   '-h',
   '--help',
   '-v',

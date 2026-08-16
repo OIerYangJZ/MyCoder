@@ -157,7 +157,7 @@ export const CEILING_PINNED = [
   '[security] secret_redaction — forced true by applySystemCeiling',
   '[security] telemetry_content / [telemetry] content — forced false; content telemetry is never permitted',
   '[security] trace_upload / [telemetry] trace_upload — forced false',
-  '[loop] max_* — merged by Math.min then clamped by SYSTEM_CEILING; a layer may only lower them',
+  '[loop] max_steps / max_tool_calls / max_model_requests / max_wall_time_ms / max_repeated_failures / max_cost_usd — merged by Math.min then clamped by SYSTEM_CEILING; a layer may only lower them',
   '[loop] max_delegation_depth — clamped to 1, the only depth alpha.4 validated',
   '[security] extra_secret_paths — union; a layer may add a deny pattern, never remove one',
   '[container] pids_limit / memory_bytes / cpus — Math.min; a layer may only tighten',
