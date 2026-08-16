@@ -10,15 +10,15 @@ The milestone's question was:
 > Can anyone but its author install this, configure it without weakening it, and
 > prove the artifact matches its evidence?
 
-The answer at kickoff was no, in a way nobody had measured — and the two most
-valuable things this milestone produced are both defects that only appeared once
-somebody actually tried.
+The answer at kickoff was no, in a way nobody had measured — and the most
+valuable things it produced are the defects that only appeared once
+somebody actually tried to install, configure and release it.
 
 ## Gates
 
 | Gate                 | Result                                        |
 | -------------------- | --------------------------------------------- |
-| offline suite, macOS | 1038 tests · 945 pass · 0 fail · 93 skip      |
+| offline suite, macOS | 1040 tests · 947 pass · 0 fail · 93 skip      |
 | architecture lint    | 16 rules, no violations                       |
 | lint self-tests      | 133 · 133 pass                                |
 | evidence gate        | green — 6 matrices, every claim resolves      |
@@ -152,6 +152,48 @@ target, so on macOS (where `/tmp` is a symlink) the check missed and the
 post-write check removed it afterwards. A key that existed in a repository for a
 millisecond has still existed in a repository.
 
+## The five that arrived after the tag
+
+All five came from _doing_ something rather than testing it, which is the pattern
+the whole milestone kept producing.
+
+**Defect 11 — `setup-credential` recommended the path it had just refused.** Found
+placing the real credential on the evidence host. Run from a shell whose cwd was
+the home directory, the workspace root _was_ home, so the config directory was
+inside it, so the refusal's "put it here instead" suggestion pointed inside the
+workspace too. The refusal was right and the advice was nonsense. It now detects
+that case and names the real problem — a session rooted somewhere far too broad.
+
+**Defect 12 — `mycoder -m fake` with no config was refused.** A regression from
+the §10 readiness check, on the offline path this repository documents in its own
+README. `-m <alias>` is an explicit choice of model; the check exists to catch a
+_default_ nobody chose. Caught by running `pnpm eval` — a CI job, so CI would have
+found it, but only after the tag.
+
+The last three all came from one thing: running `release.yml` for the first time.
+
+**Defect 13 — the release gate could not build what it checks.** Its offline job
+ran `pnpm package:check`, which asserts `dist/` exists, without running
+`pnpm build` first. The CI `packaging` job had been given that step and this one
+had not, so the gate blocked its own release on a build output it never produced.
+
+**Defect 14 — `pnpm pack` is a pnpm builtin.** With 13 fixed, all four tiers went
+green and the artifact job failed on `Unknown option: 'release'`. A `scripts.pack`
+entry does not shadow the builtin; it is the other way round, so pnpm parsed the
+flag and rejected it before `scripts/pack.ts` saw it. Every local run had been
+`node scripts/pack.ts --release`, so the collision could not appear until
+something invoked it the documented way. Renamed to `pnpm release:pack`.
+
+**Defect 15 — the job dirtied the tree with its own log, then refused the release
+for being dirty.** The step was `pnpm release:pack --release | tee pack.txt`, and
+a shell creates a redirection target when it _builds_ the pipeline, before the
+command on the left runs. So `pack.txt` sat untracked in the repository root by
+the time `collectBuildInfo` read `git status --porcelain`. The log now goes to
+`$RUNNER_TEMP`.
+
+Three defects, in the machinery whose entire job is to be trustworthy, all of
+which read correctly on review.
+
 ## Defect distribution, for the alpha.9 decision (§30)
 
 ```text
@@ -160,6 +202,9 @@ distribution / packaging   4   (2 of them fatal; 3 found only by a real install
 first-run / config UX      4   (2 of them found only by doing the real thing:
                                placing a credential, and running the eval gate)
 security-mechanism         2   (launcher identity, credential write ordering)
+release engineering        3   (the gate could not build what it checks; the pack
+                               script collided with a pnpm builtin; the pack step
+                               dirtied the tree with its own log)
 provider adapter           1
 test-methodology           2   (a suite passing for the wrong reason; a security
                                task that stopped exercising the boundary)
@@ -176,10 +221,31 @@ three independent ways the first time it ran.
 ```
 
 §30 says: "If alpha.8 finds mostly install/config defects, that is evidence the
-product surface needs another pass before new capability." Five of nine are
-install or config, and two of those were fatal to the artifact. That points at
-another productization pass rather than at MCP — with the caveat that alpha.8 had
-no product surface to begin with, so a high count here was close to guaranteed.
+product surface needs another pass before new capability." Eleven of fifteen are
+distribution, first-run, config or release engineering, and three of those were
+fatal — two to the artifact and one to the gate that would have shipped it. Read
+literally, that points at another productization pass rather than at MCP.
+
+Two caveats, in opposite directions.
+
+**Against that reading:** alpha.8 had no product surface to begin with. Every one
+of these is a first-attempt defect in something that did not exist a week ago, and
+"the first version of a distribution had bugs" is not the same finding as "the
+product surface is systematically weak". §30's heuristic assumes a surface that
+existed and produced defects.
+
+**For it:** everything alpha.8 built has been used exactly once, by its author, on
+one machine. `doctor` has one real user; the exit codes have one consumer, which
+is my own test suite. That is the same "only one consumer" argument used to keep
+the enforcement-descriptor vocabulary experimental, and it applies here with more
+force — the release machinery was reviewed, read correctly, and was wrong in three
+independent ways the first time it executed.
+
+The reading those two together support is neither: not a full productization
+milestone, and not MCP immediately. A short consolidation — finish the release
+gate, give the new surfaces a second user, close the remaining non-claims — and
+then MCP, which is the last tool-surface gap and is measurable on day one because
+the friction metric already exists.
 
 ## Explicit non-claims
 
@@ -206,13 +272,58 @@ provider credential was placed on that host, because alpha.7 §57 and alpha.8 §
 both say that is the user's decision and not the agent's. It was not asked for and
 not taken.
 
-### 3. The release workflow has never run
+### 3. The release gate is proved in four tiers of five
 
-`.github/workflows/release.yml` encodes §18 and §27's Release Stop, and is
-asserted by reading rather than by a green run — there is no configured remote CI
-for this branch. The install path it automates was exercised by hand on the
-evidence host, which is the part that matters most; the _gating_ logic is not yet
-evidence.
+It has now run for real. Pushing `v0.1.0-alpha.8` triggered it and it **blocked
+the release**, which is the behaviour it exists for. Four more runs followed,
+fixing defects 13, 14 and 15 in turn.
+
+The best of them, run `31931750015`, against the commit with 13 and 14 fixed:
+
+```text
+Offline Gates @ exact commit (ubuntu-latest)   success
+Offline Gates @ exact commit (macos-latest)    success
+Container Tier @ exact commit (REQUIRED)       success
+Native Tier   @ exact commit (REQUIRED)        success
+Build and verify the artifact                  failure   ← defect 15
+Release Gate                                   failure   (correctly)
+```
+
+**Four of five tiers are green on runners nobody in this project controls**,
+including both `_REQUIRED` enforcement tiers. GitHub's ubuntu image carries
+Landlock, so the native tier genuinely ran rather than skipping — the first time
+either `_REQUIRED` tier has been proved off this project's own hardware, and the
+substantive half of what §18 asks for.
+
+**The fifth is not, and the run that would have proved it never started:**
+
+```text
+The job was not started because recent account payments have failed or your
+spending limit needs to be increased.
+```
+
+Under §23 that is an **`ENVIRONMENT_ERROR`** — the account's, not the code's, and
+the same category as the OpenAI `insufficient_quota` that redirected §20. It is
+recorded rather than worked around, and the part that is this milestone's own
+fault is recorded too: five dispatches, each carrying a macOS job, which GitHub
+bills at ten times the Linux rate.
+
+|                                                           |                                                                    |
+| --------------------------------------------------------- | ------------------------------------------------------------------ |
+| the gate blocks a release when a tier fails               | **proved**, twice, for two different causes                        |
+| offline gates on both tier-1 platforms at an exact commit | **proved**                                                         |
+| container tier with `KERNEL_CONTAINER_REQUIRED=1`         | **proved**                                                         |
+| native tier with `KERNEL_NATIVE_REQUIRED=1`               | **proved**                                                         |
+| pack → install → drive the artifact, in CI                | **not proved** — three defects found and fixed, the fix unverified |
+| an end-to-end green Release Gate                          | **not proved**                                                     |
+
+What is missing is CI doing the install unattended, not evidence that the install
+works: that path was driven by hand on the evidence host twice, once from the
+exact tagged artifact.
+
+The tag is **not moved**. `v0.1.0-alpha.8` points at `c2566f4`, which contains the
+first broken workflow, so its own gate run stays red — and that is the honest
+record rather than an embarrassment to tidy away.
 
 ## Cross-model validation (§20–§23)
 
