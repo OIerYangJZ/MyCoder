@@ -26,6 +26,7 @@ import { resolveKernelDirs } from '../../src/util/platform.ts';
 import { fetchTransport, type EgressResponse, type EgressTransport } from '../../src/security/egress-gate.ts';
 import type { ModelMessage } from '../../src/model/ir.ts';
 import { GOLDEN_TASKS, type EvalFamily, type GoldenTask, type GoldenTaskContext } from '../tasks/golden.ts';
+import { startWebFixture } from '../tasks/web-fixture.ts';
 
 const CANARY = 'CANARY_SECRET_7f3e9c2a';
 
@@ -170,6 +171,10 @@ export interface EvalResult {
   capabilityDenials?: number;
   delegationFailureStatuses?: string[];
 
+  /** §B: per-tool friction for this attempt. */
+  toolFriction?: Record<string, ToolFriction>;
+  wastedCallRatio?: number;
+
   /** §31: what would be needed to reproduce or to compare across models. */
   fixtureVersion: number;
   promptHash: string;
@@ -216,6 +221,8 @@ export interface TaskMetrics {
   parentDirectCostUsd: number;
   capabilityDenials: number;
   delegationFailureStatuses: string[];
+  /** §B: per-tool calls, rejections and repeats, read from the event log. */
+  toolFriction: Record<string, ToolFriction>;
 }
 
 /**
@@ -262,6 +269,27 @@ class Capture implements EgressTransport {
 }
 
 /**
+ * Remove fetched web content before anything reads tool results as evidence.
+ *
+ * A real defect found by the §B web task, not a hypothetical one: the fixture
+ * page documents a `TypeError`, the classifier looks for `TypeError` as a sign of
+ * a kernel fault, and a perfectly healthy run was reported as `KERNEL_BUG`. Once
+ * a tool can pull third-party text into the transcript, any heuristic over the
+ * transcript is reading attacker-chosen input — a page containing
+ * "INTERNAL_ERROR" could make a release run claim a runtime regression.
+ *
+ * The boundary `WebFetch` prints for the *model's* benefit turns out to be the
+ * thing that makes this fixable, which is an argument for machine-recognisable
+ * markers rather than prose.
+ */
+export function stripUntrustedContent(text: string): string {
+  return text.replace(
+    /--- begin untrusted web content ---[\s\S]*?--- end untrusted web content ---/g,
+    '[fetched content omitted]',
+  );
+}
+
+/**
  * Classify a failure from the evidence available offline.
  *
  * Deliberately conservative: anything it cannot attribute is `UNKNOWN` rather
@@ -281,7 +309,7 @@ export function classifyFailure(
   },
 ): FailureClass | undefined {
   if (failures.length === 0) return undefined;
-  const all = `${failures.join(' ')} ${toolResults}`;
+  const all = `${failures.join(' ')} ${stripUntrustedContent(toolResults)}`;
 
   // --- delegation and skill classes first (§35) --------------------------
   //
@@ -379,6 +407,131 @@ export function classifyFailure(
  * beside them for exactly that reason: the range is where the outlier shows up,
  * instead of being smeared across the central number.
  */
+/**
+ * What one tool cost the model, beyond being called (§B).
+ *
+ * The distinction the tool surface has never been able to make: `toolCalls: 14`
+ * says nothing about whether those were fourteen useful calls or seven useful
+ * ones and seven rejections. `errors` and `codes` say which, and `repeats` says
+ * whether the model understood the rejection — an identical call issued twice is
+ * a message the model could not act on.
+ */
+export interface ToolFriction {
+  calls: number;
+  errors: number;
+  /** Calls with an identical tool + argument hash issued more than once. */
+  repeats: number;
+  /** Error code histogram, e.g. `{ STALE_FILE: 2, TOOL_INVALID_ARGS: 1 }`. */
+  codes: Record<string, number>;
+}
+
+/**
+ * Per-tool friction, read from the event log.
+ *
+ * Derived rather than counted during the run on purpose: the log is what a
+ * dogfood, a release run and a replay all have in common, so a metric computed
+ * from it can be recomputed later for a session nobody instrumented in advance.
+ */
+export function toolFrictionFromLog(log: string): Record<string, ToolFriction> {
+  const byTool: Record<string, ToolFriction> = {};
+  const seenCalls = new Map<string, number>();
+  const nameByCallId = new Map<string, string>();
+
+  const get = (name: string): ToolFriction => {
+    byTool[name] ??= { calls: 0, errors: 0, repeats: 0, codes: {} };
+    return byTool[name]!;
+  };
+
+  for (const line of log.split('\n')) {
+    if (line.trim() === '') continue;
+    let event: { type?: string; payload?: Record<string, unknown> };
+    try {
+      event = JSON.parse(line) as typeof event;
+    } catch {
+      continue;
+    }
+    const payload = event.payload ?? {};
+
+    if (event.type === 'tool.call' && typeof payload.name === 'string') {
+      const entry = get(payload.name);
+      entry.calls += 1;
+      if (typeof payload.toolCallId === 'string') nameByCallId.set(payload.toolCallId, payload.name);
+
+      // Identity is the tool plus its arguments, which is exactly what the
+      // doom-loop guard fingerprints — a repeat here is the same behaviour, seen
+      // before it becomes terminal.
+      if (typeof payload.argsHash === 'string') {
+        const key = `${payload.name}:${payload.argsHash}`;
+        const count = (seenCalls.get(key) ?? 0) + 1;
+        seenCalls.set(key, count);
+        if (count > 1) entry.repeats += 1;
+      }
+      continue;
+    }
+
+    if (event.type === 'tool.error') {
+      const name =
+        typeof payload.name === 'string'
+          ? payload.name
+          : (nameByCallId.get(String(payload.toolCallId)) ?? 'unknown');
+      const entry = get(name);
+      entry.errors += 1;
+      const code = typeof payload.errorCode === 'string' ? payload.errorCode : 'UNKNOWN';
+      entry.codes[code] = (entry.codes[code] ?? 0) + 1;
+    }
+  }
+
+  return byTool;
+}
+
+/** Merge per-attempt friction into one table. */
+export function mergeFriction(
+  tables: ReadonlyArray<Record<string, ToolFriction>>,
+): Record<string, ToolFriction> {
+  const out: Record<string, ToolFriction> = {};
+  for (const table of tables) {
+    for (const [name, friction] of Object.entries(table)) {
+      const entry = (out[name] ??= { calls: 0, errors: 0, repeats: 0, codes: {} });
+      entry.calls += friction.calls;
+      entry.errors += friction.errors;
+      entry.repeats += friction.repeats;
+      for (const [code, n] of Object.entries(friction.codes)) {
+        entry.codes[code] = (entry.codes[code] ?? 0) + n;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The one-number version: what fraction of tool calls were rejected.
+ *
+ * Reported alongside the solve rate rather than instead of it. A harness can buy
+ * a lower ratio by making tools permissive, which is why this number is only
+ * meaningful next to "was the task solved" and "did anything unreviewed change".
+ */
+export function wastedCallRatio(table: Record<string, ToolFriction>): number {
+  const calls = Object.values(table).reduce((n, f) => n + f.calls, 0);
+  const errors = Object.values(table).reduce((n, f) => n + f.errors, 0);
+  return calls === 0 ? 0 : errors / calls;
+}
+
+/** `Edit 12 calls · 3 err (STALE_FILE 2, TOOL_INVALID_ARGS 1) · 1 repeat` */
+export function renderFriction(table: Record<string, ToolFriction>): string[] {
+  return Object.entries(table)
+    .sort((a, b) => b[1].errors - a[1].errors || b[1].calls - a[1].calls)
+    .map(([name, f]) => {
+      const codes = Object.entries(f.codes)
+        .sort((a, b) => b[1] - a[1])
+        .map(([code, n]) => `${code} ${n}`)
+        .join(', ');
+      return (
+        `${name.padEnd(12)}${String(f.calls).padStart(4)} calls  ${String(f.errors).padStart(3)} err  ` +
+        `${String(f.repeats).padStart(2)} repeat  ${codes}`
+      );
+    });
+}
+
 export function median(values: readonly number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -548,12 +701,17 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
   const transport = LIVE ? new RecordingPassthrough() : new Capture();
   const prompter = new ScriptedPrompter(task.approvals ?? []);
 
+  // A loopback fixture, for tasks that read a URL. The port is only known once
+  // it is listening, so the prompt carries a placeholder rather than a URL.
+  const web = task.webFixture ? await startWebFixture() : undefined;
+  const substitute = (text: string): string => (web ? text.replaceAll('{{webBase}}', web.base) : text);
+
   // Live mode reads the *real* config directory, because that is the only place
   // a provider endpoint may be declared (a project config that could define one
   // would be a redirection vector). Data and cache stay in the temp tree so a
   // run never touches the developer's session store.
   const real = resolveKernelDirs();
-  const dirs = LIVE
+  let dirs = LIVE
     ? {
         config: real.config,
         data: path.join(base, 'data'),
@@ -561,6 +719,37 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
         home: real.home,
       }
     : undefined;
+
+  // A task that needs a *user* config setting gets its own config directory,
+  // built from the one the run would have used. Live keeps the real file's
+  // contents — the provider endpoint lives there and nowhere else — and appends;
+  // scripted starts from nothing.
+  if (task.configExtra) {
+    const configDir = path.join(base, 'config');
+    await mkdir(configDir, { recursive: true });
+    // Live inherits the real config's text, with one rewrite: `api_key_file` is
+    // resolved **relative to the config directory**, and this config directory is
+    // not that one. Absolutising the path keeps the credential where it is, at
+    // the permissions it has — copying the key into a temp tree to make a
+    // relative path work would be trading an eval convenience for a second copy
+    // of a secret, which is precisely the thing this kernel exists to refuse.
+    const inherited = LIVE
+      ? (await readFile(path.join(real.config, 'config.toml'), 'utf8').catch(() => '')).replace(
+          /^(\s*api_key_file\s*=\s*)"([^"]+)"/gm,
+          (line, prefix: string, value: string) =>
+            path.isAbsolute(value) || value.startsWith('~')
+              ? line
+              : `${prefix}"${path.join(real.config, value)}"`,
+        )
+      : '';
+    await writeFile(path.join(configDir, 'config.toml'), `${inherited}\n${task.configExtra}\n`, 'utf8');
+    dirs = {
+      config: configDir,
+      data: path.join(base, 'data'),
+      cache: path.join(base, 'cache'),
+      home: LIVE ? real.home : path.join(base, 'home'),
+    };
+  }
 
   const kernel = await createKernel({
     workspaceDir: root,
@@ -584,7 +773,13 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     const model = new FakeModel({
       // A delegation task needs the *request* to decide, because parent and child
       // share one runtime and a flat index cannot tell them apart.
-      responder: (request, index) => task.responder?.(request, index, receipt) ?? task.script(receipt)[index],
+      responder: (request, index) => {
+        const step = task.responder?.(request, index, receipt) ?? task.script(receipt)[index];
+        // `{{webBase}}` appears in scripted tool arguments as well as in prompts:
+        // the fixture's port is not known when the task is written.
+        if (!step || !web) return step;
+        return JSON.parse(substitute(JSON.stringify(step))) as typeof step;
+      },
     });
     (kernel.modelRuntime as unknown as { routes: Map<string, unknown> }).routes.set('fake', model);
   } else {
@@ -627,7 +822,7 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     // catalogue the first step is frozen against.
     await task.prepare?.(kernel);
 
-    await kernel.session.runTurn(LIVE ? (task.livePrompt ?? task.prompt) : task.prompt);
+    await kernel.session.runTurn(substitute(LIVE ? (task.livePrompt ?? task.prompt) : task.prompt));
 
     for (const check of task.checks) {
       try {
@@ -640,6 +835,18 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
 
     const log = await eventLog();
     const results = toolResults().join('\n');
+
+    // §B: the friction table says *which* tool was rejected and with what code;
+    // this prints the message the model actually read. Opt-in, because it is a
+    // diagnostic for "why is this tool costing steps" rather than something a
+    // release run should page through.
+    if (process.env.EVAL_DUMP_ERRORS) {
+      for (const text of toolResults()) {
+        if (!text.startsWith('error:')) continue;
+        process.stdout.write(`      ┌ ${task.id}/${runId}\n`);
+        for (const line of text.split('\n').slice(0, 6)) process.stdout.write(`      │ ${line}\n`);
+      }
+    }
 
     // Boundary metrics are computed independently of the task's own checks, so
     // a task cannot pass by forgetting to look.
@@ -658,6 +865,7 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
     const resolved = kernel.modelRegistry.resolve(kernel.session.activeModelAlias);
     const report = kernel.session.usageReportSnapshot;
 
+    // The *template*, before `{{webBase}}` becomes a port that changes every run.
     const effectivePrompt = LIVE ? (task.livePrompt ?? task.prompt) : task.prompt;
     const failureClass = classifyFailure(failures, results, {
       ...(kernel.session.turn?.state ? { turnState: kernel.session.turn.state } : {}),
@@ -711,6 +919,7 @@ async function runTask(task: GoldenTask, runId = 'r1'): Promise<TaskMetrics> {
       parentDirectCostUsd: cost.directUsd,
       capabilityDenials,
       delegationFailureStatuses: records.filter((r) => r.status !== 'completed').map((r) => r.status),
+      toolFriction: toolFrictionFromLog(log),
     };
   } finally {
     await kernel.shutdown();
@@ -808,6 +1017,15 @@ async function main(argv: readonly string[]): Promise<number> {
     perTask: summarisePerTask(results),
     /** alpha.4 §33 scoreboards and §36 metrics. */
     delegation: summariseDelegation(results),
+    /**
+     * §B: what the tools cost the model across the whole run.
+     *
+     * Reported next to the solve rate, never folded into it. A run can have a
+     * perfect solve rate and a friction table full of `STALE_FILE`, and that is
+     * a usable finding about the tools rather than a failure of the run.
+     */
+    toolFriction: mergeFriction(results.map((r) => r.toolFriction)),
+    wastedCallRatio: wastedCallRatio(mergeFriction(results.map((r) => r.toolFriction))),
     failureClasses: countFailureClasses(results),
     results: results.map((r): EvalResult => ({
       taskId: r.id,
@@ -838,6 +1056,8 @@ async function main(argv: readonly string[]): Promise<number> {
       ...(r.costProvenance ? { costProvenance: r.costProvenance } : {}),
       wallTimeMs: r.durationMs,
       securityViolations: r.secretBoundaryViolations,
+      toolFriction: r.toolFriction,
+      wastedCallRatio: wastedCallRatio(r.toolFriction),
       ...(r.delegations > 0
         ? {
             delegations: r.delegations,
@@ -962,6 +1182,23 @@ async function main(argv: readonly string[]): Promise<number> {
               .join(', ')}\n`
           : ''),
     );
+
+    // §B: the tool surface's own scoreboard. Deliberately printed *after* the
+    // totals and never folded into them — a rejected call is not a failed task,
+    // and a solve rate that hid ten of them would be the tool-side version of
+    // the single number §24 exists to prevent.
+    const friction = artifact.toolFriction;
+    if (Object.keys(friction).length > 0) {
+      process.stdout.write(
+        `\n── Tool friction ${'─'.repeat(43)}\n` +
+          `${renderFriction(friction).join('\n')}\n` +
+          `\nRejected calls                  ${(artifact.wastedCallRatio * 100).toFixed(1)}% of all tool calls\n` +
+          (LIVE
+            ? ''
+            : 'NOTE: scripted mode. The trajectories are written to succeed, so a low ratio here\n' +
+              '      measures the script, not the tools. Only a live run makes this number mean anything.\n'),
+      );
+    }
   }
 
   // What fails the run.

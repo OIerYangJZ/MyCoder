@@ -40,6 +40,16 @@ export interface EgressRequest {
   signal?: AbortSignal;
   /** Ask the transport for a streaming body instead of a buffered one. */
   stream?: boolean;
+  /**
+   * What to do with a 3xx response. Defaults to `follow`.
+   *
+   * `manual` exists for the web tool (ADR-0017): a redirect is a destination
+   * chosen by the *remote host*, and following one silently would let an
+   * allowlisted server point the kernel at a host the allowlist never saw. Every
+   * other caller talks to an endpoint it constructed itself and keeps the
+   * default.
+   */
+  redirect?: 'follow' | 'manual';
 }
 
 export interface EgressContext {
@@ -185,6 +195,7 @@ export interface EgressTransport {
     body?: string;
     signal?: AbortSignal;
     stream?: boolean;
+    redirect?: 'follow' | 'manual';
   }): Promise<EgressResponse>;
 }
 
@@ -194,6 +205,7 @@ export const fetchTransport: EgressTransport = {
     const init: RequestInit = { method: req.method, headers: req.headers };
     if (req.body !== undefined) init.body = req.body;
     if (req.signal) init.signal = req.signal;
+    if (req.redirect) init.redirect = req.redirect;
 
     const res = await fetch(req.url, init);
     const headers: Record<string, string> = {};
@@ -414,6 +426,7 @@ export class DefaultEgressGate implements EgressGate {
       if (body !== undefined) sendReq.body = body;
       if (request.signal) sendReq.signal = request.signal;
       if (request.stream) sendReq.stream = true;
+      if (request.redirect) sendReq.redirect = request.redirect;
 
       const response = await this.transport.send(sendReq);
       audit.status = response.status;

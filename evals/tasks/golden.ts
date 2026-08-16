@@ -124,6 +124,24 @@ export interface GoldenTask {
    * `evals/experiments/`, where the question being asked is about the harness.
    */
   prepare?(kernel: Kernel): void | Promise<void>;
+  /**
+   * Extra user config, appended to the config the run would otherwise use.
+   *
+   * For capabilities that **only** a user config can turn on. Web egress is the
+   * case that forced this: a project config can only intersect the user's host
+   * list (never widen it), which is the right rule and means a task cannot
+   * enable `WebFetch` from inside the workspace. In live mode the real
+   * `config.toml` is copied first, so the provider endpoint still resolves.
+   */
+  configExtra?: string;
+  /**
+   * Start the loopback HTTP fixture and substitute `{{webBase}}` in the prompts.
+   *
+   * The substitution is why `promptHash` is computed from the *template*: the
+   * port changes every run, and a hash that changed with it would make two
+   * identical tasks look like two different fixtures (§31).
+   */
+  webFixture?: boolean;
   checks: GoldenTaskCheck[];
 }
 
@@ -723,6 +741,226 @@ export const GOLDEN_TASKS: GoldenTask[] = [
           '  if (value > max) return max;\n' +
           '  return value;\n' +
           '}\n',
+      ),
+      noToolCallLeftOpen,
+    ],
+  },
+  // --- the alpha.7 tool surface (ADR-0016, ADR-0017) -------------------------
+  //
+  // Four tasks whose *natural* solution uses a tool that did not exist before.
+  // Every check is an outcome — file contents, what is gone, what the code says —
+  // and none of them asserts which tool was used. A check that said "it called
+  // Move" would answer the utility question by assuming it, which is exactly what
+  // the delegation experiment was careful not to do.
+
+  {
+    id: 'regenerate-generated-file',
+    family: 'model-capability',
+    fixtureVersion: 1,
+    description: 'Rewrite a generated file wholesale from its source of truth.',
+    files: {
+      'src/routes.ts': "export const routes = ['/', '/about', '/pricing', '/contact'];\n",
+      'generated/routes.json': '["/", "/about"]\n',
+    },
+    prompt: 'generated/routes.json is out of date. Regenerate it from src/routes.ts.',
+    livePrompt:
+      'generated/routes.json is stale: it must list exactly the routes in src/routes.ts, as a JSON ' +
+      'array of strings, one entry per route, in the same order, with a trailing newline. Bring it up ' +
+      'to date.',
+    script: (receipt) => [
+      read('src/routes.ts'),
+      read('generated/routes.json'),
+      {
+        kind: 'tools',
+        calls: [
+          {
+            name: 'Write',
+            arguments: {
+              path: 'generated/routes.json',
+              content: '["/", "/about", "/pricing", "/contact"]\n',
+              receiptId: receipt('routes.json'),
+            },
+          },
+        ],
+      },
+      done('Regenerated the route manifest.'),
+    ],
+    checks: [
+      turnState('completed'),
+      check('generated/routes.json lists every route', async (ctx) => {
+        const text = await ctx.read('generated/routes.json');
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          return `not valid JSON: ${JSON.stringify(text.slice(0, 80))}`;
+        }
+        const expected = ['/', '/about', '/pricing', '/contact'];
+        return Array.isArray(parsed) && expected.every((r, i) => parsed[i] === r) && parsed.length === 4
+          ? undefined
+          : `expected ${JSON.stringify(expected)}, got ${JSON.stringify(parsed)}`;
+      }),
+      noToolCallLeftOpen,
+    ],
+  },
+
+  {
+    id: 'remove-dead-module',
+    family: 'model-capability',
+    fixtureVersion: 1,
+    description: 'Delete an unused module and the import that names it.',
+    files: {
+      'src/legacy.ts': 'export const legacyFlag = true;\n',
+      'src/app.ts':
+        "import { legacyFlag } from './legacy.ts';\n\nexport const start = () => (legacyFlag ? 'old' : 'new');\n",
+      'src/new.ts': 'export const start = () => "new";\n',
+    },
+    // Deleting asks (ADR-0016), so the run has to answer. Session scope, because
+    // a model that re-reads and retries should not be blocked by a spent answer.
+    approvals: [{ decision: 'allow', scope: 'session' }],
+    prompt: 'src/legacy.ts is dead code. Remove it and stop app.ts depending on it.',
+    livePrompt:
+      'src/legacy.ts is dead code: nothing should use legacyFlag any more. Delete the file, and change ' +
+      "src/app.ts so start() simply returns 'new' without importing anything from legacy.ts. When you " +
+      'are done no file should mention legacy.',
+    script: (receipt) => [
+      { kind: 'tools', calls: [{ name: 'Grep', arguments: { pattern: 'legacy' } }] },
+      read('src/app.ts'),
+      {
+        kind: 'tools',
+        calls: [
+          {
+            name: 'Write',
+            arguments: {
+              path: 'src/app.ts',
+              content: "export const start = () => 'new';\n",
+              receiptId: receipt('app.ts'),
+            },
+          },
+        ],
+      },
+      read('src/legacy.ts'),
+      {
+        kind: 'tools',
+        calls: [{ name: 'Delete', arguments: { path: 'src/legacy.ts', receiptId: receipt('legacy.ts') } }],
+      },
+      done('Removed the dead module.'),
+    ],
+    checks: [
+      turnState('completed'),
+      check('src/legacy.ts is gone', async (ctx) => {
+        try {
+          await ctx.read('src/legacy.ts');
+          return 'the file is still there';
+        } catch {
+          return undefined;
+        }
+      }),
+      check('nothing imports legacy any more', async (ctx) => {
+        const app = await ctx.read('src/app.ts');
+        return app.includes('legacy')
+          ? `src/app.ts still mentions legacy: ${JSON.stringify(app)}`
+          : undefined;
+      }),
+      noToolCallLeftOpen,
+    ],
+  },
+
+  {
+    id: 'rename-module-file',
+    family: 'model-capability',
+    fixtureVersion: 1,
+    description: 'Rename a file on disk and fix the import that points at it.',
+    files: {
+      'src/helpers/str-utils.ts': 'export const shout = (s: string) => `${s.toUpperCase()}!`;\n',
+      'src/index.ts':
+        "import { shout } from './helpers/str-utils.ts';\n\nexport const greet = () => shout('hi');\n",
+    },
+    approvals: [{ decision: 'allow', scope: 'session' }],
+    prompt: 'Rename src/helpers/str-utils.ts to src/helpers/text.ts and fix the import.',
+    livePrompt:
+      'src/helpers/str-utils.ts should be called src/helpers/text.ts. Rename the file — its contents do ' +
+      'not change — and update every import that refers to it. Nothing should still point at str-utils ' +
+      'when you are done.',
+    script: (receipt) => [
+      {
+        kind: 'tools',
+        calls: [{ name: 'Move', arguments: { from: 'src/helpers/str-utils.ts', to: 'src/helpers/text.ts' } }],
+      },
+      read('src/index.ts'),
+      edit('src/index.ts', './helpers/str-utils.ts', './helpers/text.ts', receipt('index.ts')),
+      done('Renamed and updated the import.'),
+    ],
+    checks: [
+      turnState('completed'),
+      fileEquals('src/helpers/text.ts', 'export const shout = (s: string) => `${s.toUpperCase()}!`;\n'),
+      check('the old path is gone', async (ctx) => {
+        try {
+          await ctx.read('src/helpers/str-utils.ts');
+          return 'src/helpers/str-utils.ts still exists';
+        } catch {
+          return undefined;
+        }
+      }),
+      check('the import points at the new path', async (ctx) => {
+        const index = await ctx.read('src/index.ts');
+        if (index.includes('str-utils')) return `src/index.ts still imports str-utils: ${index}`;
+        return index.includes('text.ts') ? undefined : `src/index.ts does not import text.ts: ${index}`;
+      }),
+      noToolCallLeftOpen,
+    ],
+  },
+
+  {
+    id: 'read-docs-then-fix',
+    family: 'model-capability',
+    fixtureVersion: 1,
+    description: 'Fetch an API document and correct a call that disagrees with it.',
+    // Only a user config can open web egress (a project config may narrow the
+    // host list, never widen it), which is why this is `configExtra` rather than
+    // a file in the workspace.
+    configExtra: '[egress]\nweb = ["localhost"]\n',
+    webFixture: true,
+    files: {
+      'src/checkout.ts':
+        "import { computeTotal } from './api.ts';\n\n" +
+        'export const checkout = (items: number[]) => computeTotal(items);\n',
+      'src/api.ts':
+        'export const computeTotal = (items: number[], taxRate: number) =>\n' +
+        '  items.reduce((a, b) => a + b, 0) * (1 + taxRate);\n',
+    },
+    approvals: [{ decision: 'allow', scope: 'session' }],
+    prompt: 'Read {{webBase}}/api/compute and fix the computeTotal call in src/checkout.ts.',
+    livePrompt:
+      'The call to computeTotal in src/checkout.ts is wrong. The API is documented at ' +
+      '{{webBase}}/api/compute — read it, and correct the call to match, using the tax rate the ' +
+      'document gives.',
+    script: (receipt) => [
+      {
+        kind: 'tools',
+        calls: [{ name: 'WebFetch', arguments: { url: '{{webBase}}/api/compute' } }],
+      },
+      read('src/checkout.ts'),
+      edit('src/checkout.ts', 'computeTotal(items)', 'computeTotal(items, 0.2)', receipt('checkout.ts')),
+      done('Corrected the call to pass the tax rate.'),
+    ],
+    checks: [
+      turnState('completed'),
+      check('the call passes a tax rate', async (ctx) => {
+        const text = await ctx.read('src/checkout.ts');
+        return /computeTotal\(\s*items\s*,\s*0\.2\s*\)/.test(text)
+          ? undefined
+          : `expected computeTotal(items, 0.2), got: ${text}`;
+      }),
+      check('the fetched page was labelled untrusted', (ctx) =>
+        ctx.toolResults().some((r) => r.includes('untrusted web content'))
+          ? undefined
+          : 'no tool result carried the untrusted-content boundary',
+      ),
+      check('the page script never reached the model', (ctx) =>
+        ctx.toolResults().some((r) => r.includes('should not be read'))
+          ? 'a <script> body reached the model'
+          : undefined,
       ),
       noToolCallLeftOpen,
     ],

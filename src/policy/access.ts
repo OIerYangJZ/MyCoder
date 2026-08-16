@@ -19,6 +19,7 @@ export type Capability =
   | 'file.read'
   | 'file.read_to_model'
   | 'file.write'
+  | 'file.delete'
   | 'process.exec'
   | 'network.connect'
   | 'secret.use'
@@ -31,6 +32,7 @@ export const ALL_CAPABILITIES: readonly Capability[] = [
   'file.read',
   'file.read_to_model',
   'file.write',
+  'file.delete',
   'process.exec',
   'network.connect',
   'secret.use',
@@ -56,6 +58,24 @@ export interface FileWriteAccess {
   display: string;
   /** Byte delta estimate, for the approval prompt. */
   estimatedBytes?: number;
+}
+
+/**
+ * Removing a path, or the source half of a move (ADR-0016).
+ *
+ * Deliberately *not* a `file.write` with a flag. Every builtin profile allows
+ * `file.write` inside the workspace outright, so modelling deletion as a write
+ * would have made `Delete src/auth.ts` a silent, unprompted operation — and a
+ * profile that wanted to say otherwise would have had no capability to name.
+ */
+export interface FileDeleteAccess {
+  kind: 'file.delete';
+  path: CanonicalPath;
+  display: string;
+  /** True when the path is a directory. Only empty ones are ever requested. */
+  isDirectory?: boolean;
+  /** Set when this deletion is the source half of a rename. */
+  movedTo?: string;
 }
 
 export interface ProcessExecAccess {
@@ -149,6 +169,7 @@ export interface AgentInvokeAccess {
 export type AccessRequest =
   | FileReadAccess
   | FileWriteAccess
+  | FileDeleteAccess
   | ProcessExecAccess
   | NetworkAccess
   | SecretAccess
@@ -164,6 +185,8 @@ export function capabilityOf(access: AccessRequest): Capability {
       return access.toModel ? 'file.read_to_model' : 'file.read';
     case 'file.write':
       return 'file.write';
+    case 'file.delete':
+      return 'file.delete';
     case 'process.exec':
       return 'process.exec';
     case 'network.connect':
@@ -186,6 +209,7 @@ export function matchTargetOf(access: AccessRequest): string {
   switch (access.kind) {
     case 'file.read':
     case 'file.write':
+    case 'file.delete':
       return access.path;
     case 'process.exec':
       return access.executable;
@@ -217,6 +241,10 @@ export function subjectKeyOf(access: AccessRequest): string {
       return `file.read${access.toModel ? '_to_model' : ''}:${access.path}`;
     case 'file.write':
       return `file.write:${access.path}`;
+    // Never merged with the write subject for the same path: approving "modify
+    // src/auth.ts" must not spend as approval to delete it.
+    case 'file.delete':
+      return `file.delete:${access.path}`;
     case 'process.exec':
       // argv[0..1] captures `npm install` vs `npm test` without pinning the
       // package name, which would make every install a fresh prompt.
@@ -262,6 +290,10 @@ export function describeAccess(access: AccessRequest): string {
       return `read ${access.display}${access.toModel ? ' (into model context)' : ''}`;
     case 'file.write':
       return `${access.create ? 'create' : 'modify'} ${access.display}`;
+    case 'file.delete':
+      return access.movedTo !== undefined
+        ? `move ${access.display} to ${access.movedTo}`
+        : `delete ${access.isDirectory ? 'directory ' : ''}${access.display}`;
     case 'process.exec':
       return `run ${access.display}`;
     case 'network.connect':

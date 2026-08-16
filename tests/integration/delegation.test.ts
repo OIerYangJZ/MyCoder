@@ -636,7 +636,21 @@ describe('the delegation surface is absent when nothing can be delegated', () =>
 
       await ws.kernel.session.runTurn('hello');
       const names = ws.fakeModel.requests[0]!.tools.map((t) => t.name).sort();
-      assert.deepEqual(names, ['Edit', 'GitDiff', 'Glob', 'Grep', 'Read', 'Shell']);
+      // The file-mutation tools are unconditional (ADR-0016); `WebFetch` is not,
+      // and its absence here is the same property this test asserts for
+      // `Delegate` — a capability nobody configured is a capability nobody has.
+      assert.deepEqual(names, [
+        'Delete',
+        'Edit',
+        'GitDiff',
+        'Glob',
+        'Grep',
+        'Move',
+        'Read',
+        'Shell',
+        'Write',
+      ]);
+      assert.equal(ws.kernel.toolRegistry.has('WebFetch'), false);
     } finally {
       await ws.cleanup();
     }

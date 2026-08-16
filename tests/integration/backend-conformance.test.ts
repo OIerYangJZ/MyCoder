@@ -33,6 +33,7 @@ import { describe, test } from 'node:test';
 
 import { createTestWorkspace, type TestWorkspace } from '../helpers/workspace.ts';
 import { containerRequirement } from '../live/container-harness.ts';
+import { nativeSkip } from '../live/native-harness.ts';
 import type { FakeStep } from '../../src/model/adapters/fake.ts';
 import type { ModelRequest } from '../../src/model/ir.ts';
 
@@ -183,6 +184,62 @@ const CASES: ConformanceCase[] = [
     expect: async (results, ws) => {
       assert.match(results.join('\n'), /error:/);
       assert.match(await ws.file('src/app.ts'), /42/);
+    },
+  },
+  {
+    // ADR-0016 added two operations to `FileSystemBackend`, which means two more
+    // things every backend has to agree about. `remove` is the interesting one:
+    // it is the first backend call whose success is the *absence* of a file, so a
+    // backend that silently did nothing would look identical to one that worked
+    // until the next Read.
+    name: 'Write then Delete removes the file, on every backend',
+    responder: (request, callIndex) => {
+      if (callIndex === 0) {
+        return {
+          kind: 'tools',
+          calls: [{ name: 'Write', arguments: { path: 'src/scratch.ts', content: 'export const s = 1;\n' } }],
+        };
+      }
+      if (callIndex === 1) {
+        return { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'src/scratch.ts' } }] };
+      }
+      if (callIndex === 2) {
+        return {
+          kind: 'tools',
+          calls: [
+            {
+              name: 'Delete',
+              arguments: { path: 'src/scratch.ts', receiptId: latestReceiptId(request) ?? 'missing' },
+            },
+          ],
+        };
+      }
+      if (callIndex === 3) {
+        return { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'src/scratch.ts' } }] };
+      }
+      return { kind: 'final', text: 'done' };
+    },
+    approvals: [{ decision: 'allow', scope: 'session' }],
+    expect: (results) => {
+      const text = results.join('\n');
+      assert.match(text, /Deleted .*scratch\.ts/);
+      // The read *after* the delete must fail: the file is really gone, not just
+      // reported gone.
+      assert.match(text, /No such file/);
+    },
+  },
+  {
+    name: 'Move renames a file, on every backend',
+    script: [
+      { kind: 'tools', calls: [{ name: 'Move', arguments: { from: 'README.md', to: 'GUIDE.md' } }] },
+      { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'GUIDE.md' } }] },
+      { kind: 'final', text: 'done' },
+    ],
+    approvals: [{ decision: 'allow', scope: 'session' }],
+    expect: (results) => {
+      const text = results.join('\n');
+      assert.match(text, /Moved file/);
+      assert.match(text, /conformance fixture/);
     },
   },
   {
@@ -347,7 +404,10 @@ const CASES: ConformanceCase[] = [
   },
 ];
 
-async function runCase(testCase: ConformanceCase, backend: 'local' | 'container'): Promise<void> {
+async function runCase(
+  testCase: ConformanceCase,
+  backend: 'local' | 'container' | 'linux-native',
+): Promise<void> {
   const ws = await createTestWorkspace({
     files: FILES,
     ...(testCase.script ? { script: testCase.script } : {}),
@@ -369,6 +429,35 @@ describe('backend conformance: local', { timeout: 120_000 }, () => {
       await runCase(testCase, 'local');
     });
   }
+});
+
+// alpha.7 §36. The point of running the *same* cases here is that ADR-0007's
+// claim is about the agent loop being unable to tell the backends apart — and the
+// native backend is the first one whose process half is a different program
+// entirely. If a case passes locally and fails here, the difference is either a
+// real semantic divergence or a runtime-base gap, and both are bugs.
+describe('backend conformance: linux-native', { ...nativeSkip(), timeout: 600_000 }, () => {
+  for (const testCase of CASES) {
+    test(testCase.name, async () => {
+      await runCase(testCase, 'linux-native');
+    });
+  }
+
+  test('the backend is genuinely the native one, and claims only what it enforces', async () => {
+    const ws = await createTestWorkspace({ files: FILES, backend: 'linux-native', script: [] });
+    try {
+      assert.equal(ws.kernel.backend.kind, 'linux-native');
+      // `os-isolated` is the summary this backend earns and the container one
+      // does not: there is no runtime in between to trust.
+      assert.equal(ws.kernel.backend.environment.sandboxStrength, 'os-isolated');
+      assert.equal(ws.kernel.workspaceRoot, ws.kernel.projectRoot);
+      // §30: the host allowlist dimension is `none` here, where the container
+      // backend's is proxy-enforced. The matrix must show the difference.
+      assert.equal(ws.kernel.backend.environment.enforcement.networkAllowlist, 'none');
+    } finally {
+      await ws.cleanup();
+    }
+  });
 });
 
 describe('backend conformance: container', { ...containerSkip, timeout: 600_000 }, () => {

@@ -17,7 +17,7 @@ import type { SecretLease } from '../security/secret-broker.ts';
 import type { ProfileNetwork } from '../security/egress/network-mode.ts';
 import type { EnforcementDescriptor, SandboxStrength } from './enforcement.ts';
 
-export type BackendKind = 'local' | 'ssh' | 'container';
+export type BackendKind = 'local' | 'ssh' | 'container' | 'linux-native';
 
 export type { EnforcementDescriptor, SandboxStrength };
 export type { ProfileNetwork };
@@ -45,6 +45,18 @@ export interface WriteOptions {
   createParents?: boolean;
 }
 
+export interface RemoveOptions {
+  /**
+   * Remove an empty directory rather than a file.
+   *
+   * Explicit because the two are different syscalls and guessing from a `stat`
+   * inside the backend would make "the path became a directory between the check
+   * and the call" a silent success. Recursive removal is deliberately absent
+   * (ADR-0016).
+   */
+  directory?: boolean;
+}
+
 export interface FileSystemBackend {
   readFile(path: CanonicalPath): Promise<Buffer>;
   /** Temp file + fsync + rename. Never a partial file on failure (spec §10.2). */
@@ -54,6 +66,16 @@ export interface FileSystemBackend {
   mkdirp(path: CanonicalPath): Promise<void>;
   /** Resolve symlinks. Returns undefined when the path does not exist. */
   realpath(path: CanonicalPath): Promise<CanonicalPath | undefined>;
+  /** Unlink a file, or rmdir an empty directory (ADR-0016). */
+  remove(path: CanonicalPath, opts?: RemoveOptions): Promise<void>;
+  /**
+   * Rename within the same filesystem, refusing to clobber `to`.
+   *
+   * POSIX `rename(2)` replaces the destination silently, which is the one
+   * behaviour a move tool must not have: it would turn a typo into data loss
+   * with no diff and no prompt. Backends must fail with `TOOL_FAILED` instead.
+   */
+  rename(from: CanonicalPath, to: CanonicalPath): Promise<void>;
 }
 
 export interface ProcessSpec {

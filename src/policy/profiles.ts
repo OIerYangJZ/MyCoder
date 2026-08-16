@@ -262,6 +262,7 @@ export function readOnlyProfile(ctx: ProfileContext): PermissionProfile {
       ...searchRules(),
       ...delegationRules(),
       { action: 'deny', capability: 'file.write', note: 'read-only profile' },
+      { action: 'deny', capability: 'file.delete', note: 'read-only profile' },
       { action: 'deny', capability: 'network.connect', note: 'read-only profile' },
       { action: 'deny', capability: 'vcs.mutate', note: 'read-only profile' },
       { action: 'deny', capability: 'secret.use', note: 'read-only profile' },
@@ -288,6 +289,7 @@ export function reviewProfile(ctx: ProfileContext): PermissionProfile {
       ...searchRules(),
       ...delegationRules(),
       { action: 'deny', capability: 'file.write', note: 'review profile is read-only' },
+      { action: 'deny', capability: 'file.delete', note: 'review profile does not remove files' },
       { action: 'deny', capability: 'network.connect', note: 'review profile has no network' },
       { action: 'deny', capability: 'vcs.mutate', note: 'review profile does not mutate git' },
       { action: 'deny', capability: 'secret.use' },
@@ -359,6 +361,20 @@ export function workspaceDevProfile(ctx: ProfileContext): PermissionProfile {
         note: 'lockfile changes are reviewed explicitly',
       })),
       { action: 'ask', capability: 'file.write', note: 'write outside the workspace' },
+
+      // --- deletions ------------------------------------------------------
+      //
+      // `ask` everywhere except scratch, including inside the workspace where an
+      // ordinary write is allowed outright. Overwriting a tracked file leaves a
+      // diff and a receipt; removing one leaves neither, and the profile should
+      // not treat those as the same act (ADR-0016).
+      {
+        action: 'allow',
+        capability: 'file.delete',
+        pattern: `${toPosix(tmp)}/**`,
+        note: 'agent scratch directory',
+      },
+      { action: 'ask', capability: 'file.delete', note: 'removing or renaming a file' },
 
       // --- processes ----------------------------------------------------
       {

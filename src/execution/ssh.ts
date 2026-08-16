@@ -44,6 +44,7 @@ import type {
   ProcessBackend,
   ProcessResult,
   ProcessSpec,
+  RemoveOptions,
   WriteOptions,
 } from './backend.ts';
 
@@ -526,6 +527,50 @@ class SshFileSystem implements FileSystemBackend {
     const result = await this.transport.run(script, { timeoutMs: 20_000 });
     const line = result.stdout.trim().split('\n')[0];
     return line && line !== '' ? (line as CanonicalPath) : undefined;
+  }
+
+  async remove(p: CanonicalPath, opts: RemoveOptions = {}): Promise<void> {
+    const target = this.jail(p);
+    // `rmdir` rather than `rm -r`, and `rm` without `-r` for the file case: the
+    // remote side must not be able to do something the local backend cannot
+    // (ADR-0016 refuses recursive removal), and `-f` is omitted so that deleting
+    // a path that is already gone is an error rather than a quiet success.
+    const script = opts.directory ? `rmdir ${shellQuote(target)}` : `rm ${shellQuote(target)}`;
+    const result = await this.transport.run(script, { timeoutMs: 20_000 });
+    if (result.exitCode !== 0) {
+      throw new KernelErrorException(
+        kernelError('TOOL_FAILED', 'Could not remove the remote path.', {
+          blame: 'environment',
+          safeDetails: { detail: result.stderr.trim().slice(0, 200) },
+        }),
+      );
+    }
+  }
+
+  async rename(from: CanonicalPath, to: CanonicalPath): Promise<void> {
+    const source = this.jail(from);
+    const dest = this.jail(to);
+    // `mv -n` is not POSIX and is a no-op *with exit status 0* on some BSD
+    // versions when the destination exists, which would report a move that did
+    // not happen. Test first, in the same shell, and use a distinct exit code so
+    // the two failures are distinguishable.
+    const script =
+      `if [ -e ${shellQuote(dest)} ] || [ -L ${shellQuote(dest)} ]; then exit 3; fi; ` +
+      `mv ${shellQuote(source)} ${shellQuote(dest)}`;
+    const result = await this.transport.run(script, { timeoutMs: 30_000 });
+    if (result.exitCode === 3) {
+      throw new KernelErrorException(
+        kernelError('TOOL_FAILED', 'The destination already exists.', { blame: 'model' }),
+      );
+    }
+    if (result.exitCode !== 0) {
+      throw new KernelErrorException(
+        kernelError('TOOL_FAILED', 'Could not move the remote path.', {
+          blame: 'environment',
+          safeDetails: { detail: result.stderr.trim().slice(0, 200) },
+        }),
+      );
+    }
   }
 }
 

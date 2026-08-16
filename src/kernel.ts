@@ -49,6 +49,8 @@ import {
   resolveGeneratedDirs,
   type ContainerConfig,
 } from './execution/container.ts';
+import { LinuxNativeExecutionBackend } from './execution/linux-native/backend.ts';
+import { resolveLauncherPath } from './execution/linux-native/paths.ts';
 import { MutationDetector } from './execution/mutation-detector.ts';
 import { describeEnforcement, networkEnforcementLabel } from './execution/enforcement.ts';
 import type { ExecutionBackend } from './execution/backend.ts';
@@ -75,6 +77,10 @@ import { createReadTool } from './tools/builtin/read.ts';
 import { createGrepTool } from './tools/builtin/grep.ts';
 import { createGlobTool } from './tools/builtin/glob.ts';
 import { createEditTool } from './tools/builtin/edit.ts';
+import { createWriteTool } from './tools/builtin/write.ts';
+import { createDeleteTool } from './tools/builtin/delete.ts';
+import { createMoveTool } from './tools/builtin/move.ts';
+import { createWebFetchTool } from './tools/builtin/web-fetch.ts';
 import { createShellTool } from './tools/builtin/shell.ts';
 import { createGitDiffTool } from './tools/builtin/git-diff.ts';
 
@@ -118,7 +124,7 @@ export interface CreateKernelOptions {
    * unusable rather than starting a session with weaker isolation than the caller
    * asked for.
    */
-  backend?: 'local' | 'container';
+  backend?: 'local' | 'container' | 'linux-native';
   telemetryDisabled?: boolean;
   logLevel?: LogLevel;
   json?: boolean;
@@ -131,6 +137,15 @@ export interface CreateKernelOptions {
   dirs?: KernelDirs;
   dirsRoot?: string;
   egressTransport?: EgressTransport;
+  /**
+   * Resolver for `WebFetch`'s §23 address check (ADR-0017).
+   *
+   * A seam for the same reason `egressTransport` is one: the check's *input* is
+   * the machine's DNS, so a test that used the real resolver would assert
+   * something about the developer's network. This machine, for instance, maps
+   * every public name into `198.18.0.0/15`.
+   */
+  webLookup?: import('./security/egress/resolve.ts').LookupFn;
   fakeModel?: FakeModel;
   store?: SessionStore;
   resumeSessionId?: string;
@@ -381,6 +396,33 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
           'Narrow the workspace, or treat this session as policy-enforced for in-workspace secrets.',
       );
     }
+  } else if (opts.backend === 'linux-native') {
+    // alpha.7 §9: selected means applied or refused. The same protected-path
+    // traversal the container backend uses decides whether a plan can be built
+    // at all — Landlock grants subtrees and cannot carve a leaf out of one, so a
+    // credential inside the workspace is a refusal rather than a masked mount.
+    const probeFs = (
+      await LocalExecutionBackend.detect({
+        workspaceRoot: projectRoot,
+        redactor,
+        logger: logger.child('local'),
+      })
+    ).fs;
+    const nativeScan = await discoverMaskPaths(
+      probeFs,
+      projectRoot,
+      (p) => protectedPaths.checkReadToModel(p).protected,
+    );
+
+    backend = await LinuxNativeExecutionBackend.create({
+      workspaceRoot: projectRoot,
+      redactor,
+      launcherPath: resolveLauncherPath(),
+      logger: logger.child('linux-native'),
+      protectedInsideRoots: nativeScan.paths,
+      discoveryTruncated: nativeScan.truncated,
+      sandboxHome: path.join(projectDir(projectRoot), 'sandbox-home') as CanonicalPath,
+    });
   } else {
     backend = await LocalExecutionBackend.detect({
       workspaceRoot: projectRoot,
@@ -462,6 +504,19 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       };
     }
   }
+  // alpha.7 §44: a configured relaxation of the address classifier is disclosed,
+  // not left to be discovered. It reaches the startup warnings (and therefore
+  // `/status`), so a session running with a weakened check says so before it does
+  // anything. §43 keeps it user-config-only — `strictBoolean` in the merge means a
+  // repository can turn it off and can never turn it on.
+  if (config.egress.allowBenchmarkRange === true) {
+    config.warnings.push(
+      'Web reads accept RFC 2544 benchmarking addresses (198.18.0.0/15) because ' +
+        '[egress] allow_benchmark_range is enabled in your user config. Loopback, RFC1918, link-local ' +
+        'and cloud-metadata addresses remain denied.',
+    );
+  }
+
   const egress = new DefaultEgressGate({
     policy: egressPolicy,
     redactor,
@@ -601,6 +656,9 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   toolRegistry.register(createGlobTool());
   toolRegistry.register(createGitDiffTool());
   toolRegistry.register(createEditTool({ journal: editJournal }));
+  toolRegistry.register(createWriteTool({ journal: editJournal }));
+  toolRegistry.register(createDeleteTool({ journal: editJournal }));
+  toolRegistry.register(createMoveTool({ journal: editJournal }));
   toolRegistry.register(
     createShellTool({
       detector,
@@ -621,6 +679,23 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       },
     }),
   );
+
+  // `WebFetch` exists only where web egress is configured (ADR-0017), the same
+  // way `Delegate` exists only where a project has agents: a catalogue entry whose
+  // every call must fail costs a step to discover and teaches the model nothing.
+  const webHosts = config.egress.allowedHosts?.web ?? [];
+  if (webHosts.length > 0) {
+    toolRegistry.register(
+      createWebFetchTool({
+        egress,
+        allowedHosts: webHosts,
+        // §23 for a name rather than a literal, with the operator's opt-in for a
+        // resolver that NATs public hosts into benchmarking space.
+        ...(config.egress.allowBenchmarkRange === true ? { allowBenchmarkRange: true } : {}),
+        ...(opts.webLookup ? { lookup: opts.webLookup } : {}),
+      }),
+    );
+  }
 
   // 12. Session store.
   const store = opts.store ?? new FileSessionStore({ rootDir: sessionsDir(dirs), redactor, clock });
@@ -734,9 +809,33 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     // produced which receipt, which edit changed which hash, which command ran.
     // Without them the log can tell you a file changed but not why.
     onRecord: (record) => {
+      const scope = { turnId: record.turnId, stepId: record.stepId };
+
+      // A failed call, with the reason attached.
+      //
+      // `tool.result` already records *that* a call failed, but not which tool it
+      // was — the name is on `tool.call` — and not why. Joining two events to
+      // learn "Edit was rejected for a stale receipt" was possible and nobody did
+      // it, which is why the tool surface had no usability evidence while the
+      // security surface had four documents. This event is what the eval runner
+      // aggregates into a friction table (§B). Payload is a code and a count:
+      // nothing here carries content, so the §21.2 rule is unchanged.
+      if (record.isError) {
+        void store.append(sessionId, {
+          type: 'tool.error',
+          payload: {
+            toolCallId: record.toolCallId,
+            name: record.name,
+            errorCode: record.errorCode ?? 'UNKNOWN',
+            durationMs: record.durationMs,
+            contentBytes: record.contentBytes,
+          },
+          ...scope,
+        });
+      }
+
       const meta = record.metadata;
       if (!meta) return;
-      const scope = { turnId: record.turnId, stepId: record.stepId };
 
       if (record.name === 'Read' && typeof meta.receiptId === 'string') {
         void store.append(sessionId, {

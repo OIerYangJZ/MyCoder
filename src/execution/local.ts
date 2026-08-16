@@ -15,12 +15,14 @@ import { spawn } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import {
   access,
+  link,
   mkdir,
   open,
   readFile,
   readdir,
   realpath,
   rename,
+  rmdir,
   stat,
   lstat,
   unlink,
@@ -47,6 +49,7 @@ import type {
   ProcessBackend,
   ProcessResult,
   ProcessSpec,
+  RemoveOptions,
   WriteOptions,
 } from './backend.ts';
 
@@ -140,6 +143,46 @@ class LocalFileSystem implements FileSystemBackend {
     } catch {
       return undefined;
     }
+  }
+
+  async remove(p: CanonicalPath, opts: RemoveOptions = {}): Promise<void> {
+    // `unlink` on a symlink removes the link, not its target, which is the
+    // behaviour a delete tool wants: the caller canonicalised and got a decision
+    // about the target, but destroying the target through a link nobody looked
+    // at is not what "delete this path" means.
+    if (opts.directory) {
+      await rmdir(p);
+      return;
+    }
+    await unlink(p);
+  }
+
+  async rename(from: CanonicalPath, to: CanonicalPath): Promise<void> {
+    // `rename(2)` overwrites; `link` + `unlink` does not. The link is the check
+    // and the move in one operation, so there is no window in which a file
+    // created at `to` by something else could be replaced.
+    try {
+      await link(from, to);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        throw new KernelErrorException(
+          kernelError('TOOL_FAILED', 'The destination already exists.', {
+            blame: 'model',
+            safeDetails: { code },
+          }),
+        );
+      }
+      // Hard links do not work across filesystems, and not at all for
+      // directories. Fall back to rename, which the caller has already checked
+      // the destination for.
+      if (code === 'EXDEV' || code === 'EPERM' || code === 'EISDIR' || code === 'EACCES') {
+        await rename(from, to);
+        return;
+      }
+      throw e;
+    }
+    await unlink(from);
   }
 }
 
@@ -342,6 +385,17 @@ class ConstrainedExecutor implements CapabilityExecutor {
       },
       async realpath(p) {
         return self.inner.realpath(p);
+      },
+      async remove(p, opts) {
+        self.assertWritable(p);
+        return self.inner.remove(p, opts);
+      },
+      async rename(from, to) {
+        // Both ends. A move is a delete at the source and a create at the
+        // destination, and a grant for one is not a grant for the other.
+        self.assertWritable(from);
+        self.assertWritable(to);
+        return self.inner.rename(from, to);
       },
     };
   }

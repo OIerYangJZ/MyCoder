@@ -261,6 +261,18 @@ export class PolicyEngine {
         return undefined;
       }
 
+      // Deletion is checked against the *write* rules, which is the whole reason
+      // they are separate from the read ones: a path that may not be modified may
+      // not be removed either, and `.env`, the reference tree and this kernel's
+      // own policy files are unreachable by either route (ADR-0016).
+      case 'file.delete': {
+        const verdict = this.protectedPaths.checkWrite(access.path);
+        if (verdict.protected) {
+          return mk(ProtectedPaths.explain(verdict, access.display), 'PROTECTED_PATH');
+        }
+        return undefined;
+      }
+
       case 'process.exec': {
         const exe = basename(access.executable);
         if (PRIVILEGE_ESCALATION.includes(exe)) {
@@ -360,7 +372,10 @@ function evaluateProfile(profile: PermissionProfile, access: AccessRequest): Pro
 
 function ruleMatches(rule: PolicyRule, access: AccessRequest, target: string): boolean {
   if (rule.pattern !== undefined) {
-    const value = access.kind === 'file.read' || access.kind === 'file.write' ? toPosix(target) : target;
+    const value =
+      access.kind === 'file.read' || access.kind === 'file.write' || access.kind === 'file.delete'
+        ? toPosix(target)
+        : target;
     const alsoBasename = access.kind === 'process.exec' ? basename(value) : value;
     if (!globMatch(rule.pattern, value) && !globMatch(rule.pattern, alsoBasename)) return false;
   }
@@ -452,7 +467,7 @@ function defaultReason(action: PolicyAction, access: AccessRequest, profile?: st
 }
 
 function isPathAccess(access: AccessRequest): access is Extract<AccessRequest, { path: CanonicalPath }> {
-  return access.kind === 'file.read' || access.kind === 'file.write';
+  return access.kind === 'file.read' || access.kind === 'file.write' || access.kind === 'file.delete';
 }
 
 function accessPath(access: Extract<AccessRequest, { path: CanonicalPath }>): CanonicalPath {

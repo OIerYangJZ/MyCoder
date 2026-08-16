@@ -83,7 +83,11 @@ export { createReadTool } from './tools/builtin/read.ts';
 export { createGrepTool } from './tools/builtin/grep.ts';
 export { createGlobTool } from './tools/builtin/glob.ts';
 export { createEditTool } from './tools/builtin/edit.ts';
+export { createWriteTool } from './tools/builtin/write.ts';
+export { createDeleteTool } from './tools/builtin/delete.ts';
+export { createMoveTool } from './tools/builtin/move.ts';
 export { createShellTool } from './tools/builtin/shell.ts';
+export { createWebFetchTool } from './tools/builtin/web-fetch.ts';
 export { createGitDiffTool } from './tools/builtin/git-diff.ts';
 
 // --- edit ---

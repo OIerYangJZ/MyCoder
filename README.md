@@ -61,8 +61,14 @@ is the only step that verifies types. Run it before opening a PR — CI does.
 - Streaming model runtime over a protocol-neutral IR, with Anthropic Messages,
   OpenAI Responses and OpenAI-compatible Chat adapters — plus a `FakeModel` so
   the whole kernel is testable offline.
-- Six core tools: `Read`, `Grep`, `Glob`, `Edit`, `Shell`, `GitDiff`, all behind
-  the two-phase `ToolDefinition → ToolExecution → AccessRequest` contract.
+- Nine core tools: `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Delete`, `Move`,
+  `Shell`, `GitDiff`, all behind the two-phase
+  `ToolDefinition → ToolExecution → AccessRequest` contract. `Write` and `Delete`
+  need a full-coverage read receipt; deletion is its own capability, so it asks
+  where an ordinary write does not (ADR-0016).
+- `WebFetch`, registered only when `[egress] web` names a host — GET only, no
+  redirects followed, response treated as untrusted input (ADR-0017,
+  `docs/web-access.md`).
 - Permission profiles (`workspace-dev`, `read-only`, `review`) composed by
   capability **intersection**, so no layer can widen another.
 - Secret path deny, content secret scanning, an in-memory secret broker whose
@@ -128,6 +134,7 @@ tests/
 └── integration/  the §31 trajectory, control plane, resume
 docs/
 ├── adr/          architecture decision records
+├── web-access.md how to enable WebFetch, and what it will not do
 └── threat-model.md
 ```
 
