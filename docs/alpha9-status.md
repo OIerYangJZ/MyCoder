@@ -229,8 +229,14 @@ friction metric on MCP tools (§17)               not built
 the two-arm experiment, either model (§17, §18)  not run
 third-party server dogfood (§5)                  not run
 CLOSURE B — the golden set's denial arm (§20)    not built
-the canary suite beyond the environment route    not built
 ```
+
+The canary suite now covers all four routes §15 names — arguments, environment,
+description echo and error text — with **two** canaries rather than one. A secret
+the kernel knows, registered with the redactor, and a secret it does not. The
+second is the harder and more honest test: redaction cannot save a value nobody
+registered, so it can only pass if the value never travelled at all. AGENTS.md
+rule 10 applies to that file.
 
 The HTTP transport now exists and goes through the `EgressGate` — no new network
 client, and `EgressKind` finally has the `mcp` consumer it has carried since the

@@ -229,6 +229,11 @@ export class McpService {
     return this.definitions;
   }
 
+  /** The client for one attached server. Exported for the canary suite. */
+  client(name: string): McpClient | undefined {
+    return this.clients.get(name);
+  }
+
   /** Server names, for `withForeignTools` and the `/status` line. */
   serverNames(): string[] {
     return this.attached.map((a) => a.name);
