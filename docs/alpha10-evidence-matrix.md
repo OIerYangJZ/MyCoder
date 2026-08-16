@@ -197,23 +197,23 @@ the model copied here).
 
 ## 9. CLOSURE C — the clean-resolver non-claim, decided (plan §15)
 
-| Requirement                                              | Status         | Evidence                                                           | Notes                                                                                                           |
-| -------------------------------------------------------- | -------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| **strict egress on a genuinely global resolved address** | NOT APPLICABLE | artifact:docs/adr/ADR-0017-web-reads-through-the-egress-gate.md    | Downgraded from `NOT TESTED` this milestone. Both hosts NAT public names into 198.18/15, re-verified 2026-08-16 |
-| the reason travels with the claim, in the ADR            | PASS           | artifact:docs/adr/ADR-0017-web-reads-through-the-egress-gate.md    | A new section, not a footnote; a reader of the ADR is who is entitled to know                                   |
-| the alpha.6 and alpha.9 matrices are amended             | PASS           | artifact:docs/alpha9-evidence-matrix.md                            | Both rows restated, both naming alpha.10 §15 as the decision                                                    |
-| the negative controls still pass                         | PASS           | test:denies every non-global IPv4 range the rebinding attack needs | Four scopes refused, each naming the scope; that half was never in doubt                                        |
+| Requirement                                              | Status         | Evidence                                                           | Notes                                                                                                                     |
+| -------------------------------------------------------- | -------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| **strict egress on a genuinely global resolved address** | NOT APPLICABLE | artifact:docs/adr/ADR-0017-web-reads-through-the-egress-gate.md    | Downgraded from `NOT TESTED` this milestone. Both hosts NAT public names into 198.18/15, re-verified 2026-08-16 [open:A7] |
+| the reason travels with the claim, in the ADR            | PASS           | artifact:docs/adr/ADR-0017-web-reads-through-the-egress-gate.md    | A new section, not a footnote; a reader of the ADR is who is entitled to know                                             |
+| the alpha.6 and alpha.9 matrices are amended             | PASS           | artifact:docs/alpha9-evidence-matrix.md                            | Both rows restated, both naming alpha.10 §15 as the decision                                                              |
+| the negative controls still pass                         | PASS           | test:denies every non-global IPv4 range the rebinding attack needs | Four scopes refused, each naming the scope; that half was never in doubt                                                  |
 
 ---
 
 ## 10. CLOSURE A — a second operator (plan §13)
 
-| Requirement                                    | Status     | Evidence                                 | Notes                                                                                  |
-| ---------------------------------------------- | ---------- | ---------------------------------------- | -------------------------------------------------------------------------------------- |
-| **someone who is not the author has run this** | NOT TESTED | artifact:docs/alpha10-second-operator.md | Scheduled, not run. Fifth consecutive milestone open. Not simulated, which §13 forbids |
-| a protocol exists, committed before the run    | PASS       | artifact:docs/alpha10-second-operator.md | Including what the author must not do, and how to read an empty findings list          |
-| the run exercises undo, not just installation  | PASS       | artifact:docs/alpha10-second-operator.md | Step 5. alpha.8 already measured the artifact; the variable here is the operator       |
-| it is named as the oldest open item            | PASS       | artifact:docs/alpha10-status.md          | And alpha.9 §26's "stop adding capability after alpha.11" is recorded as a commitment  |
+| Requirement                                    | Status     | Evidence                                 | Notes                                                                                            |
+| ---------------------------------------------- | ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| **someone who is not the author has run this** | NOT TESTED | artifact:docs/alpha10-second-operator.md | Scheduled, not run. Fifth consecutive milestone open. Not simulated, which §13 forbids [open:A1] |
+| a protocol exists, committed before the run    | PASS       | artifact:docs/alpha10-second-operator.md | Including what the author must not do, and how to read an empty findings list                    |
+| the run exercises undo, not just installation  | PASS       | artifact:docs/alpha10-second-operator.md | Step 5. alpha.8 already measured the artifact; the variable here is the operator                 |
+| it is named as the oldest open item            | PASS       | artifact:docs/alpha10-status.md          | And alpha.9 §26's "stop adding capability after alpha.11" is recorded as a commitment            |
 
 ---
 

@@ -33,6 +33,15 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import {
+  checkClosedAnnotations,
+  checkIndexReconciliation,
+  checkOneClaimOneStatus,
+  parseOpenEvidence,
+  type CorpusProblem,
+  type CorpusRow,
+} from './evidence-corpus.ts';
+
 const ROOT = process.cwd();
 
 /**
@@ -44,16 +53,27 @@ const ROOT = process.cwd();
  * only the newest would let the older claims rot quietly, which is the failure the
  * gate exists to prevent — one milestone later than before.
  */
-const MATRICES = [
-  'docs/alpha3-evidence-matrix.md',
-  'docs/alpha4-evidence-matrix.md',
-  'docs/alpha5-evidence-matrix.md',
-  'docs/tool-surface-evidence-matrix.md',
-  'docs/alpha7-evidence-matrix.md',
-  'docs/alpha8-evidence-matrix.md',
-  'docs/alpha9-evidence-matrix.md',
-  'docs/alpha10-evidence-matrix.md',
+export const MATRICES = [
+  { path: 'docs/alpha3-evidence-matrix.md', milestone: 'alpha.3' },
+  { path: 'docs/alpha4-evidence-matrix.md', milestone: 'alpha.4' },
+  { path: 'docs/alpha5-evidence-matrix.md', milestone: 'alpha.5' },
+  // alpha.6 shipped two matrices and neither was registered here until alpha.11
+  // found it: the egress matrix records its status in the *last* column, so the
+  // parser — which read the second — could not see it and it was left out. 92
+  // rows of claims, ungated for five milestones, while `docs/open-evidence.md`
+  // cited them as the home of two open items. Exactly the drift §7 is about,
+  // sitting inside the mechanism meant to catch it.
+  { path: 'docs/alpha6-evidence-matrix.md', milestone: 'alpha.6' },
+  { path: 'docs/tool-surface-evidence-matrix.md', milestone: 'alpha.6' },
+  { path: 'docs/alpha7-evidence-matrix.md', milestone: 'alpha.7' },
+  { path: 'docs/alpha8-evidence-matrix.md', milestone: 'alpha.8' },
+  { path: 'docs/alpha9-evidence-matrix.md', milestone: 'alpha.9' },
+  { path: 'docs/alpha10-evidence-matrix.md', milestone: 'alpha.10' },
+  { path: 'docs/alpha11-evidence-matrix.md', milestone: 'alpha.11' },
 ];
+
+/** The index every open claim has to appear in (alpha.11 §7.2). */
+const OPEN_EVIDENCE = 'docs/open-evidence.md';
 
 /**
  * The header alpha.8 §19 requires every matrix to carry.
@@ -89,6 +109,67 @@ export interface Row {
   evidence: string[];
   notes: string;
   line: number;
+  /**
+   * How the table records its evidence.
+   *
+   * `named` is the common shape: a column headed `Evidence`, holding `kind:`
+   * references this gate can resolve. `inline` is alpha.6's: the evidence is
+   * spread across `Primary evidence`, `Positive control`, `Contrast` and
+   * `Mechanism`, which is *more* information rather than less, but not in a
+   * vocabulary the gate can follow. An inline row is checked for having
+   * support at all; its references are not resolved, and the alpha.11 matrix
+   * says so rather than letting a green run imply otherwise.
+   */
+  evidenceStyle: 'named' | 'inline';
+  /** Every cell that is neither the requirement nor the status. */
+  supporting: string[];
+}
+
+/** Which column holds what, read from the table's own header row. */
+interface Columns {
+  status: number;
+  evidence?: number;
+  notes?: number;
+}
+
+const isSeparator = (line: string): boolean => /^\|(?:\s*:?-{2,}:?\s*\|)+$/.test(line.replace(/\s+/g, ' '));
+
+const splitRow = (line: string): string[] =>
+  line
+    .slice(1, -1)
+    .split('|')
+    .map((c) => c.trim());
+
+/**
+ * Read the column layout out of a header row, or refuse the table.
+ *
+ * Keying on the header rather than on position is what lets the gate read
+ * alpha.6, whose `Status` is the sixth column. It also means a table with no
+ * `Status` column — a legend, a two-column list of things deliberately absent —
+ * is skipped rather than parsed into rows of nonsense, which is what the old
+ * `cells.length < 3` guard was approximating.
+ */
+function readColumns(header: readonly string[]): Columns | undefined {
+  const find = (name: string): number =>
+    header.findIndex((c) => c.replace(/[*`]/g, '').toLowerCase() === name);
+
+  const status = find('status');
+  if (status < 1) return undefined;
+
+  const columns: Columns = { status };
+
+  const named = find('evidence');
+  // `| Defect | Status | Regression |` is the one table that names its evidence
+  // column something else. The column after the status is the evidence column
+  // in every table of that shape, so position carries it where the name does not.
+  const evidence = named >= 0 ? named : status === 1 && header.length >= 3 ? 2 : -1;
+  if (evidence >= 0) columns.evidence = evidence;
+
+  const notes = find('notes');
+  const notesIndex = notes >= 0 ? notes : evidence >= 0 && header.length > evidence + 1 ? evidence + 1 : -1;
+  if (notesIndex >= 0) columns.notes = notesIndex;
+
+  return columns;
 }
 
 export interface Problem {
@@ -124,33 +205,46 @@ export function splitEvidence(cell: string): string[] {
     .filter((e) => e !== '');
 }
 
-/** Parse the GitHub-flavoured table out of the matrix document. */
+/** Parse the GitHub-flavoured tables out of a matrix document. */
 export function parseMatrix(markdown: string): Row[] {
   const rows: Row[] = [];
+  const lines = markdown.split('\n').map((l) => l.trim());
+  let columns: Columns | undefined;
 
-  markdown.split('\n').forEach((raw, index) => {
-    const line = raw.trim();
-    if (!line.startsWith('|') || !line.endsWith('|')) return;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (!line.startsWith('|') || !line.endsWith('|')) {
+      // Any non-table line ends the table, so one table's layout can never be
+      // applied to the next one's rows.
+      columns = undefined;
+      continue;
+    }
+    if (isSeparator(line)) continue;
 
-    const cells = line
-      .slice(1, -1)
-      .split('|')
-      .map((c) => c.trim());
-    if (cells.length < 3) return;
+    const cells = splitRow(line);
 
-    const [requirement, status, evidence, notes] = cells;
-    // Header and separator rows.
-    if (requirement === undefined || requirement === '' || /^-+$/.test(requirement)) return;
-    if (status === 'Status' || /^:?-+:?$/.test(status ?? '')) return;
+    // A row followed by a separator is the header, and it decides how every
+    // row beneath it is read.
+    if (isSeparator(lines[i + 1] ?? '')) {
+      columns = readColumns(cells);
+      continue;
+    }
+    if (!columns) continue;
 
+    const requirement = cells[0] ?? '';
+    if (requirement === '') continue;
+
+    const evidenceCell = columns.evidence === undefined ? undefined : cells[columns.evidence];
     rows.push({
       requirement,
-      status: status ?? '',
-      evidence: splitEvidence(evidence ?? ''),
-      notes: notes ?? '',
-      line: index + 1,
+      status: (cells[columns.status] ?? '').replace(/\*\*/g, '').trim(),
+      evidence: splitEvidence(evidenceCell ?? ''),
+      notes: (columns.notes === undefined ? '' : (cells[columns.notes] ?? '')).trim(),
+      line: i + 1,
+      evidenceStyle: columns.evidence === undefined ? 'inline' : 'named',
+      supporting: cells.filter((_, index) => index !== 0 && index !== columns?.status),
     });
-  });
+  }
 
   return rows;
 }
@@ -173,6 +267,18 @@ export async function checkRows(rows: readonly Row[], opts: CheckOptions): Promi
   for (const row of rows) {
     if (!STATUSES.includes(row.status as Status)) {
       add(row, `status "${row.status}" is not one of ${STATUSES.join(' / ')}`);
+      continue;
+    }
+
+    // An inline-evidence table records its support in columns of its own, so
+    // the `kind:` vocabulary cannot be applied to it. What still can be, and is
+    // the rule that matters, is that a PASS is not bare: alpha.6's shape holds
+    // more evidence per row than the named one, and a row with every support
+    // column empty is a claim in a document that looks like evidence.
+    if (row.evidenceStyle === 'inline') {
+      if (row.status === 'PASS' && row.supporting.every((c) => c === '' || c === '—')) {
+        add(row, 'marked PASS with every supporting column empty');
+      }
       continue;
     }
 
@@ -301,11 +407,12 @@ async function main(argv: readonly string[]): Promise<number> {
   };
 
   const reports: Array<{ matrix: string; rows: Row[]; problems: Problem[] }> = [];
+  const corpusRows: CorpusRow[] = [];
 
-  for (const matrix of MATRICES) {
+  for (const [ordinal, matrix] of MATRICES.entries()) {
     let markdown: string;
     try {
-      markdown = await readFile(path.join(ROOT, matrix), 'utf8');
+      markdown = await readFile(path.join(ROOT, matrix.path), 'utf8');
     } catch {
       // A matrix that does not exist yet is not a failure; one that exists and is
       // unreadable is caught above. The "no matrix at all" case is checked below.
@@ -314,7 +421,7 @@ async function main(argv: readonly string[]): Promise<number> {
 
     const rows = parseMatrix(markdown);
     if (rows.length === 0) {
-      process.stderr.write(`evidence gate: no table rows found in ${matrix}\n`);
+      process.stderr.write(`evidence gate: no table rows found in ${matrix.path}\n`);
       return 2;
     }
 
@@ -329,17 +436,37 @@ async function main(argv: readonly string[]): Promise<number> {
       });
     }
 
-    reports.push({ matrix, rows, problems });
+    corpusRows.push(
+      ...rows.map((row) => ({ ...row, matrix: matrix.path, milestone: matrix.milestone, ordinal })),
+    );
+    reports.push({ matrix: matrix.path, rows, problems });
   }
 
   if (reports.length === 0) {
-    process.stderr.write(`evidence gate: none of ${MATRICES.join(', ')} could be read\n`);
+    process.stderr.write(`evidence gate: none of ${MATRICES.map((m) => m.path).join(', ')} could be read\n`);
     return 2;
   }
 
-  const allProblems = reports.flatMap((r) => r.problems);
+  // The corpus checks (alpha.11 §7). These are about the relationship between
+  // documents, so they run once, over everything, after the per-row pass.
+  const index = parseOpenEvidence(await readFile(path.join(ROOT, OPEN_EVIDENCE), 'utf8'));
+  const closed = checkClosedAnnotations(corpusRows, index.entries);
+  const corpusProblems: CorpusProblem[] = [
+    ...index.problems,
+    ...checkOneClaimOneStatus(corpusRows),
+    ...checkIndexReconciliation(corpusRows, index.entries),
+    ...closed.problems,
+  ];
+  for (const problem of corpusProblems) {
+    const report = reports.find((r) => r.matrix === problem.matrix);
+    if (report) report.problems.push(problem);
+  }
+  const orphaned = corpusProblems.filter((p) => !reports.some((r) => r.matrix === p.matrix));
+
+  const allProblems = [...reports.flatMap((r) => r.problems), ...orphaned];
   const allRows = reports.flatMap((r) => r.rows);
   const counts = STATUSES.map((s) => [s, allRows.filter((r) => r.status === s).length] as const);
+  const openIndexed = index.entries.filter((e) => e.section !== 'C').length;
 
   if (argv.includes('--json')) {
     process.stdout.write(
@@ -353,6 +480,13 @@ async function main(argv: readonly string[]): Promise<number> {
           })),
           rows: allRows.length,
           counts: Object.fromEntries(counts),
+          openEvidence: {
+            indexed: openIndexed,
+            closedEntries: index.entries.length - openIndexed,
+            rowsOpen: closed.open,
+            rowsClosed: closed.closed,
+            rowsOutOfScope: closed.scope,
+          },
           problems: allProblems,
         },
         null,
@@ -373,8 +507,17 @@ async function main(argv: readonly string[]): Promise<number> {
     );
   }
 
+  // The count a reader of `docs/open-evidence.md` gets, and the count the gate
+  // gets, printed side by side. §7.3 asks for exactly this: the two numbers
+  // came apart once and nothing said so.
+  process.stdout.write(
+    `${OPEN_EVIDENCE}: ${openIndexed} open item(s) indexed — ` +
+      `${closed.open} row(s) point at them, ${closed.closed} closed elsewhere, ` +
+      `${closed.scope} out of scope by decision\n`,
+  );
+
   if (allProblems.length === 0) {
-    process.stdout.write('every claim points at something that exists\n');
+    process.stdout.write('every claim points at something that exists, and the corpus agrees with itself\n');
     return 0;
   }
 
@@ -383,6 +526,9 @@ async function main(argv: readonly string[]): Promise<number> {
     for (const p of report.problems) {
       process.stdout.write(`  ${report.matrix}:${p.line}  ${p.requirement}\n      ${p.message}\n`);
     }
+  }
+  for (const p of orphaned) {
+    process.stdout.write(`  ${p.matrix}:${p.line}  ${p.requirement}\n      ${p.message}\n`);
   }
   return 1;
 }
