@@ -27,6 +27,9 @@ import { buildPlan, PlanRefused, RUNTIME_BASE } from '../../src/execution/linux-
 import { Redactor } from '../../src/security/redactor.ts';
 import { nullLogger } from '../../src/util/logger.ts';
 import { SANDBOX_SOURCE } from '../../src/execution/linux-native/paths.ts';
+import { writeLauncherManifest } from '../../src/execution/linux-native/identity.ts';
+import { CFLAGS } from '../../src/execution/linux-native/build.ts';
+import { KERNEL_VERSION } from '../../src/kernel.ts';
 import type { CanonicalPath } from '../../src/util/paths.ts';
 import type { CapabilityProfile } from '../../src/execution/backend.ts';
 
@@ -88,12 +91,18 @@ after(async () => {
 });
 
 function compile(output: string, extraFlags: readonly string[]): void {
-  const result = spawnSync(
-    process.env.CC ?? 'cc',
-    ['-O2', '-Wall', '-Wextra', '-Werror', '-std=c11', ...extraFlags, '-o', output, SANDBOX_SOURCE],
-    { encoding: 'utf8' },
-  );
+  const compiler = process.env.CC ?? 'cc';
+  const flags = [...CFLAGS, ...extraFlags];
+  const result = spawnSync(compiler, [...flags, '-o', output, SANDBOX_SOURCE], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`could not build the launcher: ${result.stderr}`);
+
+  // The manifest is not test scaffolding: since ADR-0020 the backend refuses a
+  // launcher it cannot verify, so a suite that built one without a manifest
+  // would be testing a rejection instead of a sandbox. Written through the same
+  // helper `build-sandbox` uses, so these binaries are verifiable in exactly the
+  // way a user's is — including the negative-control build, which must be
+  // refused for its *hygiene*, not for its provenance.
+  writeLauncherManifest(output, SANDBOX_SOURCE, { kernelVersion: KERNEL_VERSION, compiler, flags });
 }
 
 function guard(t: { skip(why: string): void }): boolean {

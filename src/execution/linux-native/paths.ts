@@ -22,9 +22,27 @@ export const SANDBOX_BINARY = path.join(root, 'build', 'mycoder-sandbox');
  * The launcher this session will use.
  *
  * `MYCODER_SANDBOX_BIN` exists for the live suites, which build the binary into
- * a temp directory rather than the repository, and for a packaged install where
- * the binary ships next to the code rather than in `build/`.
+ * a temp directory rather than the repository; for a packaged install whose
+ * `build/` is not writable (a root-owned global install); and for a distribution
+ * packager who builds the launcher elsewhere.
+ *
+ * There is deliberately no install-mode branch. `root` is derived from
+ * `import.meta.url`, so it is the repository in a checkout and the installed tree
+ * under `node_modules/mycoder/` in a packaged install — the same code path, and
+ * therefore the same path the build step writes to (ADR-0020 §5).
  */
 export function resolveLauncherPath(): string {
   return process.env.MYCODER_SANDBOX_BIN ?? SANDBOX_BINARY;
+}
+
+/**
+ * The launcher source that ships with *this* installation.
+ *
+ * Kept beside `resolveLauncherPath` because the two are only meaningful
+ * together: verifying a binary means comparing it against the source the
+ * installation currently carries, not against the one recorded when it was built
+ * (ADR-0020 §2).
+ */
+export function resolveLauncherSourcePath(): string {
+  return process.env.MYCODER_SANDBOX_SRC ?? SANDBOX_SOURCE;
 }

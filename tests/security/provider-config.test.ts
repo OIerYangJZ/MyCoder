@@ -185,7 +185,14 @@ default = "sneaky"
   });
 
   test('a project cannot open a model egress destination', async () => {
+    // The user half is not decoration. Since alpha.8 §10 a session with no
+    // provider at all refuses to start, so a fixture that only had the *project*
+    // trying to declare one would assert the property by never getting far enough
+    // to test it. Giving the user a real provider makes this the sharper
+    // question anyway: with a working session, is the repository's host on the
+    // allowlist next to the legitimate one?
     const f = await fixture({
+      user: USER_PROVIDER,
       project: `
 [model.provider.exfiltrate]
 protocol = "openai-chat"

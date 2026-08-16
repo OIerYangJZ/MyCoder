@@ -2,14 +2,14 @@
   "name": "mycoder",
   "version": "0.1.0",
   "private": true,
-  "description": "MyCoder \u2014 a coding agent kernel: small, verifiable, with explicit security boundaries.",
+  "description": "MyCoder — a coding agent kernel: small, verifiable, with explicit security boundaries.",
   "type": "module",
   "engines": {
-    "node": ">=22.6.0"
+    "node": ">=22.18.0"
   },
   "packageManager": "pnpm@10.33.0",
   "bin": {
-    "mycoder": "./src/cli/main.ts"
+    "mycoder": "./bin/mycoder.mjs"
   },
   "exports": {
     ".": "./src/index.ts"
@@ -26,17 +26,20 @@
     "lint": "node scripts/lint.ts",
     "lint:selftest": "node --test --experimental-strip-types \"tests/lint/**/*.test.ts\"",
     "mycoder": "node src/cli/main.ts",
+    "pack": "node scripts/pack.ts",
+    "package:check": "node scripts/package-check.ts",
     "test": "node --test --experimental-strip-types \"tests/**/*.test.ts\"",
     "test:conformance": "node --test --experimental-strip-types tests/integration/backend-conformance.test.ts",
     "test:container": "KERNEL_CONTAINER=1 node --test --experimental-strip-types \"tests/live/container-*.test.ts\" \"tests/unit/container-plan.test.ts\" \"tests/integration/backend-conformance.test.ts\"",
-    "test:egress": "node --test --experimental-strip-types \"tests/unit/egress-*.test.ts\" \"tests/security/egress-composition.test.ts\"",
-    "test:egress:live": "KERNEL_CONTAINER=1 node --test --experimental-strip-types \"tests/live/container-egress.test.ts\" \"tests/live/container-resources.test.ts\"",
     "test:credentials": "node --test --experimental-strip-types \"tests/security/credential-file.test.ts\" \"tests/security/credential-isolation.test.ts\"",
     "test:delegation": "node --test --experimental-strip-types \"tests/integration/delegation*.test.ts\" \"tests/security/delegation-attacks.test.ts\" \"tests/integration/skill-runtime.test.ts\"",
+    "test:egress": "node --test --experimental-strip-types \"tests/unit/egress-*.test.ts\" \"tests/security/egress-composition.test.ts\"",
+    "test:egress:live": "KERNEL_CONTAINER=1 node --test --experimental-strip-types \"tests/live/container-egress.test.ts\" \"tests/live/container-resources.test.ts\"",
     "test:evals": "node --test --experimental-strip-types \"tests/evals/**/*.test.ts\"",
     "test:integration": "node --test --experimental-strip-types \"tests/integration/**/*.test.ts\"",
     "test:live:model": "KERNEL_LIVE=1 node --test --experimental-strip-types \"tests/live/model-live.test.ts\"",
     "test:model": "node --test --experimental-strip-types \"tests/model/**/*.test.ts\"",
+    "test:packaging": "node --test --experimental-strip-types \"tests/integration/packaging.test.ts\" \"tests/integration/runtime-version.test.ts\" \"tests/integration/cli-contract.test.ts\"",
     "test:platform": "node --test --experimental-strip-types \"tests/unit/**/*.test.ts\" \"tests/integration/**/*.test.ts\"",
     "test:replay": "node --test --experimental-strip-types tests/integration/replay-gate.test.ts",
     "test:security": "node --test --experimental-strip-types \"tests/security/**/*.test.ts\"",
@@ -52,5 +55,20 @@
     "prettier": "^3.9.6",
     "typescript": "^5.9.3"
   },
-  "comment:dependencies": "v0.1 intentionally ships with zero RUNTIME dependencies; typescript, @types/node and prettier are devDependencies used only by `pnpm typecheck` and `pnpm format:check`. `pnpm lint` is scripts/lint.ts, a zero-dependency architecture linter \u2014 see its header for why it is not ESLint. Node >=22.6 strips TypeScript types natively and provides node:test, fetch, crypto and fs/promises. Glob matching, unified diff, TOML parsing and JSON Schema validation are implemented in src/util/ so that the kernel \u2014 and in particular its security tests \u2014 can run fully offline with no supply chain surface. See docs/adr/ADR-0009-zero-runtime-dependencies.md."
+  "comment:dependencies": "v0.1 intentionally ships with zero RUNTIME dependencies; typescript, @types/node and prettier are devDependencies used only by `pnpm typecheck` and `pnpm format:check`. `pnpm lint` is scripts/lint.ts, a zero-dependency architecture linter — see its header for why it is not ESLint. Node >=22.6 strips TypeScript types natively and provides node:test, fetch, crypto and fs/promises. Glob matching, unified diff, TOML parsing and JSON Schema validation are implemented in src/util/ so that the kernel — and in particular its security tests — can run fully offline with no supply chain surface. See docs/adr/ADR-0009-zero-runtime-dependencies.md.",
+  "files": [
+    "bin/",
+    "src/",
+    "native/",
+    "scripts/build-sandbox.ts",
+    "docs/adr/",
+    "docs/kernel-v0.1-spec.md",
+    "docs/threat-model.md",
+    "docs/cli-contract.md",
+    "docs/installing.md",
+    "docs/configuring-a-provider.md",
+    "docs/web-access.md",
+    "README.md",
+    "build-info.json"
+  ]
 }

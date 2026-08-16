@@ -372,6 +372,14 @@ export const RULES: Rule[] = [
         // installation keep its own files. It reads one override name and no
         // credential can be one.
         'src/execution/linux-native/paths.ts',
+        // Reads `CC` to pick a compiler for the explicit build step (ADR-0020).
+        // It moved here from `scripts/` in alpha.8 so a packaged install — which
+        // has no `scripts/` entry and no pnpm — can reach it from
+        // `mycoder build-sandbox`. Nothing it reads reaches a child's
+        // environment: the compile runs under `spawnSync` with an explicit argv
+        // and no inherited env of interest, and no credential can be a compiler
+        // name.
+        'src/execution/linux-native/build.ts',
       ].includes(f),
     check: ({ file, code }) => scan(file, code, /\bprocess\.env\b/, 'no-host-env-read', 'reads process.env'),
   },
