@@ -33,6 +33,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { checkSuite, extractSpecClauses, SUITE, type SpecClauses } from './acceptance.ts';
 import {
   checkClosedAnnotations,
   checkIndexReconciliation,
@@ -74,6 +75,17 @@ export const MATRICES = [
 
 /** The index every open claim has to appear in (alpha.11 §7.2). */
 const OPEN_EVIDENCE = 'docs/open-evidence.md';
+
+/**
+ * The normative specification the acceptance suite is derived from (alpha.12 §7).
+ *
+ * A sibling of this repository, in no version control, and expected to be deleted
+ * once development finishes (ADR-0019 §8, `docs/kernel-v0.1-spec.md`). Absent in
+ * CI and absent for every consumer of the package, which is why the suite quotes
+ * its clauses — and why a run that could not read it says so rather than passing
+ * quietly.
+ */
+const SPEC = '../research/kernel_v0.1_technical_spec.md';
 
 /**
  * The header alpha.8 §19 requires every matrix to carry.
@@ -463,7 +475,19 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   const orphaned = corpusProblems.filter((p) => !reports.some((r) => r.matrix === p.matrix));
 
-  const allProblems = [...reports.flatMap((r) => r.problems), ...orphaned];
+  // The acceptance suite (alpha.12 §7). Checked from inside this gate rather than
+  // as a second one: it maps onto the same matrices, resolves evidence with the
+  // same vocabulary, and a separate command would be a separate thing to forget.
+  const suiteMarkdown = await readFile(path.join(ROOT, SUITE), 'utf8');
+  let spec: SpecClauses | undefined;
+  try {
+    spec = extractSpecClauses(await readFile(path.join(ROOT, SPEC), 'utf8'));
+  } catch {
+    spec = undefined;
+  }
+  const suite = await checkSuite(suiteMarkdown, spec, options);
+
+  const allProblems = [...reports.flatMap((r) => r.problems), ...orphaned, ...suite.problems];
   const allRows = reports.flatMap((r) => r.rows);
   const counts = STATUSES.map((s) => [s, allRows.filter((r) => r.status === s).length] as const);
   const openIndexed = index.entries.filter((e) => e.section !== 'C').length;
@@ -486,6 +510,14 @@ async function main(argv: readonly string[]): Promise<number> {
             rowsOpen: closed.open,
             rowsClosed: closed.closed,
             rowsOutOfScope: closed.scope,
+          },
+          acceptanceSuite: {
+            items: suite.counts.items,
+            covered: suite.counts.covered,
+            uncovered: suite.counts.uncovered,
+            byTier: suite.counts.byTier,
+            bySource: suite.counts.bySource,
+            specChecked: suite.specChecked,
           },
           problems: allProblems,
         },
@@ -516,6 +548,22 @@ async function main(argv: readonly string[]): Promise<number> {
       `${closed.scope} out of scope by decision\n`,
   );
 
+  // The suite's own numbers, and — the part that matters — whether the clause
+  // coverage was re-derived or merely assumed. "62 items, 54 covered" reads the
+  // same either way, so the line says which.
+  const tiers = Object.entries(suite.counts.byTier)
+    .map(([tier, n]) => `${tier} ${n}`)
+    .join(' · ');
+  process.stdout.write(
+    `${SUITE}: ${suite.counts.items} item(s) — ${suite.counts.covered} covered, ` +
+      `${suite.counts.uncovered} not; ${tiers}\n` +
+      `  clause coverage ${
+        suite.specChecked
+          ? 're-derived against the specification'
+          : `NOT re-derived: ${SPEC} is absent, so only the suite's internal consistency was checked`
+      }\n`,
+  );
+
   if (allProblems.length === 0) {
     process.stdout.write('every claim points at something that exists, and the corpus agrees with itself\n');
     return 0;
@@ -527,7 +575,7 @@ async function main(argv: readonly string[]): Promise<number> {
       process.stdout.write(`  ${report.matrix}:${p.line}  ${p.requirement}\n      ${p.message}\n`);
     }
   }
-  for (const p of orphaned) {
+  for (const p of [...orphaned, ...suite.problems]) {
     process.stdout.write(`  ${p.matrix}:${p.line}  ${p.requirement}\n      ${p.message}\n`);
   }
   return 1;
