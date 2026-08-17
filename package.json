@@ -27,6 +27,7 @@
     "format:check": "prettier --check \"**/*.{ts,json,md,yml}\"",
     "lint": "node scripts/lint.ts",
     "lint:selftest": "node --test --experimental-strip-types \"tests/lint/**/*.test.ts\"",
+    "mirrors": "node scripts/mirrors.ts",
     "mycoder": "node src/cli/main.ts",
     "package:check": "node scripts/package-check.ts",
     "release:pack": "node scripts/pack.ts",

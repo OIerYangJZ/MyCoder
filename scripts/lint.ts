@@ -716,7 +716,14 @@ export const RULES: Rule[] = [
 
 // --- driver ----------------------------------------------------------------
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.agent']);
+/**
+ * Directories no source walk enters.
+ *
+ * Exported because `scripts/mirrors.ts` walks the same trees and a second copy
+ * of this list would be exactly the kind of hand-maintained mirror that closure
+ * is about — found while writing it, which is a small argument for the audit.
+ */
+export const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.agent']);
 
 async function collect(dir: string, acc: string[] = []): Promise<string[]> {
   let entries;
