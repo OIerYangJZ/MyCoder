@@ -17,11 +17,14 @@ import {
   banner,
   box,
   centre,
-  closeInput,
+  discardInput,
   formatDuration,
   inputRule,
   openInput,
   pickTips,
+  redrawBottomRule,
+  ruleOf,
+  statusLine,
   submitted,
   TIPS,
   turnFooter,
@@ -192,11 +195,13 @@ describe('boxes', () => {
       isolation: 'i',
       caveat: 'c',
     };
+    // Tips are passed explicitly and empty: one of the real tips contains the word
+    // "context", and a test that grepped for it would pass or fail on a coin toss.
     assert.match(
-      banner({ ...base, contextWindow: 65536 }, plain, glyphs(true), 80),
+      banner({ ...base, contextWindow: 65536 }, plain, glyphs(true), 80, []),
       /context\s+65,536 tokens/,
     );
-    assert.equal(/context/.test(banner(base, plain, glyphs(true), 80)), false);
+    assert.equal(/context\s+\d/.test(banner(base, plain, glyphs(true), 80, [])), false);
   });
 
   test('the banner names what to check before typing, isolation included', () => {
@@ -496,24 +501,76 @@ describe('the input frame, before and after sending', () => {
     const opened = openInput(plain, glyphs(true), 40);
     const rules = opened.split('\n').filter((l) => /^─+$/.test(l));
     assert.equal(rules.length, 2, `expected two rules, got ${rules.length}`);
-    assert.match(opened, /\u001b\[2A$/, 'the cursor is not brought back between the rules');
+    assert.match(opened, /\u001b\[2A\r$/, 'the cursor is not brought back between the rules');
     assert.equal(opened.includes('│'), false, 'the input frame grew a side');
   });
 
-  test('closing it steps past the bottom rule rather than erasing it', () => {
-    assert.equal(closeInput(), '\n');
+  test('what was sent is redrawn as an inverse block, with the frame closed under it', () => {
+    const block = submitted('fix the failing test', fancy, glyphs(true), 80);
+    assert.match(block, /\u001b\[47;30m > fix the failing test \u001b\[0m/);
+    assert.match(block, /\u001b\[1A/, 'it must replace the line that was typed, not add one');
+    assert.ok(
+      block.endsWith('\n') && block.includes('─'),
+      'the bottom rule has to be re-drawn under the block',
+    );
   });
 
-  test('what was sent is redrawn as an inverse block', () => {
-    const block = submitted('fix the failing test', fancy, 80);
-    assert.ok(block);
-    assert.match(block!, /\u001b\[47;30m > fix the failing test \u001b\[0m/);
-    assert.match(block!, /^\u001b\[1A/, 'it must replace the line that was typed, not add one');
-  });
-
-  test('a line that wrapped is left exactly as typed', () => {
+  test('a line that wrapped is left exactly as typed, and still gets its rule', () => {
     // Moving up one line would land in the middle of a wrapped input and erase half
-    // of it. Leaving it alone is the honest failure mode.
-    assert.equal(submitted('x'.repeat(100), fancy, 80), undefined);
+    // of it. Leaving it alone is the honest failure mode — but the frame still closes.
+    const block = submitted('x'.repeat(100), fancy, glyphs(true), 80);
+    assert.equal(/47;30m/.test(block), false, 'a wrapped line must not be re-rendered');
+    assert.ok(block.endsWith('\n') && block.includes('─'));
+  });
+
+  test('an empty Enter erases the frame instead of stacking another one', () => {
+    // Holding Enter used to produce a ladder of empty boxes, each with an inverse
+    // block containing nothing.
+    const discarded = discardInput();
+    assert.equal((discarded.match(/\u001b\[2K/g) ?? []).length, 3, 'all three lines must be erased');
+    assert.equal(
+      (discarded.match(/\u001b\[1A/g) ?? []).length,
+      2,
+      'the cursor must end up where the frame began',
+    );
+  });
+
+  test('the bottom rule is re-drawn around readline, not by moving the cursor absolutely', () => {
+    // readline erases everything below its line on every keystroke, so the rule has
+    // to be put back — with save, one line down, restore, and nothing else.
+    const redraw = redrawBottomRule(plain, glyphs(true), 40);
+    assert.match(redraw, /^\u001b7/, 'the cursor position must be saved first');
+    assert.match(redraw, /\u001b8$/, 'and restored afterwards');
+    assert.match(redraw, /\u001b\[1B/, 'one line down, relatively');
+    assert.equal(/\u001b\[\d+;\d+H/.test(redraw), false, 'no absolute positioning');
+  });
+
+  test('the rule spans the terminal, like the banner above it', () => {
+    assert.equal(visibleWidth(ruleOf(plain, glyphs(true), 200)), 198);
+    assert.equal(visibleWidth(ruleOf(plain, glyphs(true), 40)), 38);
+  });
+
+  test('the status line reports what the session counted, and no context percentage', () => {
+    const line = statusLine(
+      {
+        model: 'deepseek',
+        contextWindow: 65536,
+        requests: 3,
+        tokens: 12_400,
+        costUsd: 0.0031,
+        elapsedMs: 5000,
+      },
+      plain,
+    );
+    assert.match(line, /deepseek/);
+    assert.match(line, /66k ctx/);
+    assert.match(line, /3 requests/);
+    assert.match(line, /12\.4k tokens/);
+    assert.match(line, /\$0\.0031/);
+    assert.match(line, /5s/);
+    // The authoritative context estimate lives on the control-plane host. A second
+    // one computed here would disagree with `/status`, which is the shape of half
+    // the defects this milestone found.
+    assert.equal(/%/.test(line), false, 'a context percentage appeared from somewhere');
   });
 });

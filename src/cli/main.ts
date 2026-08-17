@@ -46,12 +46,14 @@ import { setupCredential } from './setup-credential.ts';
 import { TerminalApprovalPrompter } from './prompter.ts';
 import {
   banner,
-  closeInput,
   colourEnabled,
+  discardInput,
   glyphs as glyphSet,
   openInput,
   palette as makePalette,
+  redrawBottomRule,
   SessionRenderer,
+  statusLine,
   submitted,
 } from './render.ts';
 import { parseShellLine, describePlan } from './shell-parse.ts';
@@ -235,7 +237,15 @@ export async function main(argv: readonly string[]): Promise<number> {
       nonInteractive: args.nonInteractive || !interactive,
       ...(resumeSessionId ? { resumeSessionId } : {}),
       ...(rl && !args.nonInteractive
-        ? { prompter: new TerminalApprovalPrompter({ rl, write: (t) => stderr.write(t) }) }
+        ? {
+            prompter: new TerminalApprovalPrompter({
+              rl,
+              write: (t) => stderr.write(t),
+              palette,
+              glyphs,
+              columns,
+            }),
+          }
         : {}),
     });
   } catch (e) {
@@ -307,6 +317,12 @@ export async function main(argv: readonly string[]): Promise<number> {
       `${palette.dim('Type a task, or /help for control commands. Ctrl-C cancels a turn, Ctrl-D exits.')}\n\n`,
     );
 
+    // readline's own refresh erases everything below its line, bottom rule included,
+    // so it is written again after each keystroke. One line, three escape sequences.
+    const keepFrame = (): void => {
+      stderr.write(redrawBottomRule(palette, glyphs, columns()));
+    };
+
     // Ctrl-C cancels the turn rather than killing the process — an interrupted
     // turn still has to close its tool calls and flush its event log.
     rl.on('SIGINT', () => {
@@ -318,18 +334,24 @@ export async function main(argv: readonly string[]): Promise<number> {
       let line: string;
       try {
         renderer.quiet();
-        // Both rules first, then the cursor comes back up between them: the frame is
-        // closed while you type rather than after you press Enter.
-        if (colour) stderr.write(openInput(palette, glyphs, columns()));
+        // Both rules first, then the cursor comes back up between them, so the frame
+        // is closed while you type. readline erases the bottom rule on every
+        // keystroke, so `keepFrame` puts it back.
+        if (colour) {
+          stderr.write(openInput(palette, glyphs, columns()));
+          stdin.on('keypress', keepFrame);
+        }
         line = await rl.question(`${palette.boldBlue(glyphs.prompt)} `);
         if (colour) {
-          // Redraw what was sent as an inverse block, so a long transcript makes
-          // "what I said" obvious. Skipped when the line wrapped: see `submitted`.
-          const block = submitted(line.trim(), palette, columns());
-          stderr.write(block ?? closeInput());
-          if (block !== undefined) stderr.write(closeInput());
+          stdin.off('keypress', keepFrame);
+          // An empty Enter throws the frame away rather than leaving a ladder of
+          // empty boxes behind it.
+          stderr.write(
+            line.trim() === '' ? discardInput() : submitted(line.trim(), palette, glyphs, columns()),
+          );
         }
       } catch {
+        if (colour) stdin.off('keypress', keepFrame);
         break; // Ctrl-D
       }
       if (line.trim() === '') continue;
@@ -402,7 +424,23 @@ async function runOnce(
   } else {
     if (outcome.finalText) stdout.write(`\n${outcome.finalText}\n\n`);
     const footer = renderer?.footer();
-    if (footer) stderr.write(`${footer}\n\n`);
+    if (footer) stderr.write(`${footer}\n`);
+    if (renderer) {
+      const usage = kernel.session.usageSnapshot;
+      const resolved = kernel.modelRegistry.resolve(kernel.session.activeModelAlias);
+      stderr.write(
+        `${statusLine(
+          {
+            model: kernel.session.activeModelAlias,
+            ...(resolved ? { contextWindow: resolved.profile.contextWindow } : {}),
+            requests: usage.modelRequests,
+            tokens: usage.inputTokens + usage.outputTokens,
+            costUsd: kernel.session.costBreakdown.totalUsd,
+          },
+          renderer.palette,
+        )}\n\n`,
+      );
+    }
     if (outcome.error) {
       stderr.write(`\n${outcome.error.code}: ${outcome.error.message}\n\n`);
     }

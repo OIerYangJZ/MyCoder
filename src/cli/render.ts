@@ -427,29 +427,26 @@ export function formatDuration(ms: number): string {
 /**
  * The input frame: a rule above, a rule below, and nothing at the sides.
  *
- * Both rules are drawn **before** the cursor arrives, which is the only way the
- * frame is closed while you type rather than after you press Enter. That needs two
- * relative cursor moves — down a line and up two — and nothing more: no alternate
- * screen, no absolute positioning, no redraw per keystroke. A right-hand border
- * would need that redraw, and that is the TUI spec §1.3 rules out.
+ * Both rules are drawn **before** the cursor arrives, so the frame is closed while
+ * you type. That takes more than writing them once: `readline` refreshes its line on
+ * every keystroke with "erase everything below the cursor", which wipes the bottom
+ * rule — the first version of this shipped with only a top rule for exactly that
+ * reason, and it looked like the feature had not been built.
  *
- * `openInput` leaves the cursor on the blank line between the rules, where readline
- * then writes the prompt.
+ * So the bottom rule is re-drawn from the keypress handler, using save-cursor,
+ * one line down, and restore. Three escape sequences, one extra line, no absolute
+ * positioning and no alternate screen: still not the TUI spec §1.3 rules out, and
+ * the cheapest thing that survives contact with readline.
  */
-export function openInput(p: Palette, g: Glyphs, columns: number): string {
-  const rule = ruleOf(p, g, columns);
-  // rule, blank line for the prompt, rule, then back up two lines.
-  return `${rule}\n\n${rule}\n${CURSOR_UP(2)}`;
-}
+const SAVE = '\u001b7';
+const RESTORE = '\u001b8';
+const CLEAR_LINE = `${ESC}2K`;
+const UP = (n: number): string => `${ESC}${n}A`;
+const DOWN = (n: number): string => `${ESC}${n}B`;
 
-/** Move past the bottom rule, leaving it on screen. */
-export function closeInput(): string {
-  return '\n';
-}
-
-/** The rule itself, exported for the tests that assert it has no sides. */
+/** The rule spans the terminal, like the banner above it. */
 export function ruleOf(p: Palette, g: Glyphs, columns: number): string {
-  return p.dimBlue(g.horizontal.repeat(Math.max(8, Math.min(columns - 2, 100))));
+  return p.dimBlue(g.horizontal.repeat(Math.max(8, columns - 2)));
 }
 
 /** Kept for callers that only want one rule. */
@@ -457,23 +454,83 @@ export function inputRule(p: Palette, g: Glyphs, columns = 80): string {
   return ruleOf(p, g, columns);
 }
 
-const CURSOR_UP = (n: number): string => `${ESC}${n}A`; // ESC already carries the '['
+/**
+ * Draw the frame and leave the cursor on the blank line inside it.
+ *
+ * A line is written past the bottom rule too, so the terminal has already scrolled
+ * if it needed to: every cursor move after this is within a region that exists.
+ */
+export function openInput(p: Palette, g: Glyphs, columns: number): string {
+  const rule = ruleOf(p, g, columns);
+  return `${rule}\n\n${rule}\n${UP(2)}\r`;
+}
+
+/** Put the bottom rule back after readline has erased it. */
+export function redrawBottomRule(p: Palette, g: Glyphs, columns: number): string {
+  return `${SAVE}${DOWN(1)}\r${CLEAR_LINE}${ruleOf(p, g, columns)}${RESTORE}`;
+}
 
 /**
- * What you typed, redrawn as a block once it has been sent.
+ * What you typed, redrawn as a block once it has been sent, with the frame closed
+ * under it.
  *
  * Inverse video — dark text on a light background — because the one thing that is
- * genuinely hard to follow in a long transcript is which lines were *yours*. It
- * replaces the line you typed rather than adding another: the cursor goes up one
- * line, the line is erased, and the block is written in its place.
+ * genuinely hard to follow in a long transcript is which lines were *yours*.
  *
- * Only when the line fits in one terminal row. A wrapped input occupies more rows
- * than this can account for, and moving up one line would land in the middle of it —
- * so a long prompt is left exactly as typed.
+ * Only when the line fits in one terminal row: a wrapped input occupies more rows
+ * than one cursor move can account for, so a long prompt is left exactly as typed.
  */
-export function submitted(text: string, p: Palette, columns: number): string | undefined {
-  if (visibleWidth(text) + 4 > columns) return undefined;
-  return `${CURSOR_UP(1)}\r${ESC}2K${p.inverse(` > ${text} `)}\n`;
+export function submitted(text: string, p: Palette, g: Glyphs, columns: number): string {
+  const framed = `${ruleOf(p, g, columns)}\n`;
+  if (visibleWidth(text) + 4 > columns) return framed;
+  return `${CLEAR_LINE}${UP(1)}\r${CLEAR_LINE}${p.inverse(` > ${text} `)}\n${framed}`;
+}
+
+/**
+ * Throw the frame away without leaving a trace.
+ *
+ * An empty Enter used to print an inverse block containing nothing and then draw a
+ * fresh frame under it, so holding Enter produced a ladder of empty boxes. Now the
+ * three lines are erased and the next prompt is drawn in the same place.
+ */
+export function discardInput(): string {
+  return `${CLEAR_LINE}\r${UP(1)}${CLEAR_LINE}\r${UP(1)}${CLEAR_LINE}\r`;
+}
+
+export interface StatusInfo {
+  model: string;
+  contextWindow?: number;
+  requests: number;
+  tokens: number;
+  costUsd?: number;
+  elapsedMs?: number;
+}
+
+/**
+ * One line under the frame: what answered, how much of it there was, what it cost.
+ *
+ * Every figure comes from the session's own counters. There is deliberately **no
+ * context percentage**: the authoritative estimate lives on the control-plane host
+ * (`contextUsage`), not on the kernel, and a percentage computed a second way would
+ * be a number that disagrees with `/status` — which is the shape of half the defects
+ * this milestone found.
+ */
+export function statusLine(info: StatusInfo, p: Palette): string {
+  const parts = [
+    p.blue(info.model),
+    ...(info.contextWindow === undefined ? [] : [p.dim(`${Math.round(info.contextWindow / 1000)}k ctx`)]),
+    p.dim(`${info.requests} request${info.requests === 1 ? '' : 's'}`),
+    p.dim(`${formatTokens(info.tokens)} tokens`),
+    ...(info.costUsd === undefined ? [] : [p.green(`$${info.costUsd.toFixed(4)}`)]),
+    ...(info.elapsedMs === undefined ? [] : [p.dim(formatDuration(info.elapsedMs))]),
+  ];
+  return `  ${parts.join(p.dim(' · '))}`;
+}
+
+export function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
 /** Greedy wrap. Long words are left long rather than broken mid-path. */
@@ -662,6 +719,11 @@ export class SessionRenderer {
       default:
         return;
     }
+  }
+
+  /** The palette this renderer was built with, so a caller can match it. */
+  get palette(): Palette {
+    return this.opts.palette;
   }
 
   /** Stop any frame in flight. Called before a prompt and at shutdown. */

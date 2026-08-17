@@ -15,28 +15,67 @@ import type { Interface as ReadlineInterface } from 'node:readline/promises';
 
 import { describeAccess } from '../policy/access.ts';
 import type { ApprovalOutcome, ApprovalPrompter, ApprovalRequest } from '../tools/runtime.ts';
+import {
+  box,
+  diffBlock,
+  glyphs as glyphSet,
+  palette as makePalette,
+  type Glyphs,
+  type Palette,
+} from './render.ts';
 
 export interface TerminalPrompterOptions {
   rl: ReadlineInterface;
   write?: (text: string) => void;
   /** Default when the user just presses enter. Denial, deliberately. */
   defaultDeny?: boolean;
+  /** Styling. Absent means plain text, which is what a pipe and a test get. */
+  palette?: Palette;
+  glyphs?: Glyphs;
+  columns?: () => number;
 }
 
 export class TerminalApprovalPrompter implements ApprovalPrompter {
   private readonly rl: ReadlineInterface;
   private readonly write: (text: string) => void;
+  private readonly p: Palette;
+  private readonly g: Glyphs;
+  private readonly columns: () => number;
 
   constructor(opts: TerminalPrompterOptions) {
     this.rl = opts.rl;
     this.write = opts.write ?? ((t) => process.stderr.write(t));
+    this.p = opts.palette ?? makePalette(false);
+    this.g = opts.glyphs ?? glyphSet(false);
+    this.columns = opts.columns ?? (() => 80);
+  }
+
+  /**
+   * The one screen the user is *required* to read, so it gets the frame.
+   *
+   * A diff is rendered with its own colours and everything else stays as
+   * `renderApproval` wrote it: the text of an approval is a security surface and
+   * this is presentation only. The answers are numbered as well as lettered because
+   * `[y]` and `[s]` are indistinguishable to somebody who has not read this before.
+   */
+  private frame(request: ApprovalRequest): string {
+    const lines = renderApproval(request)
+      .split('\n')
+      .map((line) => (/^\s{4}[-+@]/.test(line) ? diffBlock(line, this.p) : line));
+    const title = `${this.p.boldBlue(this.g.diamond)} ${this.p.boldBlue('Approval required')}`;
+    return box([title, '', ...lines.slice(1)], this.p, this.g, this.columns());
   }
 
   async request(request: ApprovalRequest): Promise<ApprovalOutcome> {
-    this.write(`\n${renderApproval(request)}\n`);
+    this.write(`\n${this.frame(request)}\n`);
 
     for (;;) {
-      const answer = (await this.rl.question('  [y] once  [s] this session  [n] no  [d] deny for session > '))
+      const answer = (
+        await this.rl.question(
+          `  ${this.p.boldBlue('[y]')} once  ${this.p.boldBlue('[s]')} this session  ` +
+            `${this.p.boldBlue('[n]')} no  ${this.p.boldBlue('[d]')} deny for session ${this.p.dim('>')} `,
+        )
+      )
         .trim()
         .toLowerCase();
 

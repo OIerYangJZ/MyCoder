@@ -17,7 +17,7 @@
 ## 1. Gates
 
 ```text
-offline suite      1380 tests · 1287 pass · 0 fail · 93 skip   (1322 at the tag)
+offline suite      1383 tests · 1290 pass · 0 fail · 93 skip   (1322 at the tag)
 architecture lint  16 rules · no violations
 lint self-tests    250 / 250          (172 in alpha.11; +39 acceptance, +39 mirrors)
 evidence gate      11 matrices · every claim resolves · corpus internally consistent
@@ -334,6 +334,16 @@ frame is closed while you type rather than after you press Enter, and what was s
 then redrawn as an inverse block, because the thing that is genuinely hard to follow in
 a long transcript is which lines were yours. A wrapped prompt is left exactly as typed:
 moving up one line would erase half of it.
+
+The first version of that frame shipped with **only a top rule**, and the reason is
+worth keeping: `readline` refreshes its line on every keystroke with "erase everything
+below the cursor", so the pre-drawn bottom rule was wiped before the first character
+was typed. It is now re-drawn from the keypress handler — save cursor, one line down,
+restore — which is three escape sequences and one line, and still not a TUI. An empty
+Enter erases the frame rather than leaving it behind, because holding Enter used to
+produce a ladder of empty boxes each containing an inverse block with nothing in it.
+And the rules span the terminal, like the banner: a 100-column cap looked broken next
+to a full-width frame.
 
 A turn now ends the way it should have from the start — `✻ Worked for 1m 4s` and
 `read 3 files, searched for 3 patterns, listed 2 directories, ran 27 shell commands`,
