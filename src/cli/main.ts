@@ -207,7 +207,12 @@ export async function main(argv: readonly string[]): Promise<number> {
   // is not a terminal: stdout is a contract and a log file should not receive
   // spinner frames.
   // The terminal's width, re-read each time: a window can be resized mid-session.
-  const columns = (): number => (stderr.isTTY === true ? (stderr.columns ?? 80) : 80);
+  const columns = (): number => {
+    // A pty with no window size reports 0, and `Math.max(8, 0 - 2)` produced an
+    // eight-dash rule that looked like a bug in the frame rather than in the size.
+    const reported = stderr.isTTY === true ? stderr.columns : undefined;
+    return typeof reported === 'number' && reported > 20 ? reported : 80;
+  };
 
   // lint-allow no-host-env-read: NO_COLOR / TERM / FORCE_COLOR decide styling only.
   // Nothing read here reaches a child process, the model or a log, and no credential
@@ -341,7 +346,15 @@ export async function main(argv: readonly string[]): Promise<number> {
           stderr.write(openInput(palette, glyphs, columns()));
           stdin.on('keypress', keepFrame);
         }
-        line = await rl.question(`${palette.boldBlue(glyphs.prompt)} `);
+        // `question` writes the prompt synchronously, and readline's own refresh
+        // erases everything below that line — including the bottom rule that was
+        // just drawn. So it is put back immediately, before the first keystroke,
+        // and again from `keepFrame` after every one. Without this the frame looked
+        // open until you typed a character, which is how "there is no bottom line"
+        // was still true after the first fix.
+        const answer = rl.question(`${palette.boldBlue(glyphs.prompt)} `);
+        if (colour) stderr.write(redrawBottomRule(palette, glyphs, columns()));
+        line = await answer;
         if (colour) {
           stdin.off('keypress', keepFrame);
           // An empty Enter throws the frame away rather than leaving a ladder of
