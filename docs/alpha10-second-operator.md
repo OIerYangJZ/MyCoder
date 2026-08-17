@@ -212,3 +212,47 @@ That last line is the one to re-read before the next milestone. `NOT APPLICABLE`
 was the right answer for the clean-resolver claim because no available machine
 could ever produce it. It is the wrong answer here, and the fact that the same
 move is now available and would tidy the corpus is exactly why it is refused.
+
+---
+
+## Where this stands after alpha.12
+
+`v0.1.0-alpha.12` ships with this **still open**: the seventh consecutive
+milestone. No operator was available during it either, and alpha.12 was
+deliberately not organised around this document — making it the MAIN a second time
+with nothing about its availability changed would have produced the same milestone
+with the same outcome, which is the pattern "a claim restated for the fourth time
+is not being tracked, it is being avoided" was written about.
+
+Two things changed instead, and only one of them is about this document.
+
+**The asking got cheaper. The run did not.** There is now one page a stranger can
+be sent — `docs/second-operator-invitation.md` — and a sheet they fill in
+themselves, `docs/second-operator-recording-sheet.md`, so the author need not be in
+the room at all. The distinction being observed here is alpha.12 §8.2's:
+
+```text
+legitimate    reduce the cost of ASKING
+illegitimate  reduce the cost of the RUN — pre-configuring the machine,
+              suggesting the task, being available for one question
+```
+
+The protocol above is **unchanged**, including "what the author does: nothing".
+The invitation contains no hint, no suggested task and nothing about what the
+product does, for the reason it states in its own words: an operator who arrives
+with the author's mental model is not a second operator. What was hard and is now
+easier is putting the question to somebody casually — "I need an hour, on your
+machine, and I am not allowed to help you" is difficult to ask without a page that
+answers "what would I actually be doing".
+
+**And it is now a tier rather than a row.** ADR-0027 makes this document **T4 of
+the acceptance suite** and makes T4 a precondition of `v0.1.0-rc.1`. A row in an
+index can be carried indefinitely — six milestones proved that — and a tier that
+gates the release candidate cannot. `docs/acceptance-suite.md` carries the T4 items
+and points back here for the protocol.
+
+`v0.1.0-alpha.12` is also, by ADR-0027 §5, **the last tag cut while this is open**.
+That was the user's decision rather than a planner's, and it is the only mechanism
+left that does not require a person: the thing a tag asserts is that the software
+is ready for somebody else, and that assertion stops being made until somebody
+else has actually held it.
