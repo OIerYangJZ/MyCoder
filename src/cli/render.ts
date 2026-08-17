@@ -38,9 +38,14 @@ export interface Palette {
   cyan(s: string): string;
   /** The accent. One colour carries the frame, the title and the prompt. */
   blue(s: string): string;
+  /** Dark text on a light background: what *you* said, once it has been sent. */
+  inverse(s: string): string;
   boldBlue(s: string): string;
   dimBlue(s: string): string;
 }
+
+/** The one escape byte in this file. */
+const ESC = '\u001b[';
 
 const wrap = (on: boolean, code: string) => (s: string) => (on ? `[${code}m${s}[0m` : s);
 
@@ -54,6 +59,7 @@ export function palette(on: boolean): Palette {
     yellow: wrap(on, '33'),
     cyan: wrap(on, '36'),
     blue: wrap(on, '34'),
+    inverse: wrap(on, '47;30'),
     boldBlue: wrap(on, '1;34'),
     dimBlue: wrap(on, '2;34'),
   };
@@ -76,6 +82,8 @@ export interface Glyphs {
   call: string;
   /** The title mark. `reference/clio` uses the same one. */
   diamond: string;
+  /** Printed with the "worked for" line when a turn finishes. */
+  finished: string;
   result: string;
   ok: string;
   bad: string;
@@ -95,6 +103,7 @@ export function glyphs(fancy: boolean): Glyphs {
     ? {
         call: '⏺',
         diamond: '◆',
+        finished: '✻',
         result: '⎿',
         ok: '✓',
         bad: '✗',
@@ -110,6 +119,7 @@ export function glyphs(fancy: boolean): Glyphs {
     : {
         call: '*',
         diamond: '*',
+        finished: '*',
         result: '`-',
         ok: 'ok',
         bad: 'x',
@@ -244,6 +254,37 @@ export interface BannerInfo {
   caveat: string;
 }
 
+/**
+ * The right-hand column of the banner.
+ *
+ * Every one is something the session can actually do, phrased as the command to
+ * type. A tip that names a feature without naming the way in is a tip that makes
+ * somebody go looking.
+ */
+export const TIPS: readonly string[] = [
+  '/help lists every control command',
+  '/status shows budget, context and dirty files',
+  '/undo reverses edits — all of them or none',
+  '/model list picks a different model',
+  '/permissions explain <subject> says why',
+  'Ctrl-C cancels a turn, Ctrl-D exits',
+  '!cmd shows how a command would parse',
+  '/compact summarises the older conversation',
+  '/loop start --max-steps 40 raises a budget',
+  '--read-only wins over --profile, and says so',
+];
+
+/** Pick without repeating. The generator is injectable so a test is not a coin toss. */
+export function pickTips(count: number, random: () => number = Math.random): string[] {
+  const pool = [...TIPS];
+  const out: string[] = [];
+  while (out.length < Math.min(count, TIPS.length)) {
+    const index = Math.min(pool.length - 1, Math.floor(random() * pool.length));
+    out.push(pool.splice(index, 1)[0] ?? '');
+  }
+  return out;
+}
+
 /** Pad a block of lines so it sits in the middle of the terminal. */
 export function centre(lines: readonly string[], columns: number): string[] {
   const widest = Math.max(...lines.map(visibleWidth), 0);
@@ -267,7 +308,13 @@ export function centre(lines: readonly string[], columns: number): string[] {
  * design, not copied — `reference/**` is read-only (AGENTS.md rule 3) and none of
  * its types cross into ours.
  */
-export function banner(info: BannerInfo, p: Palette, g: Glyphs, columns = 80): string {
+export function banner(
+  info: BannerInfo,
+  p: Palette,
+  g: Glyphs,
+  columns = 80,
+  tips: readonly string[] = pickTips(4),
+): string {
   const rows: Array<[string, string]> = [
     ['model', info.model],
     ...(info.contextWindow === undefined
@@ -278,43 +325,155 @@ export function banner(info: BannerInfo, p: Palette, g: Glyphs, columns = 80): s
     ['cwd', info.workspace],
   ];
 
-  const label = Math.max(...rows.map(([k]) => k.length));
-  const body = rows.map(([k, v]) => `${p.dim(k.padEnd(label))}  ${v}`);
+  // Full width, so nothing has to be centred except the title — a centred column
+  // of labels is unreadable, and a centred paragraph under a narrow box was the
+  // thing that made this uncomfortable to look at.
+  const inner = Math.max(40, columns - 4);
+  const labelWidth = Math.max(...rows.map(([k]) => k.length));
+  const gutter = 3;
+  const leftWidth = Math.max(...rows.map(([k, v]) => k.padEnd(labelWidth).length + 2 + v.length));
+  const tipWidth = Math.max(10, inner - leftWidth - gutter);
+
+  const left = rows.map(([k, v]) => `${p.dim(k.padEnd(labelWidth))}  ${v}`);
+
+  // Tips are decoration; the left column is not. A terminal too narrow to hold both
+  // loses the tips rather than truncating an isolation line into something that
+  // reads like a different claim.
+  const TIP_MINIMUM = 30;
+  const right =
+    tipWidth < TIP_MINIMUM
+      ? []
+      : [p.dim('Tips'), ...tips.map((tip) => p.dim(`· ${truncate(tip, tipWidth - 2)}`))];
+
+  const pad = (line: string, width: number): string =>
+    `${line}${' '.repeat(Math.max(0, width - visibleWidth(line)))}`;
+
   const title = `${p.boldBlue(g.diamond)} ${p.boldBlue('MyCoder')} ${p.dim(info.version)}`;
+  const body: string[] = [];
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const l = pad(left[i] ?? '', leftWidth);
+    const r = right[i] ?? '';
+    body.push(`${l}${' '.repeat(gutter)}${r}`);
+  }
 
-  // Width from the content, capped so a wide terminal does not stretch a
-  // six-line box across two feet of screen.
-  const inner = Math.min(Math.max(visibleWidth(title), ...body.map(visibleWidth)), Math.max(20, columns - 8));
-  const pad = (line: string): string => `${line}${' '.repeat(Math.max(0, inner - visibleWidth(line)))}`;
   const bar = g.horizontal.repeat(inner + 2);
-
   const framed = [
     p.blue(`${g.topLeft}${bar}${g.topRight}`),
-    // The title is centred inside the frame; the rows are not, because a column of
-    // labels is read by scanning down its left edge.
-    `${p.blue(g.vertical)} ${pad(centre([title], inner)[0] ?? title)} ${p.blue(g.vertical)}`,
-    `${p.blue(g.vertical)} ${pad('')} ${p.blue(g.vertical)}`,
-    ...body.map((line) => `${p.blue(g.vertical)} ${pad(line)} ${p.blue(g.vertical)}`),
+    `${p.blue(g.vertical)} ${pad(centre([title], inner)[0] ?? title, inner)} ${p.blue(g.vertical)}`,
+    `${p.blue(g.vertical)} ${pad('', inner)} ${p.blue(g.vertical)}`,
+    ...body.map((line) => `${p.blue(g.vertical)} ${pad(line, inner)} ${p.blue(g.vertical)}`),
     p.blue(`${g.bottomLeft}${bar}${g.bottomRight}`),
   ];
 
-  return [
-    ...centre(framed, columns),
-    '',
-    ...wrapText(info.caveat, Math.min(columns - 4, 84)).map((line) => `  ${p.dim(line)}`),
-  ].join('\n');
+  // The caveat sits under the frame at the frame's own left edge. Left-aligned, not
+  // centred: it is several sentences of prose and centred prose is a ransom note.
+  return [...framed, '', ...wrapText(info.caveat, inner).map((line) => `  ${p.dim(line)}`)].join('\n');
 }
 
 /**
- * The input frame: a rule above and a rule below, and nothing at the sides.
+ * `✻ Worked for 1m 4s`, and what it did while it worked.
  *
- * Closed top and bottom, open left and right — asked for, and it is also the only
- * shape that survives a `readline` prompt. A full box would need the input line
- * rewritten on every keystroke to keep a right-hand border in place, which is a
- * TUI, which is spec §1.3's NON-GOAL.
+ * Counted from the events the turn actually emitted rather than from the model's
+ * account of itself: "ran 27 shell commands" is a fact about the session, and a
+ * summary written from the final message would be a fact about the prose.
  */
+export function turnFooter(
+  elapsedMs: number,
+  counts: ReadonlyMap<string, number>,
+  p: Palette,
+  g: Glyphs,
+): string {
+  const phrases: Array<[string, (n: number) => string]> = [
+    ['Read', (n) => `read ${n} file${n === 1 ? '' : 's'}`],
+    ['Grep', (n) => `searched for ${n} pattern${n === 1 ? '' : 's'}`],
+    ['Glob', (n) => `listed ${n} director${n === 1 ? 'y' : 'ies'}`],
+    ['Shell', (n) => `ran ${n} shell command${n === 1 ? '' : 's'}`],
+    ['Edit', (n) => `edited ${n} file${n === 1 ? '' : 's'}`],
+    ['Write', (n) => `wrote ${n} file${n === 1 ? '' : 's'}`],
+    ['Delete', (n) => `deleted ${n} file${n === 1 ? '' : 's'}`],
+    ['Move', (n) => `moved ${n} file${n === 1 ? '' : 's'}`],
+    ['GitDiff', (n) => `read the diff ${n} time${n === 1 ? '' : 's'}`],
+    ['WebFetch', (n) => `fetched ${n} page${n === 1 ? '' : 's'}`],
+    ['Delegate', (n) => `delegated ${n} task${n === 1 ? '' : 's'}`],
+    ['Undo', (n) => `undid ${n} change${n === 1 ? '' : 's'}`],
+  ];
+
+  const named = new Set(phrases.map(([name]) => name));
+  const parts = phrases
+    .filter(([name]) => (counts.get(name) ?? 0) > 0)
+    .map(([name, phrase]) => phrase(counts.get(name) ?? 0));
+
+  // Anything this list has never heard of is still counted, by its own name: a tool
+  // added later must not silently vanish from the summary.
+  for (const [name, n] of counts) {
+    if (!named.has(name) && n > 0) parts.push(`called ${name} ${n} time${n === 1 ? '' : 's'}`);
+  }
+
+  const worked = `${p.blue(g.finished)} ${p.dim(`Worked for ${formatDuration(elapsedMs)}`)}`;
+  return parts.length === 0 ? worked : `${worked}\n  ${p.dim(parts.join(', '))}`;
+}
+
+/** `43s`, `1m 4s`, `2h 3m`. Whole units only; nobody reads milliseconds. */
+export function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+/**
+ * The input frame: a rule above, a rule below, and nothing at the sides.
+ *
+ * Both rules are drawn **before** the cursor arrives, which is the only way the
+ * frame is closed while you type rather than after you press Enter. That needs two
+ * relative cursor moves — down a line and up two — and nothing more: no alternate
+ * screen, no absolute positioning, no redraw per keystroke. A right-hand border
+ * would need that redraw, and that is the TUI spec §1.3 rules out.
+ *
+ * `openInput` leaves the cursor on the blank line between the rules, where readline
+ * then writes the prompt.
+ */
+export function openInput(p: Palette, g: Glyphs, columns: number): string {
+  const rule = ruleOf(p, g, columns);
+  // rule, blank line for the prompt, rule, then back up two lines.
+  return `${rule}\n\n${rule}\n${CURSOR_UP(2)}`;
+}
+
+/** Move past the bottom rule, leaving it on screen. */
+export function closeInput(): string {
+  return '\n';
+}
+
+/** The rule itself, exported for the tests that assert it has no sides. */
+export function ruleOf(p: Palette, g: Glyphs, columns: number): string {
+  return p.dimBlue(g.horizontal.repeat(Math.max(8, Math.min(columns - 2, 100))));
+}
+
+/** Kept for callers that only want one rule. */
 export function inputRule(p: Palette, g: Glyphs, columns = 80): string {
-  return p.dimBlue(g.horizontal.repeat(Math.max(8, Math.min(columns - 2, 96))));
+  return ruleOf(p, g, columns);
+}
+
+const CURSOR_UP = (n: number): string => `${ESC}${n}A`; // ESC already carries the '['
+
+/**
+ * What you typed, redrawn as a block once it has been sent.
+ *
+ * Inverse video — dark text on a light background — because the one thing that is
+ * genuinely hard to follow in a long transcript is which lines were *yours*. It
+ * replaces the line you typed rather than adding another: the cursor goes up one
+ * line, the line is erased, and the block is written in its place.
+ *
+ * Only when the line fits in one terminal row. A wrapped input occupies more rows
+ * than this can account for, and moving up one line would land in the middle of it —
+ * so a long prompt is left exactly as typed.
+ */
+export function submitted(text: string, p: Palette, columns: number): string | undefined {
+  if (visibleWidth(text) + 4 > columns) return undefined;
+  return `${CURSOR_UP(1)}\r${ESC}2K${p.inverse(` > ${text} `)}\n`;
 }
 
 /** Greedy wrap. Long words are left long rather than broken mid-path. */
@@ -433,6 +592,9 @@ export interface RendererOptions {
 export class SessionRenderer {
   private readonly spinner: Spinner;
   private readonly inFlight = new Map<string, string>();
+  /** Tool calls this turn, by name — what the footer's summary is counted from. */
+  private readonly calls = new Map<string, number>();
+  private turnStarted = 0;
 
   private readonly opts: RendererOptions;
 
@@ -447,6 +609,8 @@ export class SessionRenderer {
 
     switch (type) {
       case 'turn.started':
+        this.calls.clear();
+        this.turnStarted = Date.now();
         this.spinner.start('Thinking');
         return;
 
@@ -459,6 +623,7 @@ export class SessionRenderer {
         const id = typeof data.toolCallId === 'string' ? data.toolCallId : '';
         const args = typeof data.argsSummary === 'string' ? data.argsSummary : '{}';
         this.inFlight.set(id, name);
+        this.calls.set(name, (this.calls.get(name) ?? 0) + 1);
         this.spinner.stop();
         write(`${toolCallLine(name, args, p, g)}\n`);
         this.spinner.start(`Running ${name}`);
@@ -502,5 +667,16 @@ export class SessionRenderer {
   /** Stop any frame in flight. Called before a prompt and at shutdown. */
   quiet(): void {
     this.spinner.stop();
+  }
+
+  /**
+   * `✻ Worked for 1m 4s`, plus what it did — or nothing at all for a turn that
+   * called no tools and took no time worth reporting.
+   */
+  footer(now: () => number = Date.now): string | undefined {
+    if (this.turnStarted === 0) return undefined;
+    const elapsed = now() - this.turnStarted;
+    if (this.calls.size === 0 && elapsed < 2000) return undefined;
+    return turnFooter(elapsed, this.calls, this.opts.palette, this.opts.glyphs);
   }
 }

@@ -17,7 +17,14 @@ import {
   banner,
   box,
   centre,
+  closeInput,
+  formatDuration,
   inputRule,
+  openInput,
+  pickTips,
+  submitted,
+  TIPS,
+  turnFooter,
   colourEnabled,
   diffBlock,
   formatBytes,
@@ -149,7 +156,9 @@ describe('boxes', () => {
     assert.equal(rule.includes('│'), false, 'the input frame grew a side');
   });
 
-  test('the banner is centred in the terminal, and follows a resize', () => {
+  test('the title is centred inside the frame, and the frame follows a resize', () => {
+    // The box is full width now — asked for, because a narrow centred box left the
+    // prose under it looking adrift. So what is centred is the title, not the box.
     const info = {
       version: '0.1.0',
       model: 'm',
@@ -158,12 +167,20 @@ describe('boxes', () => {
       isolation: 'i',
       caveat: 'c',
     };
-    const narrow = banner(info, plain, glyphs(true), 60).split('\n')[0] ?? '';
-    const wide = banner(info, plain, glyphs(true), 120).split('\n')[0] ?? '';
-    const indent = (line: string): number => line.length - line.trimStart().length;
+    for (const cols of [60, 120]) {
+      const lines = banner(info, plain, glyphs(true), cols, []).split('\n');
+      const frame = lines[0] ?? '';
+      const title = lines[1] ?? '';
+      assert.ok(
+        visibleWidth(frame) >= cols - 4,
+        `the frame is ${visibleWidth(frame)} wide in ${cols} columns`,
+      );
 
-    assert.ok(indent(wide) > indent(narrow), 'a wider terminal must push the box further right');
-    assert.equal(indent(narrow) >= 0, true);
+      const inner = title.replace(/^.|.$/g, '');
+      const before = inner.length - inner.trimStart().length;
+      const after = inner.length - inner.trimEnd().length;
+      assert.ok(Math.abs(before - after) <= 1, `the title is not centred: ${before} vs ${after}`);
+    }
   });
 
   test('the context window is shown when it is known, and omitted when it is not', () => {
@@ -347,5 +364,156 @@ describe('the event stream, as output', () => {
       ]),
       '',
     );
+  });
+});
+
+describe('the banner is full width, and tips are the part that gives way', () => {
+  const info = {
+    version: '0.1.0',
+    model: 'deepseek',
+    contextWindow: 65536,
+    profile: 'workspace-dev',
+    workspace: '/home/y/project',
+    isolation: 'policy-enforced — network from Shell is best-effort',
+    caveat: 'Kernel policy governs what tools may request.',
+  };
+
+  test('it spans the terminal rather than hugging its content', () => {
+    const wide = banner(info, plain, glyphs(true), 140).split('\n')[0] ?? '';
+    assert.ok(visibleWidth(wide) >= 136, `the frame is ${visibleWidth(wide)} wide in a 140-column terminal`);
+  });
+
+  test('tips appear when there is room for them', () => {
+    const text = banner(info, plain, glyphs(true), 140, ['/help lists every control command']);
+    assert.match(text, /Tips/);
+    assert.match(text, /· \/help lists every control command/);
+  });
+
+  test('a narrow terminal drops the tips and keeps the isolation line whole', () => {
+    // The left column is not decoration. Truncating an isolation line turns an
+    // accurate claim into a different one, which is what invariant 5 is about.
+    const text = banner(info, plain, glyphs(true), 80, TIPS.slice(0, 4));
+    assert.equal(/Tips/.test(text), false, 'tips survived a terminal too narrow for them');
+    assert.match(text, /policy-enforced — network from Shell is best-effort/);
+  });
+
+  test('the caveat under the frame is left-aligned, not centred', () => {
+    const lines = banner(info, plain, glyphs(true), 100, []).split('\n');
+    const prose = lines.filter((l) => l.startsWith('  Kernel policy'));
+    assert.equal(prose.length, 1, 'the caveat moved or gained an indent');
+  });
+
+  test('pickTips returns distinct tips, and the source is injectable', () => {
+    const picked = pickTips(3, () => 0);
+    assert.equal(picked.length, 3);
+    assert.equal(new Set(picked).size, 3, 'a tip was offered twice');
+    assert.deepEqual(
+      pickTips(3, () => 0),
+      TIPS.slice(0, 3),
+      'a fixed generator must be deterministic',
+    );
+  });
+});
+
+describe('what it did, once it has done it', () => {
+  test('the footer names the work in the words a person would use', () => {
+    const counts = new Map([
+      ['Read', 3],
+      ['Grep', 3],
+      ['Glob', 2],
+      ['Shell', 27],
+    ]);
+    const footer = turnFooter(64_000, counts, plain, glyphs(true));
+    assert.match(footer, /✻ Worked for 1m 4s/);
+    assert.match(
+      footer,
+      /read 3 files, searched for 3 patterns, listed 2 directories, ran 27 shell commands/,
+    );
+  });
+
+  test('one of a thing is singular', () => {
+    assert.match(turnFooter(1000, new Map([['Read', 1]]), plain, glyphs(true)), /read 1 file(?!s)/);
+  });
+
+  test('a tool the list has never heard of is still counted, by name', () => {
+    // Otherwise a tool added later disappears from the summary silently, which is
+    // the same shape as every other defect this milestone found.
+    assert.match(turnFooter(1000, new Map([['Newtool', 2]]), plain, glyphs(true)), /called Newtool 2 times/);
+  });
+
+  test('a turn that called nothing says only how long it took', () => {
+    const footer = turnFooter(5000, new Map(), plain, glyphs(true));
+    assert.equal(footer.includes('\n'), false, 'an empty summary line was printed anyway');
+  });
+
+  test('durations are whole units', () => {
+    assert.equal(formatDuration(999), '1s');
+    assert.equal(formatDuration(43_000), '43s');
+    assert.equal(formatDuration(64_000), '1m 4s');
+    assert.equal(formatDuration(7_380_000), '2h 3m');
+  });
+
+  test('the renderer counts from the events, not from the model', () => {
+    let out = '';
+    const renderer = new SessionRenderer({
+      write: (t) => (out += t),
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+    });
+    renderer.on('turn.started', {});
+    for (const path of ['a.ts', 'b.ts']) {
+      renderer.on('tool.call', { toolCallId: path, name: 'Read', argsSummary: `{"path":"${path}"}` });
+      renderer.on('tool.result', { toolCallId: path, isError: false, contentBytes: 10 });
+    }
+    renderer.on('turn.completed', {});
+
+    const footer = renderer.footer(() => Date.now() + 3000);
+    assert.ok(footer, 'a turn with tool calls has no footer');
+    assert.match(footer!, /read 2 files/);
+    assert.ok(out.length > 0);
+  });
+
+  test('a fast turn that called nothing gets no footer at all', () => {
+    const renderer = new SessionRenderer({
+      write: () => {},
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+    });
+    renderer.on('turn.started', {});
+    assert.equal(
+      renderer.footer(() => Date.now()),
+      undefined,
+    );
+  });
+});
+
+describe('the input frame, before and after sending', () => {
+  test('both rules are drawn before the cursor arrives', () => {
+    // The frame has to be closed while you type, which means the rules are written
+    // first and the cursor comes back up between them.
+    const opened = openInput(plain, glyphs(true), 40);
+    const rules = opened.split('\n').filter((l) => /^─+$/.test(l));
+    assert.equal(rules.length, 2, `expected two rules, got ${rules.length}`);
+    assert.match(opened, /\u001b\[2A$/, 'the cursor is not brought back between the rules');
+    assert.equal(opened.includes('│'), false, 'the input frame grew a side');
+  });
+
+  test('closing it steps past the bottom rule rather than erasing it', () => {
+    assert.equal(closeInput(), '\n');
+  });
+
+  test('what was sent is redrawn as an inverse block', () => {
+    const block = submitted('fix the failing test', fancy, 80);
+    assert.ok(block);
+    assert.match(block!, /\u001b\[47;30m > fix the failing test \u001b\[0m/);
+    assert.match(block!, /^\u001b\[1A/, 'it must replace the line that was typed, not add one');
+  });
+
+  test('a line that wrapped is left exactly as typed', () => {
+    // Moving up one line would land in the middle of a wrapped input and erase half
+    // of it. Leaving it alone is the honest failure mode.
+    assert.equal(submitted('x'.repeat(100), fancy, 80), undefined);
   });
 });

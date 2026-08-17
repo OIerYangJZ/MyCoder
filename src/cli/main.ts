@@ -46,11 +46,13 @@ import { setupCredential } from './setup-credential.ts';
 import { TerminalApprovalPrompter } from './prompter.ts';
 import {
   banner,
+  closeInput,
   colourEnabled,
   glyphs as glyphSet,
-  inputRule,
+  openInput,
   palette as makePalette,
   SessionRenderer,
+  submitted,
 } from './render.ts';
 import { parseShellLine, describePlan } from './shell-parse.ts';
 
@@ -286,7 +288,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   let exitCode: ExitCode = EXIT.OK;
   try {
     if (args.prompt) {
-      exitCode = await runOnce(kernel, args.prompt, args.json);
+      exitCode = await runOnce(kernel, args.prompt, args.json, renderer);
       // `mycoder "do the thing"` from a script is a one-shot: do not then wait on
       // stdin that nobody is going to write to.
       if (!interactive) return exitCode;
@@ -296,7 +298,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       // Piped input: each non-empty line is a turn.
       for (const line of (await readAllStdin()).split('\n')) {
         if (line.trim() === '') continue;
-        exitCode = await runOnce(kernel, line, args.json);
+        exitCode = await runOnce(kernel, line, args.json, renderer);
       }
       return exitCode;
     }
@@ -316,15 +318,23 @@ export async function main(argv: readonly string[]): Promise<number> {
       let line: string;
       try {
         renderer.quiet();
-        stderr.write(`${inputRule(palette, glyphs, columns())}\n`);
+        // Both rules first, then the cursor comes back up between them: the frame is
+        // closed while you type rather than after you press Enter.
+        if (colour) stderr.write(openInput(palette, glyphs, columns()));
         line = await rl.question(`${palette.boldBlue(glyphs.prompt)} `);
-        stderr.write(`${inputRule(palette, glyphs, columns())}\n`);
+        if (colour) {
+          // Redraw what was sent as an inverse block, so a long transcript makes
+          // "what I said" obvious. Skipped when the line wrapped: see `submitted`.
+          const block = submitted(line.trim(), palette, columns());
+          stderr.write(block ?? closeInput());
+          if (block !== undefined) stderr.write(closeInput());
+        }
       } catch {
         break; // Ctrl-D
       }
       if (line.trim() === '') continue;
       if (line.trim() === '/exit' || line.trim() === '/quit') break;
-      exitCode = await runOnce(kernel, line, args.json);
+      exitCode = await runOnce(kernel, line, args.json, renderer);
     }
   } finally {
     renderer.quiet();
@@ -344,7 +354,12 @@ async function readAllStdin(): Promise<string> {
   return data;
 }
 
-async function runOnce(kernel: Kernel, input: string, json: boolean): Promise<ExitCode> {
+async function runOnce(
+  kernel: Kernel,
+  input: string,
+  json: boolean,
+  renderer?: SessionRenderer,
+): Promise<ExitCode> {
   const trimmed = input.trim();
 
   // Control commands never reach the model.
@@ -386,6 +401,8 @@ async function runOnce(kernel: Kernel, input: string, json: boolean): Promise<Ex
     });
   } else {
     if (outcome.finalText) stdout.write(`\n${outcome.finalText}\n\n`);
+    const footer = renderer?.footer();
+    if (footer) stderr.write(`${footer}\n\n`);
     if (outcome.error) {
       stderr.write(`\n${outcome.error.code}: ${outcome.error.message}\n\n`);
     }

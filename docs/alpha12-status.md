@@ -17,12 +17,12 @@
 ## 1. Gates
 
 ```text
-offline suite      1364 tests · 1271 pass · 0 fail · 93 skip   (1322 at the tag)
+offline suite      1380 tests · 1287 pass · 0 fail · 93 skip   (1322 at the tag)
 architecture lint  16 rules · no violations
 lint self-tests    250 / 250          (172 in alpha.11; +39 acceptance, +39 mirrors)
 evidence gate      11 matrices · every claim resolves · corpus internally consistent
 acceptance suite   62 items · 54 covered · 8 not · clause coverage re-derived
-mirror checks      96 enumerations classified · 7 mirrors · every one agrees
+mirror checks      97 enumerations classified · 7 mirrors · every one agrees
 package check      403 files · nothing forbidden, missing or dangling
 SSH matrix (T1)    73 tests · loopback OpenSSH
 live model (T3)    48 attempts · deepseek-chat and gpt-5.6-terra
@@ -328,9 +328,18 @@ The design follows `reference/clio` — a Claude Code clone in the reference tre
 and the prompt; dim labels in a column; the caveat as prose under the box rather than
 squeezed into a cell; a centred frame whose width is read per print, so a resize is
 followed. `reference/**` is read-only (AGENTS.md rule 3) and none of its types cross
-into ours. The input frame is closed top and bottom and open at the sides — asked
-for, and also the only shape a `readline` prompt can hold, since a right-hand border
-would need the input line rewritten on every keystroke.
+into ours. The input frame is closed top and bottom and open at the sides. Both rules are drawn
+**before** the cursor arrives — two relative cursor moves and nothing else — so the
+frame is closed while you type rather than after you press Enter, and what was sent is
+then redrawn as an inverse block, because the thing that is genuinely hard to follow in
+a long transcript is which lines were yours. A wrapped prompt is left exactly as typed:
+moving up one line would erase half of it.
+
+A turn now ends the way it should have from the start — `✻ Worked for 1m 4s` and
+`read 3 files, searched for 3 patterns, listed 2 directories, ran 27 shell commands`,
+**counted from the events** rather than from the model's account of itself. A tool the
+phrase list has never heard of is still counted by name, so one added later cannot
+disappear from the summary.
 
 The only new plumbing is `onEvent` on `createKernel`, a pass-through to a hook
 `Session` already had. No new event, no new field, no new tool: a caller that ignores
