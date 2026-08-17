@@ -41,6 +41,14 @@ repository points at it. One source comment mentions it in passing. No matrix,
 no checklist, no CI job.
 ```
 
+> **This paragraph was wrong, and the mapping found it the same day.** "Nothing in
+> this repository points at it" is false: `tests/integration/agent-loop.test.ts` is
+> organised around §28 and covers five of the 21 criteria by name. What is true is
+> that nothing ever _enumerated_ §28 — no matrix, no checklist, no CI job. The
+> block above is left as written, per §3's first rule, and the correction lives
+> here beside it. It was produced by a `grep` truncated at twenty lines and never
+> re-run, which is a smaller version of the defect this whole milestone is about.
+
 It is recorded here, in the predictions document, precisely so it cannot be
 presented later as a prediction that came true. The milestone plan was written
 believing the definition of done did not exist anywhere; a fifth of it existed in

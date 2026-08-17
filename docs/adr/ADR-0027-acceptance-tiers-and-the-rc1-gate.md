@@ -17,14 +17,23 @@ that week was the acceptance suite.
 
 Two further facts shape this decision.
 
-**The specification already contains an acceptance list, and nothing in this
-repository has ever pointed at it.** Spec §28, "v0.1 Acceptance Criteria", is 21
+**The specification already contains an acceptance list, and no document in this
+repository has ever enumerated it.** Spec §28, "v0.1 Acceptance Criteria", is 21
 unticked checkboxes across six groups, prefixed "只有全部满足才标记 `v0.1.0`" —
 only mark v0.1.0 when all of them hold. It has been in the normative document
-since before alpha.1. One source comment mentions it in passing
-(`src/execution/local.ts`). No evidence matrix, no release checklist and no CI
-job refers to it. The project did not lack a definition of done so much as it
-lacked any mechanism that would notice one going unread.
+since before alpha.1. No evidence matrix, no release checklist and no CI job
+refers to it. The project did not lack a definition of done so much as it lacked
+any mechanism that would notice one going unread.
+
+> **Corrected 2026-08-17, hours after this ADR was accepted.** The sentence above
+> originally said that _nothing_ pointed at §28 but one passing source comment.
+> That was false: `tests/integration/agent-loop.test.ts` is organised around §28,
+> names it in its header and in two `describe` blocks, and covers five of the 21
+> criteria on purpose. The mapping found it, the claim has been narrowed to what
+> is true — nothing _enumerated_ it — and the wrong version is recorded here
+> rather than replaced, because an ADR that quietly improves its own context
+> section is no longer a record of a decision. `docs/acceptance-suite.md` §1
+> carries the full correction and how the error was made.
 
 **The oldest open claim in the project is not mechanisable.** A1 — that somebody
 who is not the author has run this — has been carried as a row in
@@ -93,6 +102,19 @@ T4 is in that list deliberately. A release _candidate_ is a claim that the thing
 is ready for someone else, and no one else has ever used it. A suite that gated
 `rc.1` on machines alone would formalise exactly the gap that has been open since
 alpha.8.
+
+**The T2 half of that sentence is vacuous, and the derivation is what found it.**
+The suite has **zero T2 items**, because spec §1.3 lists a cross-platform strong
+sandbox under NON-GOALS: v0.1 does not require OS-level enforcement, so no clause
+of it can. The container backend, the scoped egress proxy and the native Landlock
+sandbox — three milestones — answer no clause in the suite. The repair is _not_ to
+invent T2 acceptance items, which would be deriving from the answers; it is to say
+plainly that T2's content is `docs/alpha7-evidence-matrix.md`,
+`docs/alpha6-evidence-matrix.md` and the `container` / `native-sandbox` CI jobs,
+which gate themselves and stand outside this suite. `rc.1` therefore requires
+those jobs green **and** the suite's T0–T1 green **and** T4 executed once.
+`docs/acceptance-suite.md` §10 is the longer form, including the question this
+raises about a v0.1 that exceeds its own specification by three milestones.
 
 ### 4. A1 is a tier of the suite, not a row in an index
 
