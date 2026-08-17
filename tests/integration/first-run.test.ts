@@ -153,6 +153,110 @@ describe('first run reaches one of exactly two states', () => {
   });
 });
 
+describe('the workspace itself (ADR-0028)', { timeout: 120_000 }, () => {
+  // Until alpha.12 this was refused only for people whose credential happened to
+  // be a *file*: the credential check refuses a key inside the workspace, so
+  // `api_key_file` users were stopped in a home directory and `api_key_env` users
+  // started a session with write access to everything under it. Same directory,
+  // same exposure, opposite outcome — and the message told the file users to move
+  // a correctly-placed credential.
+
+  /** A config whose credential comes from the environment, not a file. */
+  const envCredentialConfig = [
+    '[model.provider.p]',
+    'protocol = "openai-chat"',
+    'base_url = "https://api.example.com"',
+    'api_key_env = "FAKE_KEY"',
+    '',
+    '[model.profile.f]',
+    'context_window = 8192',
+    '',
+    '[model.alias.m]',
+    'provider = "p"',
+    'model = "m-1"',
+    'profile = "f"',
+    '',
+    '[model]',
+    'default = "m"',
+    '',
+  ].join('\n');
+
+  test('a workspace containing the config directory is refused, with an env credential', async () => {
+    const f = await cliRoot();
+    try {
+      await mkdir(path.join(f.root, 'config'), { recursive: true });
+      await writeFile(path.join(f.root, 'config', 'config.toml'), envCredentialConfig, 'utf8');
+
+      // cwd is the root, which contains `config/` — the shape of running in `$HOME`.
+      const result = await runCli({
+        args: ['--non-interactive', 'do nothing'],
+        root: f.root,
+        cwd: f.root,
+        env: { FAKE_KEY: 'sk-not-real' },
+      });
+
+      assert.equal(result.code, EXIT.USAGE, `expected USAGE, got ${result.code}:\n${result.stderr}`);
+      assert.match(result.stderr, /contains your configuration directory/);
+      assert.match(result.stderr, /--cwd/, 'the remedy has to name the lever that fixes it');
+      assert.doesNotMatch(
+        result.stderr,
+        /Move it outside the repository/,
+        'the credential is not the thing that is misplaced',
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test('NEGATIVE CONTROL: an ordinary project workspace is accepted', async () => {
+    const f = await cliRoot();
+    try {
+      await mkdir(path.join(f.root, 'config'), { recursive: true });
+      await writeFile(path.join(f.root, 'config', 'config.toml'), envCredentialConfig, 'utf8');
+
+      // The same root, but the workspace is a directory beside the config rather
+      // than above it — which is every real project.
+      const result = await runCli({
+        args: ['--print-config'],
+        root: f.root,
+        env: { FAKE_KEY: 'sk-not-real' },
+      });
+
+      assert.equal(result.code, EXIT.OK, `expected OK, got ${result.code}:\n${result.stderr}`);
+      assert.doesNotMatch(result.stdout + result.stderr, /contains your configuration directory/);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test('doctor blocks on it, and says the same thing', async () => {
+    const f = await cliRoot();
+    try {
+      await mkdir(path.join(f.root, 'config'), { recursive: true });
+      await writeFile(path.join(f.root, 'config', 'config.toml'), envCredentialConfig, 'utf8');
+
+      const result = await runCli({
+        args: ['doctor', '--json'],
+        root: f.root,
+        cwd: f.root,
+        env: { FAKE_KEY: 'sk-not-real' },
+      });
+      const report = JSON.parse(result.stdout.trim()) as {
+        ok: boolean;
+        findings: Array<{ area: string; level: string; detail: string }>;
+      };
+
+      const workspace = report.findings.find((x) => x.area === 'workspace');
+      assert.ok(workspace, 'doctor reports no workspace finding at all');
+      assert.equal(workspace!.level, 'blocked');
+      assert.equal(report.ok, false);
+      assert.equal(result.code, EXIT.CONFIG, 'doctor is contracted to exit 0 or 3');
+    } finally {
+      await f.cleanup();
+    }
+  });
+});
+
 describe('doctor', { timeout: 120_000 }, () => {
   test('reports every area, and blocks only on what is actually blocking', async () => {
     const f = await cliRoot();

@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url';
 
 import { APP_DISPLAY_NAME } from '../app.ts';
 import { loadConfig, describeConfig } from '../config/config.ts';
-import { assessReadiness } from '../config/first-run.ts';
+import { assessReadiness, checkWorkspaceRoot } from '../config/first-run.ts';
 import { WEAKENING_KEYS, CEILING_PINNED } from '../config/weakening.ts';
 import { checkCredentialFile, chooseCredentialSource } from '../security/credential-file.ts';
 import { canonicalize, type CanonicalPath } from '../util/paths.ts';
@@ -86,8 +86,20 @@ export async function runDoctor(opts: DoctorOptions): Promise<{ report: DoctorRe
     detail: `Node ${process.versions.node} on ${process.platform}/${process.arch}`,
   });
 
-  // --- configuration ---------------------------------------------------------
+  // --- the workspace itself --------------------------------------------------
   const workspaceRoot = (await canonicalize(opts.workspaceDir, { cwd: process.cwd() })).path;
+  const workspace = checkWorkspaceRoot(
+    workspaceRoot,
+    (await canonicalize(dirs.config, { cwd: process.cwd() })).path,
+  );
+  findings.push({
+    area: 'workspace',
+    level: workspace.ok ? 'ok' : 'blocked',
+    detail: workspace.ok ? workspaceRoot : (workspace.problem ?? 'unusable'),
+    ...(workspace.remedy ? { remedy: workspace.remedy } : {}),
+  });
+
+  // --- configuration ---------------------------------------------------------
   const loaded = await loadConfig({ workspaceRoot, userConfigDir: dirs.config });
   const config = loaded.config;
 

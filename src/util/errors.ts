@@ -26,6 +26,10 @@ export const ERROR_CODES = [
   'CREDENTIAL_FILE_INSECURE',
   'NETWORK_DENIED',
   'PATH_OUTSIDE_WORKSPACE',
+  // The workspace itself is the problem, not a path inside it (ADR-0028): a
+  // workspace containing the user config directory is a home directory somebody
+  // ran the command in.
+  'WORKSPACE_CONTAINS_CONFIG',
   'PROTECTED_PATH',
   'UNDECLARED_WORKSPACE_MUTATION',
   'REMOTE_UNAVAILABLE',
@@ -146,6 +150,8 @@ const DEFAULT_BLAME: Record<ErrorCode, Blame> = {
   CREDENTIAL_FILE_INSECURE: 'user',
   NETWORK_DENIED: 'kernel',
   PATH_OUTSIDE_WORKSPACE: 'model',
+  // The user chose the directory, so the user is the one who can change it.
+  WORKSPACE_CONTAINS_CONFIG: 'user',
   PROTECTED_PATH: 'kernel',
   UNDECLARED_WORKSPACE_MUTATION: 'tool',
   REMOTE_UNAVAILABLE: 'environment',

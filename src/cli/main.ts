@@ -33,6 +33,7 @@ import { Redactor } from '../security/redactor.ts';
 import { resolveKernelDirs, sessionsDir } from '../util/platform.ts';
 import { toKernelError, type ErrorCode } from '../util/errors.ts';
 import { canonicalize } from '../util/paths.ts';
+import { checkWorkspaceRoot } from '../config/first-run.ts';
 import type { LogLevel } from '../util/logger.ts';
 import { buildSandbox } from '../execution/linux-native/build.ts';
 import { verifyLauncher, describeLauncher } from '../execution/linux-native/identity.ts';
@@ -169,6 +170,25 @@ export async function main(argv: readonly string[]): Promise<number> {
   const rl = interactive
     ? readline.createInterface({ input: stdin, output: stdout, terminal: true })
     : undefined;
+
+  // Before anything is built: is this workspace one an agent should be pointed at?
+  // (ADR-0028.) A workspace containing the config directory is a home directory
+  // somebody ran the command in, and until alpha.12 it was refused only for people
+  // whose credential happened to be a file — with a message that told them to move
+  // a correctly-placed key. One refusal, one message, whatever the credential is.
+  const workspaceVerdict = checkWorkspaceRoot(
+    (await canonicalize(cwd, { cwd: process.cwd() })).path,
+    (await canonicalize(dirs.config, { cwd: process.cwd() })).path,
+  );
+  if (!workspaceVerdict.ok) {
+    rl?.close();
+    return fail(
+      args.json,
+      'WORKSPACE_CONTAINS_CONFIG',
+      `Refusing to start: ${workspaceVerdict.problem}`,
+      workspaceVerdict.remedy,
+    );
+  }
 
   let kernel: Kernel;
   try {

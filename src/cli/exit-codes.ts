@@ -98,6 +98,10 @@ const EXIT_FOR_ERROR: Record<ErrorCode, ExitCode> = {
   SECRET_EGRESS_BLOCKED: EXIT.DENIED,
   NETWORK_DENIED: EXIT.DENIED,
   PATH_OUTSIDE_WORKSPACE: EXIT.DENIED,
+  // USAGE, not DENIED or CONFIG: nothing about the configuration is wrong and no
+  // boundary refused a request — the command was run in the wrong directory, and
+  // the fix is a `cd` or a `--cwd`. A wrapper should not retry it (ADR-0028).
+  WORKSPACE_CONTAINS_CONFIG: EXIT.USAGE,
   PROTECTED_PATH: EXIT.DENIED,
   UNDECLARED_WORKSPACE_MUTATION: EXIT.DENIED,
   NETWORK_SCOPE_DENIED: EXIT.DENIED,

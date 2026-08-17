@@ -29,7 +29,57 @@
 
 import * as path from 'node:path';
 
+import { isWithin, type CanonicalPath } from '../util/paths.ts';
 import type { KernelConfig } from './schema.ts';
+
+/**
+ * Is this workspace one an agent should be pointed at? (ADR-0028.)
+ *
+ * A workspace that **contains the user config directory** is almost always a home
+ * directory somebody ran the command in, and it hands the session write access to
+ * everything under it — including the configuration that decides where prompts are
+ * sent and where credentials live.
+ *
+ * Until alpha.12 this was refused only by accident, and only for some people: the
+ * credential-file check refuses a key inside the workspace, so `api_key_file` users
+ * were stopped and `api_key_env` users were not. Same directory, same exposure,
+ * opposite outcome — and the message told the file users to move a correctly-placed
+ * credential. The refusal is now about the workspace, for everyone, from one place.
+ *
+ * Deliberately **not** "is this the home directory": the test is containment of the
+ * config directory, which catches `/`, `$HOME`, and a `--cwd` that resolved higher
+ * than intended, and does not fire for the ordinary case of a project that happens
+ * to live under `$HOME`.
+ */
+export interface WorkspaceVerdict {
+  ok: boolean;
+  /** What is wrong, for the error message and for `doctor`'s finding. */
+  problem?: string;
+  remedy?: string;
+}
+
+export function checkWorkspaceRoot(
+  workspaceRoot: CanonicalPath,
+  userConfigDir: CanonicalPath,
+): WorkspaceVerdict {
+  if (!isWithin(workspaceRoot, userConfigDir)) return { ok: true };
+
+  return {
+    ok: false,
+    problem:
+      `the workspace is ${workspaceRoot}, which contains your configuration directory ` +
+      `${userConfigDir}. A session there could read and write your own configuration and ` +
+      'credentials, and that is almost never what running the command in this directory meant.',
+    remedy: [
+      'Run MyCoder from the project directory you mean, or name it explicitly:',
+      '',
+      '    cd <project> && mycoder',
+      '    mycoder --cwd <project>',
+      '',
+      'Nothing needs to move: the credential belongs where it is.',
+    ].join('\n'),
+  };
+}
 
 export interface ReadinessInput {
   config: KernelConfig;

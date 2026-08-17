@@ -17,7 +17,7 @@
 ## 1. Gates
 
 ```text
-offline suite      1331 tests · 1238 pass · 0 fail · 93 skip   (1322 at the tag)
+offline suite      1334 tests · 1241 pass · 0 fail · 93 skip   (1322 at the tag)
 architecture lint  16 rules · no violations
 lint self-tests    250 / 250          (172 in alpha.11; +39 acceptance, +39 mirrors)
 evidence gate      11 matrices · every claim resolves · corpus internally consistent
@@ -262,8 +262,24 @@ Fixed on the branch, with the tag left where it is.
    does
 ```
 
-That one is a message, not a boundary: the check still refuses, and now says which
-of the two things is misplaced. When the workspace contains the config directory and
+```text
+8  and the refusal in 7 was **only firing for some people**. It came from the
+   credential-file check, so `api_key_file` users were stopped in a home directory
+   and `api_key_env` users started a session with workspace-dev write access to
+   everything under it — verified on a fresh Linux install, exit 0, no warning.
+   The protection was incidental
+```
+
+Defect 8 is the one that needed a decision rather than a patch, and the user took
+it: **tighten**. ADR-0028 refuses a workspace that contains the user configuration
+directory, before anything is built, whatever the credential source —
+`WORKSPACE_CONTAINS_CONFIG`, exit 2, with `--cwd` as the remedy, and a `workspace`
+finding in `doctor`. It is a refusal that now applies to more people, so it adds no
+capability and relaxes nothing; what it costs is that the home directory can no
+longer be a workspace at all, which the ADR records rather than glosses.
+
+Defect 7's fix is kept and is not the fix: the credential check still refuses, and
+now says which of the two things is misplaced. When the workspace contains the config directory and
 the credential is inside that config directory, the problem code is
 `workspace-contains-config` and the remedy names `--cwd`. Every other route keeps
 `inside-workspace` and "move it outside the repository", which is right for a key
