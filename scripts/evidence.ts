@@ -71,6 +71,7 @@ export const MATRICES = [
   { path: 'docs/alpha9-evidence-matrix.md', milestone: 'alpha.9' },
   { path: 'docs/alpha10-evidence-matrix.md', milestone: 'alpha.10' },
   { path: 'docs/alpha11-evidence-matrix.md', milestone: 'alpha.11' },
+  { path: 'docs/alpha12-evidence-matrix.md', milestone: 'alpha.12' },
 ];
 
 /** The index every open claim has to appear in (alpha.11 §7.2). */
@@ -485,7 +486,12 @@ async function main(argv: readonly string[]): Promise<number> {
   } catch {
     spec = undefined;
   }
-  const suite = await checkSuite(suiteMarkdown, spec, options);
+  const suite = await checkSuite(
+    suiteMarkdown,
+    spec,
+    options,
+    await readFile(path.join(ROOT, OPEN_EVIDENCE), 'utf8'),
+  );
 
   const allProblems = [...reports.flatMap((r) => r.problems), ...orphaned, ...suite.problems];
   const allRows = reports.flatMap((r) => r.rows);

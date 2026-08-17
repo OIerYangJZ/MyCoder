@@ -1,0 +1,242 @@
+# v0.1.0-alpha.12 — status
+
+**Milestone:** the acceptance suite · **Date:** 2026-08-17
+**Baseline:** `v0.1.0-alpha.11` at `f68f8901d595e57a0e303e03a07e8cd9067bff64`
+
+> **What this milestone produced is a definition, and defining a gate is not
+> passing it.** The number to read is not "54 of 62 clauses covered" — that is a
+> count of one document against another. It is **five**: the clauses of the
+> normative specification that nothing in this repository checks, two of which are
+> release-blocking invariants. They are §3 and they are the output.
+>
+> **And this is the last tag while CLOSURE A is open.** ADR-0027 §5, the user's
+> decision, recorded as taken.
+
+---
+
+## 1. Gates
+
+```text
+offline suite      1322 tests · 1229 pass · 0 fail · 93 skip
+architecture lint  16 rules · no violations
+lint self-tests    250 / 250          (172 in alpha.11; +39 acceptance, +39 mirrors)
+evidence gate      11 matrices · every claim resolves · corpus internally consistent
+acceptance suite   62 items · 54 covered · 8 not · clause coverage re-derived
+mirror checks      96 enumerations classified · 7 mirrors · every one agrees
+package check      403 files · nothing forbidden, missing or dangling
+SSH matrix (T1)    73 tests · loopback OpenSSH
+live model (T3)    48 attempts · deepseek-chat and gpt-5.6-terra
+```
+
+The two lines that are new, and are the point of the milestone:
+
+```text
+docs/acceptance-suite.md: 62 item(s) — 54 covered, 8 not; T0 53 · T1 5 · T2 0 · T3 1 · T4 3
+  clause coverage re-derived against the specification
+```
+
+The second line is load-bearing. On any machine without `research/` — CI, and every
+consumer of the package — it reads `NOT re-derived`, because the normative
+specification is not there. A check that could not run says so rather than passing.
+
+## 2. MAIN — the Full Acceptance Suite
+
+`docs/acceptance-suite.md`. 62 items: 59 clauses quoted verbatim from the
+specification (§1.1 MUST, §1.2 SHOULD, §25 invariants, §28 acceptance criteria) plus
+three T4 items that no specification contains and a release _candidate_ asserts.
+
+The derivation direction is the whole design, and the git history is the proof: the
+commit that created the file has **no `Status` column and no `Evidence` column**.
+The mapping is the next commit. A suite derived from the test tree is a description
+of the test tree, green the day it is written and indistinguishable afterwards from
+one that means something.
+
+### What deriving from the specification found that reading the tests could not
+
+**Spec §28 already existed.** "v0.1 Acceptance Criteria", 21 unticked checkboxes,
+prefixed 只有全部满足才标记 `v0.1.0`, normative since before alpha.1. Five of the 21
+are covered by a test file organised around them; **no matrix, checklist or CI job
+had ever enumerated it**. The project did not lack a definition of done; it lacked
+anything that would notice one going unread.
+
+**Spec §25's fifteen release-blocking invariants** are cited by number all over
+`src/` and by `scripts/lint.ts`, and had never been listed against evidence in one
+place. Two of them turned out to be exercised by nothing.
+
+**"MUST 18 of 18 implemented"** has appeared in every milestone plan since alpha.7.
+§1.1 has **17** bullets. The number was never re-derived and never entered this
+repository, which is why no gate here could have caught it.
+
+**T2 has zero items.** Spec §1.3 lists a cross-platform strong sandbox under
+NON-GOALS, so no clause of v0.1 can require OS-level enforcement. The container
+backend, the scoped egress proxy and the native Landlock sandbox — alpha.5, alpha.6,
+alpha.7, three of this project's strongest milestones — answer **no clause in the
+suite**. They sit above the line, not on it. ADR-0027's `rc.1` gate said "T0–T2
+green", which is vacuous in its T2 half as written; §10 of the suite and the ADR now
+say so rather than inventing T2 items to fill it.
+
+## 3. The five clauses nothing checks
+
+The output. Each says what would close it; none is closed here, because closing them
+is capability work and the commitment forbids that until CLOSURE A closes.
+
+```text
+M09  the hook-network route through the egress gate — claimed in a source
+     comment, exercised by nothing. Three of the clause's four routes hold
+M17  FakeExecutor and FakeFileSystem do not exist. The guarantee holds via a
+     temp directory and the local backend, so this is an erratum candidate
+V02  invariant 2: StepContext immutability during a model request. The
+     identifier appears in no test in the repository
+V09  invariant 9: the large-output budget and its artifact reference. The
+     mechanism exists in src/tools/runtime.ts; artifactRef is named by no test
+A15  §28's "unified truncation". Redaction holds; the only truncation assertion
+     is the SSH one, and the conformance suite has no truncation case at all
+```
+
+**V02 and V09 are release-blocking.** Spec §25 says violating one of its fifteen
+means do not release, and neither has ever been exercised. Twelve milestones of
+green builds did not surface them, and the reason is structural: every gate in this
+repository checks claims that **were** made, and none looked for claims that were
+never made at all.
+
+They are now `docs/open-evidence.md` §D — a new section, because §A is "blocked on a
+person or a machine" and these are blocked on nobody. `scripts/acceptance.ts`
+reconciles the suite and that index in both directions.
+
+## 4. CLOSURE A — carried, open, seventh milestone
+
+No operator was available. It was not simulated, not automated, not downgraded, and
+alpha.12 was deliberately **not** organised around it: making it the MAIN a second
+time with nothing about its availability changed would have produced the same
+milestone with the same outcome.
+
+Two things changed, and only one is about the run.
+
+**The ask got cheaper; the run did not.** `docs/second-operator-invitation.md` is one
+page a stranger can be sent, and `docs/second-operator-recording-sheet.md` is a sheet
+they fill in alone, so the author need not be in the room. The invitation contains no
+hint, no suggested task and nothing about what the product does — the sentence doing
+that work is the one refusing to answer "what is this thing?". The protocol in
+`docs/alpha10-second-operator.md` is unchanged.
+
+**It is a tier now, not a row.** ADR-0027 makes it T4 of the acceptance suite
+(`R01`–`R03`) and makes T4 a precondition of `v0.1.0-rc.1`. A row can be carried
+indefinitely; seven milestones is the proof. And ADR-0027 §5 — the user's decision —
+makes this the last tag cut while it is open. Seven tags will have asserted that this
+software is ready for somebody else, and none has been checked; the assertion is what
+stops.
+
+## 5. CLOSURE B — the enumeration audit
+
+96 enumerations in `src/` and `scripts/`: **22 guarded, 13 declared unguarded, 61
+closed by design**, every one with a verdict in
+`docs/alpha12-enumeration-audit.md`. An enumeration with no row fails the build, and
+so does a row naming a constant that no longer exists.
+
+**Two mirrors had already drifted**, in a repository whose gates were green:
+
+```text
+docs/configuration-audit.md   five keys missing — four [mcp…] weakening keys and
+                              one ceiling-pinned key, all added in alpha.9. The
+                              document says of its own tables: "A row here that
+                              were merely prose could go stale; this one fails the
+                              build." Nothing read the markdown
+docs/cli-contract.md          read by nothing at all. ADR-0021 promises contract
+                              semantics will not change within 0.1.x, and the test
+                              asserting that reads args.ts — the code, against the
+                              code
+```
+
+Seven mirrors are checked now, each with a fixture that makes it fail. Three things
+are **declared unguarded** with their cost rather than quietly guarded: the eleven
+tool schemas (guarding them needs runtime type information, and ADR-0009 forbids the
+dependency), `TRUSTED_KERNEL_HOOKS` against spec §14.5 (cheap, and simply not done),
+and the one-directional README check. The detector's blind spots are named in §5 of
+the audit.
+
+## 6. CLOSURE C — a refusal that costs more
+
+`docs/alpha12-undo-utility.md`. The refusal now arrives after two edits have landed,
+leaving a half-applied rename on disk — the state alpha.11 said it had not tested.
+
+```text
+48 live attempts · deepseek-chat and gpt-5.6-terra · N=3 · four tasks · two arms
+Undo available in 24, called in 0. 24/24 solved by re-reading and finishing
+0/6 in the half-applied task specifically
+```
+
+**And the first live run defeated the fixture.** Version 1 armed on the read alone,
+and a model that reads all three files before editing any of them had its receipt
+issued while the trap was still holding off: 0 of 6 attempts produced the
+difficulty. The seam gained a second trigger — the file also changes the moment the
+threshold is crossed — and the v1 artifact is kept and cited rather than deleted.
+
+The scripted smoke test passed **both** versions, because its trajectory reads and
+edits one file at a time, which is exactly the ordering v1 could handle. A harness
+check that only sees its own idealised trajectory validates the harness against
+itself. That is the most transferable thing this closure produced.
+
+## 7. The §9 predictions, compared
+
+Committed in `docs/alpha12-predictions.md` before the derivation, unedited since.
+Two right, three wrong.
+
+| #   | Verdict   | What actually happened                                                                                                                                                        |
+| --- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1  | **right** | Several MUSTs are covered by tests that never name them (M05, S06, A14), and **exactly two** MUSTs came out covered by nothing — M09 and M17, the number the prediction named |
+| P2  | **wrong** | The invariants are not better covered: 13/15 against 15/17 MUSTs, which is the same rate. And in severity they are _worse_ — both uncovered invariants are release-blocking   |
+| P3  | **right** | M17. `FakeExecutor` and `FakeFileSystem` do not exist; the guarantee the clause exists for holds by other means, so the honest fix is a specification erratum                 |
+| P4  | **wrong** | T3 and T4 hold 4 items of 62, about 6%. The surprise went the other way entirely: **T2 holds zero**, and three milestones of enforcement work answer no clause                |
+| P5  | **wrong** | The suite wanted no such tier. alpha.9 §25.3's rule arrived as an ordinary T0 _item_ — V05, invariant 5 — checked by a lint rule that makes the overclaim unwriteable         |
+
+P4 is the interesting failure: the prediction assumed the specification asks for
+more than CI can reach, and the truth is that it asks for **less** than this project
+has built.
+
+## 8. Defects found in this milestone
+
+Four were introduced by this milestone and caught inside it. That is worth listing
+separately from the two pre-existing drifts in §5, because a milestone about
+unchecked claims that made four is evidence about the method, not about the author.
+
+```text
+1  ADR-0027 and the suite both said nothing in the repository pointed at spec §28.
+   False: agent-loop.test.ts is organised around it. Produced by a grep truncated
+   at twenty lines and never re-run. Corrected in place, with the wrong version
+   left visible in all three documents that carried it
+2  the interference seam v1 could be defeated by read ordering (§6)
+3  ADR-0027 pointed at a path under research/, which package-check forbids in a
+   packaged file — docs/adr/ ships. Caught by the offline suite, not by review
+4  two mirror-check fixtures were wrong first: one edited a part of the CLI
+   contract the check does not read, so it proved nothing while looking exactly
+   like a working check; the other required backticks the experimental block does
+   not use, and reported drift that did not exist
+```
+
+And one methodological note, because it changed how the mapping was done: `grep` on
+this machine silently returned nothing for `src/tools/builtin/shell.ts`, a file that
+contains the string being searched for. Every "covered by nothing" claim in §3 was
+therefore re-verified with an in-process search rather than the shell tool, and
+`tests/lint/mirrors.test.ts` asserts the builtin scan finds `Shell` for that reason.
+
+## 9. What alpha.12 did not do
+
+```text
+no new tool, no new capability, no new configuration key
+no ADR that grants anything — ADR-0027 only withholds
+no v0.1.0-rc.1: defining the gate is not passing it
+none of the five uncovered clauses closed: that is capability work
+no third model, no N>3
+no VM run: T2's content is the release gate's own container and native jobs,
+   which are a native Linux kernel rather than a Docker Desktop stand-in
+```
+
+## 10. Where this leaves the project
+
+`v0.1.0-rc.1` now has a definition and a gate: T0–T1 green, the container and
+native CI jobs green, and **T4 executed at least once**. T4 has never been executed,
+and by ADR-0027 §5 nothing further is tagged until it is.
+
+So the next milestone is not a choice between candidates. It is one hour of one
+person's time, and then — with the suite in hand — the five clauses in §3, starting
+with the two that are release-blocking.

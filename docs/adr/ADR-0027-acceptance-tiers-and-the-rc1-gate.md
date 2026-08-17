@@ -8,10 +8,12 @@ The v0.1 feature scope has been full since alpha.7. Five milestones have shipped
 since, every one of them green, and none of them could answer the question a
 release candidate asks: **is this done?**
 
-`research/kernel_v0.1_next_phase_plan.md` puts exactly one step between the last
-milestone and `v0.1.0-rc.1` — a "Full Acceptance Suite". It appears three times in
-that document and is never defined: not what it contains, not what it runs, not
-what result permits `rc.1`, not who says so. A gate whose contents are undefined
+The next-phase plan — an intermediate document under `research/`, named here
+without a path because a packaged file may not point into a tree that will not
+exist (ADR-0019 §8, and `package-check` enforces it) — puts exactly one step
+between the last milestone and `v0.1.0-rc.1`: a "Full Acceptance Suite". It appears
+three times in that document and is never defined: not what it contains, not what
+it runs, not what result permits `rc.1`, not who says so. A gate whose contents are undefined
 is not a gate; it is a place where somebody later decides that whatever passed
 that week was the acceptance suite.
 

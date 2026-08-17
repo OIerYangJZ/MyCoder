@@ -26,6 +26,7 @@ import { readFile } from 'node:fs/promises';
 import {
   checkCounts,
   checkItemEvidence,
+  checkOpenEvidenceLinkage,
   checkSpecCoverage,
   checkSuite,
   checkTiers,
@@ -354,6 +355,67 @@ describe('clause coverage against the specification', () => {
     const found = checkSpecCoverage(derived, undefined, spec.sha256, 1);
     assert.deepEqual(found.problems, []);
     assert.equal(found.checked, false, 'an unavailable check must not report itself as done');
+  });
+});
+
+describe('the suite and the open-evidence index have to agree', () => {
+  const index = (rows: readonly string[]): string =>
+    [
+      '## D. Uncovered by the acceptance suite',
+      '',
+      '| # | Claim | Suite item | What would close it |',
+      '| --- | --- | --- | --- |',
+      ...rows,
+    ].join('\n');
+
+  test('NEGATIVE CONTROL: an uncovered item named in the index is accepted', () => {
+    const found = checkOpenEvidenceLinkage(
+      [item({ id: 'V02', status: 'NOT TESTED', evidence: [], notes: 'covered by nothing' })],
+      index(['| D3 | StepContext is immutable | `V02` | one test |']),
+    );
+    assert.deepEqual(found, [], messages(found));
+  });
+
+  test('an uncovered item missing from the index is refused', () => {
+    // The direction that matters. The suite's most valuable output would otherwise
+    // live in one document and be invisible to the project's own account of what
+    // it has not established.
+    const found = checkOpenEvidenceLinkage(
+      [item({ id: 'V09', status: 'NOT TESTED', evidence: [], notes: 'covered by nothing' })],
+      index(['| D3 | StepContext is immutable | `V02` | one test |']),
+    );
+    assert.match(messages(found), /V09: is uncovered and is named nowhere in docs\/open-evidence\.md/);
+  });
+
+  test('a covered item need not appear in the index', () => {
+    const found = checkOpenEvidenceLinkage([item({ id: 'M01', status: 'PASS' })], index([]));
+    assert.deepEqual(found, [], messages(found));
+  });
+
+  test('an index entry whose items have all been covered is refused', () => {
+    // How an index outlives its findings: the clause got a test, nobody removed
+    // the row, and the file now says the project is weaker than it is. That
+    // sounds harmless and is how an index stops being read.
+    const found = checkOpenEvidenceLinkage(
+      [item({ id: 'V02', status: 'PASS' })],
+      index(['| D3 | StepContext is immutable | `V02` | one test |']),
+    );
+    assert.match(messages(found), /names V02, and none of those is uncovered any more/);
+  });
+
+  test('an index entry naming no suite item at all is refused', () => {
+    const found = checkOpenEvidenceLinkage(
+      [item({ id: 'V02', status: 'NOT TESTED', evidence: [], notes: 'nothing' })],
+      index(['| D3 | Something vague | — | one test |', '| D4 | StepContext | `V02` | one test |']),
+    );
+    assert.match(messages(found), /D3: names no acceptance-suite item/);
+  });
+
+  test('the shipped suite and the shipped index reconcile', async () => {
+    const suite = await readFile(new URL('../../docs/acceptance-suite.md', import.meta.url), 'utf8');
+    const openEvidence = await readFile(new URL('../../docs/open-evidence.md', import.meta.url), 'utf8');
+    const found = checkOpenEvidenceLinkage(parseSuite(suite).items, openEvidence);
+    assert.deepEqual(found, [], messages(found));
   });
 });
 

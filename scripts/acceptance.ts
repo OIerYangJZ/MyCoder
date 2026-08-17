@@ -497,6 +497,79 @@ export function checkSpecCoverage(
   return { problems, checked: true };
 }
 
+/**
+ * §5 — an uncovered clause has to reach the index that lists what is not established.
+ *
+ * `docs/acceptance-suite.md` and `docs/open-evidence.md` are now two documents
+ * describing overlapping sets, which is precisely the shape CLOSURE B is about: a
+ * hand-maintained list mirroring something else. So they are checked against each
+ * other in both directions.
+ *
+ * An uncovered item missing from the index is the more dangerous direction — the
+ * suite's most valuable output would live in one document and be invisible to the
+ * project's own account of what it has not established. The other direction
+ * catches the index outliving the finding: an entry for a clause that has since
+ * been covered says the project is weaker than it is, which sounds harmless and is
+ * how an index stops being read.
+ */
+export function checkOpenEvidenceLinkage(
+  items: readonly AcceptanceItem[],
+  openEvidence: string,
+): SuiteProblem[] {
+  const problems: SuiteProblem[] = [];
+  const uncovered = new Set(items.filter((i) => i.status === 'NOT TESTED').map((i) => i.id));
+
+  for (const item of items) {
+    if (item.status !== 'NOT TESTED') continue;
+    if (!new RegExp(`\\b${item.id}\\b`).test(openEvidence)) {
+      problems.push(
+        problem(
+          item.line,
+          item.id,
+          'is uncovered and is named nowhere in docs/open-evidence.md. Every claim this project has ' +
+            'not established belongs in that index — §D is where a clause nothing checks goes.',
+        ),
+      );
+    }
+  }
+
+  // §D only: §A carries the T4 items and names them in prose, and §B and §C are
+  // about claims that are impossible or already closed.
+  const lines = openEvidence.split('\n');
+  const start = lines.findIndex((l) => /^##\s+D\./.test(l));
+  if (start >= 0) {
+    const end = lines.findIndex((l, i) => i > start && /^##\s/.test(l));
+    for (const [offset, raw] of lines.slice(start, end < 0 ? undefined : end).entries()) {
+      const row = /^\|\s*(D\d+)\s*\|(.*)$/.exec(raw.trim());
+      if (!row) continue;
+      const named = [...(row[2] ?? '').matchAll(/\b([MSVAR]\d{2})\b/g)].map((m) => m[1]!);
+      if (named.length === 0) {
+        problems.push(
+          problem(
+            start + offset + 1,
+            row[1] ?? 'D?',
+            'names no acceptance-suite item, so nothing ties it to a clause',
+          ),
+        );
+        continue;
+      }
+      const live = named.filter((id) => uncovered.has(id));
+      if (live.length === 0) {
+        problems.push(
+          problem(
+            start + offset + 1,
+            row[1] ?? 'D?',
+            `names ${named.join(', ')}, and none of those is uncovered any more. The clause was covered ` +
+              'and this entry outlived the finding.',
+          ),
+        );
+      }
+    }
+  }
+
+  return problems;
+}
+
 export interface SuiteReport {
   items: AcceptanceItem[];
   counts: Counts;
@@ -510,6 +583,7 @@ export async function checkSuite(
   markdown: string,
   spec: SpecClauses | undefined,
   opts: CheckOptions,
+  openEvidence?: string,
 ): Promise<SuiteReport> {
   const { items, problems: parseProblems } = parseSuite(markdown);
   const counts = countItems(items);
@@ -517,6 +591,7 @@ export async function checkSuite(
     ...parseProblems,
     ...checkTiers(items),
     ...(await checkItemEvidence(items, opts)),
+    ...(openEvidence === undefined ? [] : checkOpenEvidenceLinkage(items, openEvidence)),
   ];
 
   const declared = parseDeclaredCounts(markdown);

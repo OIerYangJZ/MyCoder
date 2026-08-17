@@ -59,14 +59,23 @@ export interface CorpusProblem extends Problem {
 /** One entry in `docs/open-evidence.md`. */
 export interface IndexEntry {
   id: string;
-  section: 'A' | 'B' | 'C';
+  /**
+   * Which section it lives in.
+   *
+   * `D` arrived in alpha.12 with the acceptance suite, and it is a genuinely
+   * different kind of open item: §A is blocked on a person or a machine, §B is
+   * impossible, §C is closed — and §D is a clause of the specification that
+   * nothing checks, where the only thing in the way is that nobody has done it.
+   * Filing those under §A would have made "these are bought, not built" false.
+   */
+  section: 'A' | 'B' | 'C' | 'D';
   claim: string;
   /** For §C only: the milestone that closed it, e.g. `alpha.6`. */
   closedBy?: string;
   line: number;
 }
 
-export const OPEN_MARKER = /\[open:([AB]\d+)\]/;
+export const OPEN_MARKER = /\[open:([ABD]\d+)\]/;
 export const CLOSED_MARKER = /\[closed:(C\d+)\]/;
 export const SCOPE_MARKER = /\[scope\]/;
 
@@ -89,7 +98,7 @@ export const CLOSED_PROSE = /\*\*Closed by (alpha\.\d+(?:\.\d+)?)[^*]*\*\*/i;
  */
 export function normaliseClaim(text: string): string {
   return text
-    .replace(/\[(?:open:[AB]\d+|closed:C\d+|scope)\]/g, '')
+    .replace(/\[(?:open:[ABD]\d+|closed:C\d+|scope)\]/g, '')
     .replace(/[*_`]/g, '')
     .replace(/\s*\((?:§|see )[^)]*\)\s*$/i, '')
     .replace(/\s+/g, ' ')
@@ -338,14 +347,14 @@ export function checkClosedAnnotations(
 export function parseOpenEvidence(markdown: string): { entries: IndexEntry[]; problems: CorpusProblem[] } {
   const entries: IndexEntry[] = [];
   const problems: CorpusProblem[] = [];
-  let section: 'A' | 'B' | 'C' | undefined;
+  let section: 'A' | 'B' | 'C' | 'D' | undefined;
 
   markdown.split('\n').forEach((raw, index) => {
     const line = raw.trim();
 
-    const heading = /^##\s+([ABC])\./.exec(line);
+    const heading = /^##\s+([ABCD])\./.exec(line);
     if (heading) {
-      section = heading[1] as 'A' | 'B' | 'C';
+      section = heading[1] as 'A' | 'B' | 'C' | 'D';
       return;
     }
     if (/^##\s/.test(line)) {

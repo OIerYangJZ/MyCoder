@@ -1,0 +1,616 @@
+{
+  "generatedAt": "2026-08-17T09:54:22.074Z",
+  "experiment": "undo-utility",
+  "question": "Does having Undo change what a real model does — and does it reach for a reversal instead of reading the error?",
+  "mode": "live",
+  "provider": "deepseek",
+  "model": "deepseek-chat",
+  "runsPerCell": 3,
+  "toolsUnderTest": [
+    "Undo"
+  ],
+  "arms": [
+    {
+      "arm": "undo-available",
+      "attempts": 12,
+      "solved": 12,
+      "attemptsUsingUndo": 0,
+      "modelRequests": {
+        "median": 5,
+        "min": 0,
+        "max": 8
+      },
+      "toolCalls": {
+        "median": 6,
+        "min": 0,
+        "max": 13
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 19575.5,
+        "min": 0,
+        "max": 39009
+      },
+      "costUsd": 0.0022026676000000004,
+      "wastedCallRatio": 0.09333333333333334,
+      "toolFriction": {
+        "Read": {
+          "calls": 40,
+          "errors": 0,
+          "repeats": 17,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 27,
+          "errors": 6,
+          "repeats": 0,
+          "codes": {
+            "STALE_FILE": 6
+          }
+        },
+        "Glob": {
+          "calls": 4,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "GitDiff": {
+          "calls": 1,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_FAILED": 1
+          }
+        },
+        "Shell": {
+          "calls": 2,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    },
+    {
+      "arm": "undo-withheld",
+      "attempts": 12,
+      "solved": 12,
+      "attemptsUsingUndo": 0,
+      "modelRequests": {
+        "median": 4.5,
+        "min": 0,
+        "max": 8
+      },
+      "toolCalls": {
+        "median": 4.5,
+        "min": 0,
+        "max": 13
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 16064.5,
+        "min": 0,
+        "max": 36573
+      },
+      "costUsd": 0.0016734816000000003,
+      "wastedCallRatio": 0.0958904109589041,
+      "toolFriction": {
+        "Read": {
+          "calls": 40,
+          "errors": 0,
+          "repeats": 16,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 27,
+          "errors": 6,
+          "repeats": 0,
+          "codes": {
+            "STALE_FILE": 6
+          }
+        },
+        "Glob": {
+          "calls": 4,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Understand": {
+          "calls": 1,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_NOT_FOUND": 1
+          }
+        },
+        "Grep": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      }
+    }
+  ],
+  "cells": [
+    {
+      "baseId": "recover-from-a-file-that-changed-underneath",
+      "arm": "undo-available",
+      "attempts": 3,
+      "solved": 3,
+      "kernelCorrect": 3,
+      "attemptsUsingUndo": 0,
+      "modelRequests": {
+        "median": 6,
+        "min": 0,
+        "max": 6
+      },
+      "toolCalls": {
+        "median": 5,
+        "min": 0,
+        "max": 5
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 23228,
+        "min": 0,
+        "max": 23297
+      },
+      "costUsd": 0.002533468,
+      "wallTimeMs": {
+        "median": 6522,
+        "min": 0,
+        "max": 7288
+      },
+      "wastedCallRatio": 0.21428571428571427,
+      "toolFriction": {
+        "Read": {
+          "calls": 8,
+          "errors": 0,
+          "repeats": 5,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 6,
+          "errors": 3,
+          "repeats": 0,
+          "codes": {
+            "STALE_FILE": 3
+          }
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "recover-from-a-file-that-changed-underneath",
+      "arm": "undo-withheld",
+      "attempts": 3,
+      "solved": 3,
+      "kernelCorrect": 3,
+      "attemptsUsingUndo": 0,
+      "modelRequests": {
+        "median": 5,
+        "min": 0,
+        "max": 7
+      },
+      "toolCalls": {
+        "median": 4,
+        "min": 0,
+        "max": 6
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 17706,
+        "min": 0,
+        "max": 25321
+      },
+      "costUsd": 0.0018487560000000002,
+      "wallTimeMs": {
+        "median": 6306,
+        "min": 0,
+        "max": 6942
+      },
+      "wastedCallRatio": 0.21428571428571427,
+      "toolFriction": {
+        "Read": {
+          "calls": 7,
+          "errors": 0,
+          "repeats": 4,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 6,
+          "errors": 3,
+          "repeats": 0,
+          "codes": {
+            "STALE_FILE": 3
+          }
+        },
+        "Glob": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "finish-a-two-file-rename",
+      "arm": "undo-available",
+      "attempts": 3,
+      "solved": 3,
+      "kernelCorrect": 3,
+      "attemptsUsingUndo": 0,
+      "modelRequests": {
+        "median": 4,
+        "min": 0,
+        "max": 5
+      },
+      "toolCalls": {
+        "median": 7,
+        "min": 0,
+        "max": 8
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 16757,
+        "min": 0,
+        "max": 20313
+      },
+      "costUsd": 0.0021709576000000005,
+      "wallTimeMs": {
+        "median": 5238,
+        "min": 0,
+        "max": 5820
+      },
+      "wastedCallRatio": 0,
+      "toolFriction": {
+        "Glob": {
+          "calls": 2,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 14,
+          "errors": 0,
+          "repeats": 6,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "finish-a-two-file-rename",
+      "arm": "undo-withheld",
+      "attempts": 3,
+      "solved": 3,
+      "kernelCorrect": 3,
+      "attemptsUsingUndo": 0,
+      "modelRequests": {
+        "median": 3,
+        "min": 0,
+        "max": 4
+      },
+      "toolCalls": {
+        "median": 5,
+        "min": 0,
+        "max": 6
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 11139,
+        "min": 0,
+        "max": 14500
+      },
+      "costUsd": 0.0014447440000000002,
+      "wallTimeMs": {
+        "median": 4149,
+        "min": 0,
+        "max": 4784
+      },
+      "wastedCallRatio": 0.06666666666666667,
+      "toolFriction": {
+        "Understand": {
+          "calls": 1,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_NOT_FOUND": 1
+          }
+        },
+        "Read": {
+          "calls": 8,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 6,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "finish-a-rename-that-broke-halfway",
+      "arm": "undo-available",
+      "attempts": 3,
+      "solved": 3,
+      "kernelCorrect": 3,
+      "attemptsUsingUndo": 0,
+      "modelRequests": {
+        "median": 7,
+        "min": 0,
+        "max": 8
+      },
+      "toolCalls": {
+        "median": 11,
+        "min": 0,
+        "max": 13
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 37755,
+        "min": 0,
+        "max": 39009
+      },
+      "costUsd": 0.0038852296000000002,
+      "wallTimeMs": {
+        "median": 11371,
+        "min": 0,
+        "max": 13642
+      },
+      "wastedCallRatio": 0.12121212121212122,
+      "toolFriction": {
+        "Glob": {
+          "calls": 2,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 15,
+          "errors": 0,
+          "repeats": 6,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 12,
+          "errors": 3,
+          "repeats": 0,
+          "codes": {
+            "STALE_FILE": 3
+          }
+        },
+        "GitDiff": {
+          "calls": 1,
+          "errors": 1,
+          "repeats": 0,
+          "codes": {
+            "TOOL_FAILED": 1
+          }
+        },
+        "Shell": {
+          "calls": 2,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Grep": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "finish-a-rename-that-broke-halfway",
+      "arm": "undo-withheld",
+      "attempts": 3,
+      "solved": 3,
+      "kernelCorrect": 3,
+      "attemptsUsingUndo": 0,
+      "modelRequests": {
+        "median": 7,
+        "min": 0,
+        "max": 8
+      },
+      "toolCalls": {
+        "median": 13,
+        "min": 0,
+        "max": 13
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 31903,
+        "min": 0,
+        "max": 36573
+      },
+      "costUsd": 0.003694796,
+      "wallTimeMs": {
+        "median": 9779,
+        "min": 0,
+        "max": 10750
+      },
+      "wastedCallRatio": 0.07894736842105263,
+      "toolFriction": {
+        "Glob": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Read": {
+          "calls": 22,
+          "errors": 0,
+          "repeats": 12,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 12,
+          "errors": 3,
+          "repeats": 0,
+          "codes": {
+            "STALE_FILE": 3
+          }
+        },
+        "Grep": {
+          "calls": 1,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "an-ordinary-single-file-fix",
+      "arm": "undo-available",
+      "attempts": 3,
+      "solved": 3,
+      "kernelCorrect": 3,
+      "attemptsUsingUndo": 0,
+      "modelRequests": {
+        "median": 3,
+        "min": 0,
+        "max": 3
+      },
+      "toolCalls": {
+        "median": 2,
+        "min": 0,
+        "max": 2
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 10679,
+        "min": 0,
+        "max": 10688
+      },
+      "costUsd": 0.001348704,
+      "wallTimeMs": {
+        "median": 2884,
+        "min": 0,
+        "max": 3467
+      },
+      "wastedCallRatio": 0,
+      "toolFriction": {
+        "Read": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    },
+    {
+      "baseId": "an-ordinary-single-file-fix",
+      "arm": "undo-withheld",
+      "attempts": 3,
+      "solved": 3,
+      "kernelCorrect": 3,
+      "attemptsUsingUndo": 0,
+      "modelRequests": {
+        "median": 3,
+        "min": 0,
+        "max": 3
+      },
+      "toolCalls": {
+        "median": 2,
+        "min": 0,
+        "max": 2
+      },
+      "approvalPrompts": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "tokens": {
+        "median": 9955,
+        "min": 0,
+        "max": 9987
+      },
+      "costUsd": 0.001249584,
+      "wallTimeMs": {
+        "median": 3152,
+        "min": 0,
+        "max": 3201
+      },
+      "wastedCallRatio": 0,
+      "toolFriction": {
+        "Read": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        },
+        "Edit": {
+          "calls": 3,
+          "errors": 0,
+          "repeats": 0,
+          "codes": {}
+        }
+      },
+      "failureClasses": {}
+    }
+  ]
+}

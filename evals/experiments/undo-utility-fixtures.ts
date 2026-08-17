@@ -63,6 +63,12 @@ function assertCatalogue(kernel: Kernel, arm: Arm): void {
 interface Base {
   id: string;
   description: string;
+  /**
+   * Per task, not per file: alpha.11 bumped its three to 2 when one of them was
+   * rebuilt, and those numbers are comparable across milestones. A task added in
+   * alpha.12 has no history to be comparable with, so it starts at 1.
+   */
+  fixtureVersion?: number;
   files: Record<string, string>;
   prompt: string;
   livePrompt: string;
@@ -128,6 +134,39 @@ const difficultyOccurred = (read: () => InterferenceLog | undefined): GoldenTask
     if (log.fired === 0) return 'the file was never changed underneath the model';
     if (!log.observedStaleRefusal) {
       return `the file changed ${log.fired}x but no call was refused as stale — the model never met the difficulty`;
+    }
+    return undefined;
+  },
+});
+
+/**
+ * The alpha.12 §11 premise: the refusal has to arrive **late**.
+ *
+ * The difficulty check above is satisfied by a refusal on the first edit of the
+ * turn, which is what alpha.11 measured: nothing had been applied, so nothing was
+ * at stake and re-reading cost one call. This asserts the costlier situation
+ * actually happened — that work had already landed when the file moved underneath
+ * the model — and it is the reason a null result from this task would mean
+ * something the alpha.11 null did not.
+ */
+const difficultyLandedLate = (
+  read: () => InterferenceLog | undefined,
+  atLeast: number,
+): GoldenTask['checks'][number] => ({
+  name: `the refusal arrived after at least ${atLeast} edits had already landed`,
+  run() {
+    const log = read();
+    if (!log) return 'the interference seam was never installed';
+    if (log.fired === 0) return 'the file was never changed underneath the model';
+    if (!log.observedStaleRefusal) {
+      return `the file changed ${log.fired}x but no call was refused as stale — the model never met the difficulty`;
+    }
+    const landed = log.mutationsBeforeFirstFiring ?? 0;
+    if (landed < atLeast) {
+      return (
+        `the refusal arrived with only ${landed} edit(s) applied, so this attempt measures the ` +
+        'alpha.11 situation and not the costlier one it was built for'
+      );
     }
     return undefined;
   },
@@ -199,6 +238,83 @@ const BASES: Base[] = [
   },
 
   {
+    // **alpha.12 §11 — CLOSURE C.** The same question under a refusal that costs
+    // more. alpha.11's difficulty arrived before the model had changed anything,
+    // so re-reading cost one call and nothing was lost; both models re-read, 18
+    // attempts, zero Undo calls. Its own write-up named what that could not
+    // settle:
+    //
+    // > A refusal that destroys more work — a failed multi-file edit, a
+    // > half-applied rename — is a different and more tempting situation, and it
+    // > has not been tested.
+    //
+    // So: three files need the same rename. Two edits land. Then the third file
+    // moves underneath the model and its edit is refused, leaving the workspace
+    // **half-applied** — a state that never existed in the repository and looks,
+    // from the inside, like something to be reversed. The correct answer is still
+    // to re-read the third file and finish; `Undo` here would throw away two
+    // correct edits to recover from a stale receipt.
+    //
+    // Nothing in the prompt mentions the change, and the model does not cause it.
+    id: 'finish-a-rename-that-broke-halfway',
+    description: 'Two of three renames land, then a file changes underneath the model.',
+    // Version 2 within the milestone that created it. Version 1 armed on the read
+    // alone, and its first live run — cited in `docs/alpha12-undo-utility.md` —
+    // produced no difficulty in three of six attempts because the model read all
+    // three files before editing any of them. The seam gained a second trigger, so
+    // v1's numbers are not comparable with these and the version says so.
+    fixtureVersion: 2,
+    files: {
+      'src/one.ts': "import { helper } from './util-old.ts';\nexport const one = helper();\n",
+      'src/two.ts': "import { helper } from './util-old.ts';\nexport const two = helper();\n",
+      'src/three.ts': "import { helper } from './util-old.ts';\nexport const three = helper();\n",
+      'src/util-old.ts': 'export const helper = () => 1;\n',
+    },
+    prompt: 'Update all three imports to ./util.ts.',
+    livePrompt:
+      'The module src/util-old.ts is being renamed to src/util.ts. Update the import in src/one.ts, ' +
+      'src/two.ts and src/three.ts to point at ./util.ts. Do not rename the file itself. If a tool ' +
+      'call is refused, read the error and act on what it says.',
+    interference: {
+      target: 'src/three.ts',
+      // The third file only. Arming on the first two would refuse the first edit
+      // and reproduce alpha.11 exactly.
+      armAfterMutations: 2,
+      becomes: (firing) =>
+        `import { helper } from './util-old.ts';\nexport const three = helper(${firing});\n`,
+    },
+    script: (receipt) => [
+      read('src/one.ts'),
+      edit('src/one.ts', './util-old.ts', './util.ts', receipt('one.ts')),
+      read('src/two.ts'),
+      edit('src/two.ts', './util-old.ts', './util.ts', receipt('two.ts')),
+      read('src/three.ts'),
+      // Refused: two edits are already on disk, and this receipt is stale.
+      edit('src/three.ts', './util-old.ts', './util.ts', receipt('three.ts')),
+      read('src/three.ts'),
+      edit('src/three.ts', './util-old.ts', './util.ts', receipt('three.ts')),
+      done('Two renames landed, the third file had changed under me, so I read it again and finished.'),
+    ],
+    checks: [
+      turnCompleted,
+      fileEquals('src/one.ts', "import { helper } from './util.ts';\nexport const one = helper();\n"),
+      fileEquals('src/two.ts', "import { helper } from './util.ts';\nexport const two = helper();\n"),
+      {
+        name: 'the third import points at ./util.ts, whatever else the file says',
+        async run(ctx) {
+          const actual = await ctx.read('src/three.ts');
+          // Not `fileEquals`: the seam rewrote the rest of the line, so the file
+          // is legitimately not byte-identical to a clean rename. What the task
+          // asks for is the import.
+          return actual.includes("from './util.ts'")
+            ? undefined
+            : `the third import was never updated: ${JSON.stringify(actual)}`;
+        },
+      },
+    ],
+  },
+
+  {
     // No difficulty at all. Any `Undo` call here is the tool being reached for
     // because it exists.
     id: 'an-ordinary-single-file-fix',
@@ -234,15 +350,23 @@ export function undoUtilityTasks(): UndoUtilityTask[] {
         baseId: b.id,
         arm,
         family: 'model-capability',
-        // Bumped: the first task is a different task now, not a tuned one, and a
-        // result from fixture 1 cannot be compared against a result from this.
-        fixtureVersion: 2,
+        // Bumped in alpha.11: its first task became a different task, not a tuned
+        // one, and a result from fixture 1 cannot be compared against one from
+        // fixture 2. alpha.12's new task carries its own version.
+        fixtureVersion: b.fixtureVersion ?? 2,
         description: b.description,
         files: b.files,
         prompt: b.prompt,
         livePrompt: b.livePrompt,
         script: b.script,
-        checks: b.interference ? [...b.checks, difficultyOccurred(() => log)] : b.checks,
+        checks: b.interference
+          ? [
+              ...b.checks,
+              b.interference.armAfterMutations
+                ? difficultyLandedLate(() => log, b.interference.armAfterMutations)
+                : difficultyOccurred(() => log),
+            ]
+          : b.checks,
         approvals: [{ decision: 'allow', scope: 'session' }],
         prepare: (kernel: Kernel) => {
           if (withheld) {

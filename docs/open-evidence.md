@@ -49,14 +49,14 @@ whether the answer is right.
 
 The whole of this section is procurable. None of it is a technical limit.
 
-| #   | Claim                                                            | Needs                                                                  | Cost                            | Carried in                 |
-| --- | ---------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------- | -------------------------- |
-| A1  | **A second operator has run this** (CLOSURE A)                   | One person who is not the author, on a machine that is not this one    | ~1 hour of their time           | alpha.10 §10               |
-| A2  | Hostile-network behaviour: packet loss, link flapping            | root on a Linux host to inject with `tc`/`netem`                       | one sudo password, an afternoon | alpha.3                    |
-| A4  | Clean direct-OpenAI behavioural validation                       | A funded OpenAI account (the current one returns `insufficient_quota`) | account top-up                  | alpha.5 §56, alpha.8       |
-| A5  | Billing-grade delegated cost                                     | A vendor invoice, or per-alias published pricing, to compare against   | one account query               | alpha.4, alpha.5           |
-| A6  | Windows container enforcement / Docker Desktop status            | A Windows machine                                                      | one machine                     | alpha.5, alpha.6           |
-| A7  | Strict egress on a genuinely global resolved address (CLOSURE C) | One Linux host on an ordinary resolver — not behind the 198.18/15 NAT  | ~30 min once a host exists      | alpha.6/7/8/9, alpha.10 §9 |
+| #   | Claim                                                            | Needs                                                                  | Cost                            | Carried in                                                                                                                                             |
+| --- | ---------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A1  | **A second operator has run this** (CLOSURE A)                   | One person who is not the author, on a machine that is not this one    | ~1 hour of their time           | alpha.10 §10, alpha.12 §7 — and now **T4 of the acceptance suite**: items `R01`, `R02`, `R03`, which ADR-0027 §3 makes a precondition of `v0.1.0-rc.1` |
+| A2  | Hostile-network behaviour: packet loss, link flapping            | root on a Linux host to inject with `tc`/`netem`                       | one sudo password, an afternoon | alpha.3                                                                                                                                                |
+| A4  | Clean direct-OpenAI behavioural validation                       | A funded OpenAI account (the current one returns `insufficient_quota`) | account top-up                  | alpha.5 §56, alpha.8                                                                                                                                   |
+| A5  | Billing-grade delegated cost                                     | A vendor invoice, or per-alias published pricing, to compare against   | one account query               | alpha.4, alpha.5                                                                                                                                       |
+| A6  | Windows container enforcement / Docker Desktop status            | A Windows machine                                                      | one machine                     | alpha.5, alpha.6                                                                                                                                       |
+| A7  | Strict egress on a genuinely global resolved address (CLOSURE C) | One Linux host on an ordinary resolver — not behind the 198.18/15 NAT  | ~30 min once a host exists      | alpha.6/7/8/9, alpha.10 §9                                                                                                                             |
 
 **A7 is now `NOT APPLICABLE`, not `NOT TESTED`** — alpha.10 §15 declined a fourth
 restatement. It is listed here anyway because a host would still close it, and
@@ -78,6 +78,14 @@ Everything else confirms or denies something already suspected; A1 can surprise.
 It is also the item that has stopped the project moving: alpha.9 §26's rule —
 recorded as a commitment by alpha.10 and now in force — is that no capability is
 added until A1 is closed. One hour of somebody else's time is the whole price.
+
+**As of alpha.12 it is no longer only a row.** ADR-0027 makes it T4 of the
+acceptance suite and makes T4 a precondition of `v0.1.0-rc.1`, and ADR-0027 §5
+makes `v0.1.0-alpha.12` the last tag cut while it is open. A row can be carried
+indefinitely — seven milestones is the proof — and a tier that gates the release
+candidate cannot. `docs/second-operator-invitation.md` is the one page a stranger
+can be sent, which is the only part of this that was ever the author's to make
+cheaper.
 
 Second used to be A3. A3 is closed. Second is now **A4**, because it is the only
 remaining item that a payment closes rather than a person.
@@ -108,6 +116,41 @@ Not open. Listed so a reader counting `NOT TESTED` rows does not count them twic
 | C3  | Tool usability: success rate, step counts  | alpha.7 §B — the friction table and the runner   |
 | C4  | a release tag whose own gate is green      | alpha.9 CLOSURE A — `v0.1.0-alpha.8.1`           |
 | C5  | a live-model dogfood on the native backend | alpha.11 — `docs/alpha11-native-live-dogfood.md` |
+
+---
+
+## D. Uncovered by the acceptance suite — nothing is in the way but the work
+
+**New in alpha.12**, and a different kind of item from everything above. §A is
+blocked on a person or a machine and §B is impossible; these are clauses of the
+normative specification that **nothing checks**, where the only thing standing in
+the way is that nobody has done it. Filing them under §A would have made "these
+are bought, not built" false.
+
+All five were found by deriving `docs/acceptance-suite.md` from the specification
+and then looking for the evidence, rather than by reading the tests and describing
+them. None is being closed in alpha.12: the milestone defines the suite, and the
+no-capability commitment (ADR-0027 §5) means the work they name belongs to a later
+one.
+
+| #   | Claim                                                                      | Suite item | What would close it                                                                                                |
+| --- | -------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------ |
+| D1  | Hook network egress goes through the unified egress policy                 | `M09`      | One test that gives a hook a network capability and asserts the gate decided it — the shape `mcp-http` already has |
+| D2  | `FakeExecutor` and `FakeFileSystem` exist                                  | `M17`      | Build them, or a specification erratum saying the guarantee is met by a temp directory and the local backend       |
+| D3  | **`StepContext` is immutable during a model request** (invariant 2)        | `V02`      | One test that mutates a live `StepContext` mid-request and asserts the step still sees its snapshot                |
+| D4  | **Large tool output has a budget and an artifact reference** (invariant 9) | `V09`      | One test asserting a >budget output is truncated, reported truncated, and reachable through the artifact it names  |
+| D5  | stdout/stderr truncation is uniform across backends                        | `A15`      | A truncation case in `tests/integration/backend-conformance.test.ts`, which is where "unified" means anything      |
+
+**D3 and D4 are release-blocking invariants.** Spec §25 says violating any of its
+fifteen means do not release, and these two have never been exercised. That is the
+most serious thing in this file, and it was invisible for twelve milestones because
+every gate here checks claims that _were_ made and none looked for claims that were
+never made at all.
+
+`scripts/acceptance.ts` reconciles this section with the suite in both directions:
+an uncovered item named nowhere here fails the build, and an entry here that names
+only items which have since been covered fails too — the second is how an index
+outlives its findings and stops being read.
 
 ---
 
