@@ -125,6 +125,22 @@ uncovered in the suite, and each names its entry in the index.
 | the release gate is green end to end at the tagged commit | PASS       | ci:Release Gate artifact:docs/alpha12-status.md | dispatch 32019683827 and tag-push 32019900190, both at `16587267216b7e85532246ebe18cb688c2535e7c`, green on all six jobs |
 | the remainder is named rather than rounded away           | PASS       | artifact:docs/acceptance-suite.md               | §9 lists the eight uncovered items and what would close each                                                             |
 
+## 7. Found after the tag, and fixed on the branch
+
+`v0.1.0-alpha.12` is tagged and **not moved**. These three landed afterwards, while
+assembling a bundle for a second operator, and are gated by their own dispatch run —
+recorded in `docs/alpha12-status.md` §8. They are documentation and one message
+string: no capability, no new tool, nothing ADR-0027 §5 forbids.
+
+| Requirement                                                                  | Status | Evidence                                                                | Notes                                                                                                                        |
+| ---------------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| a packaged document may not instruct a command a packaged install lacks      | PASS   | test:a fenced block telling the reader to run pnpm is refused           | `docs/configuring-a-provider.md` told the reader to run `pnpm --dir /Users/<author>/…`; their command is `mycoder`           |
+| NEGATIVE CONTROL: a checkout-marked block, and prose about a maintainer step | PASS   | test:NEGATIVE CONTROL: a block marked as checkout-only is permitted     | The escape hatch is deliberate; a rule with no way to say "checkout only" is one somebody deletes                            |
+| no packaged file names an absolute home path                                 | PASS   | test:an absolute home path is refused, in any packaged file             | There is no legitimate one, so this rule has no exception                                                                    |
+| a decision record describing a `pnpm` script is not flagged                  | PASS   | test:an ADR describing a pnpm script is not flagged                     | ADRs document a repository; only what a reader is told to _type_ can strand them                                             |
+| the shipped package instructs nothing unrunnable                             | PASS   | test:the shipped package tells nobody to run something they do not have | Run against the real `npm pack` list, and wired into `pnpm package:check`                                                    |
+| every path `doctor` prints can be opened by the reader                       | PASS   | test:every path it prints is one the reader can actually open           | The footer pointed at a relative `docs/…` path that resolves only in a checkout; it now resolves from the installed location |
+
 ## Model provenance
 
 **Two live-model behavioural claims**, both in §5, and both measured on

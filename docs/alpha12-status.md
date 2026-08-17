@@ -17,7 +17,7 @@
 ## 1. Gates
 
 ```text
-offline suite      1322 tests · 1229 pass · 0 fail · 93 skip
+offline suite      1329 tests · 1236 pass · 0 fail · 93 skip   (1322 at the tag)
 architecture lint  16 rules · no violations
 lint self-tests    250 / 250          (172 in alpha.11; +39 acceptance, +39 mirrors)
 evidence gate      11 matrices · every claim resolves · corpus internally consistent
@@ -233,6 +233,36 @@ unchecked claims that made four is evidence about the method, not about the auth
    like a working check; the other required backticks the experimental block does
    not use, and reported drift that did not exist
 ```
+
+### And one found after the tag was cut
+
+Fixed on the branch, with the tag left where it is.
+
+```text
+5  docs/configuring-a-provider.md — the one document whose whole job is getting a
+   stranger to a working provider — told the reader to run
+   `pnpm --dir /Users/<author>/MyCoder/kernel agent -m deepseek …`. An operator who
+   installed with `npm install -g` has no checkout and no pnpm; their command is
+   `mycoder`, which those examples never mentioned. It also printed the author's
+   own absolute path. Found by reading it while assembling the operator bundle,
+   because nothing checked it — and it had shipped that way for four milestones
+6  `mycoder doctor`'s footer pointed at `docs/configuration-audit.md`, a relative
+   path that resolves in a checkout and nowhere else. It now resolves from the
+   installed location, and a test asserts every path doctor prints exists
+```
+
+Both are now checked rather than fixed: `checkUserFacingDocs` in
+`scripts/package-check.ts` refuses a fenced `pnpm` block in a user-facing document
+unless it says `checkout`, and refuses an absolute home path anywhere in the package.
+Five fixtures, including the two negative controls that keep the rule usable — an ADR
+may describe a `pnpm` script, and prose may explain a maintainer step.
+
+**Why this is not a tag violation.** ADR-0027 §5 forbids cutting another _tag_ while
+CLOSURE A is open; it says nothing about commits, and these are documentation plus one
+message string. The tag stays at `16587267216b7e85532246ebe18cb688c2535e7c`, the
+branch moved on, and the post-tag commits have their own dispatch gate run recorded in
+§1. What a second operator receives is built from the branch, so its provenance claim
+is "built from a gated commit", not "from the tagged one" — the bundle says so.
 
 And one methodological note, because it changed how the mapping was done: `grep` on
 this machine silently returned nothing for `src/tools/builtin/shell.ts`, a file that

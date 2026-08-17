@@ -162,6 +162,106 @@ export function checkPackedContents(
   return offenders;
 }
 
+/**
+ * The documents a consumer reads to *do something*, as opposed to the ones that
+ * record how the project was built.
+ *
+ * `docs/adr/**` and the two development records are excluded deliberately: an ADR
+ * describing `pnpm build:sandbox` or citing a test path is a decision record about
+ * a repository, and a reader who has installed the package is not being told to run
+ * it. The distinction is between "here is how this was decided" and "here is what
+ * you type", and only the second can strand somebody.
+ */
+const DEVELOPMENT_RECORDS = /^docs\/(adr\/|threat-model\.md|configuration-audit\.md)/;
+
+const isUserFacingDoc = (file: string): boolean => /\.md$/.test(file) && !DEVELOPMENT_RECORDS.test(file);
+
+/** An absolute path inside somebody's home directory. There is no legitimate one. */
+const AUTHOR_PATH = /\/(?:Users|home)\/[a-z][a-z0-9._-]*\//i;
+
+/** Fenced code blocks, with the nearest heading above each one for context. */
+function fencedBlocks(markdown: string): Array<{ block: string; heading: string; line: number }> {
+  const out: Array<{ block: string; heading: string; line: number }> = [];
+  const lines = markdown.split('\n');
+  let heading = '';
+  let open = -1;
+
+  lines.forEach((line, index) => {
+    if (open < 0 && /^#{1,6}\s/.test(line)) heading = line;
+    if (!/^\s*```/.test(line)) return;
+    if (open < 0) {
+      open = index;
+      return;
+    }
+    out.push({ block: lines.slice(open + 1, index).join('\n'), heading, line: open + 1 });
+    open = -1;
+  });
+
+  return out;
+}
+
+/**
+ * A user-facing document may not tell the reader to run something they do not have
+ * (alpha.12, found while assembling a bundle for a second operator).
+ *
+ * `docs/configuring-a-provider.md` shipped with
+ * `pnpm --dir /Users/<author>/MyCoder/kernel agent -m deepseek …` in the block a
+ * reader reaches after configuring a provider. Somebody who installed with
+ * `npm install -g` has no checkout and no pnpm; their command is `mycoder`, which
+ * those examples never mentioned. The document also named the author's own absolute
+ * path. Nothing checked it, and the one document whose whole job is getting a
+ * stranger to a working provider was the least verified file in the package.
+ *
+ * Two rules, and the second has an escape hatch on purpose:
+ *
+ *   1. no absolute home path, in any packaged text;
+ *   2. no `pnpm` invocation in a fenced block of a user-facing document, unless the
+ *      block or its heading says `checkout` — because "here is the checkout-only
+ *      way" is a legitimate thing for these documents to say, and a rule with no
+ *      way to say it gets deleted.
+ */
+export function checkUserFacingDocs(
+  files: readonly string[],
+  read: (path: string) => string,
+): Array<{ path: string; line: number; why: string }> {
+  const offenders: Array<{ path: string; line: number; why: string }> = [];
+
+  for (const file of files) {
+    if (!/\.(md|json|ts|mjs|c)$/.test(file)) continue;
+    let content: string;
+    try {
+      content = read(file);
+    } catch {
+      continue;
+    }
+
+    content.split('\n').forEach((line, index) => {
+      const home = AUTHOR_PATH.exec(line);
+      if (home) {
+        offenders.push({
+          path: file,
+          line: index + 1,
+          why: `names an absolute home path ("${home[0]}"), which resolves on one machine`,
+        });
+      }
+    });
+
+    if (!isUserFacingDoc(file)) continue;
+
+    for (const { block, heading, line } of fencedBlocks(content)) {
+      if (!/(?:^|\s)pnpm\s/.test(block)) continue;
+      if (/checkout/i.test(`${block}\n${heading}`)) continue;
+      offenders.push({
+        path: file,
+        line,
+        why: 'a fenced block tells the reader to run `pnpm`, and an installed package has no pnpm scripts. Use `mycoder`, or say the block is for a checkout',
+      });
+    }
+  }
+
+  return offenders;
+}
+
 export interface CheckResult {
   files: string[];
   violations: Array<{ path: string; rule: string; why: string }>;
@@ -198,10 +298,16 @@ export function packedFileList(cwd = ROOT): string[] {
 async function main(argv: readonly string[]): Promise<number> {
   const result = checkPackedFiles(packedFileList());
   const dangling = checkPackedContents(result.files, (p) => readFileSync(p, 'utf8'));
+  const unusable = checkUserFacingDocs(result.files, (p) => readFileSync(p, 'utf8'));
 
   if (argv.includes('--json')) {
-    process.stdout.write(`${JSON.stringify({ ...result, dangling }, null, 2)}\n`);
-    return result.violations.length === 0 && result.missing.length === 0 && dangling.length === 0 ? 0 : 1;
+    process.stdout.write(`${JSON.stringify({ ...result, dangling, unusable }, null, 2)}\n`);
+    return result.violations.length === 0 &&
+      result.missing.length === 0 &&
+      dangling.length === 0 &&
+      unusable.length === 0
+      ? 0
+      : 1;
   }
 
   process.stdout.write(`package contents: ${result.files.length} file(s)\n`);
@@ -228,8 +334,20 @@ async function main(argv: readonly string[]): Promise<number> {
     }
   }
 
-  if (result.violations.length === 0 && result.missing.length === 0 && dangling.length === 0) {
-    process.stdout.write('nothing forbidden, nothing missing, nothing dangling\n');
+  if (unusable.length > 0) {
+    process.stdout.write(`\n${unusable.length} problem(s) in what a reader is told to type:\n`);
+    for (const u of unusable) {
+      process.stdout.write(`  ${u.path}:${u.line}\n      ${u.why}\n`);
+    }
+  }
+
+  if (
+    result.violations.length === 0 &&
+    result.missing.length === 0 &&
+    dangling.length === 0 &&
+    unusable.length === 0
+  ) {
+    process.stdout.write('nothing forbidden, nothing missing, nothing dangling, nothing unrunnable\n');
     return 0;
   }
   return 1;

@@ -39,10 +39,12 @@ Node **22.18 or newer**, and nothing else — **zero runtime dependencies**
 first-run walkthrough.
 
 ```bash
-pnpm release:pack                    # build the artifact
-npm install -g ./mycoder-0.1.0.tgz
+npm install -g ./mycoder-0.1.0.tgz   # the artifact you were given
 mycoder doctor                       # ready, or blocked with the exact remedy
 ```
+
+Building that artifact is a maintainer step, not an install step: `pnpm release:pack`
+in a checkout produces the `.tgz` above.
 
 `doctor` reaches one of exactly two conclusions and never a third: ready, or
 blocked while naming the file to create, the key to set and how to verify it. It

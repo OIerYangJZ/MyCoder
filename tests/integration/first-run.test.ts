@@ -190,6 +190,33 @@ describe('doctor', { timeout: 120_000 }, () => {
     }
   });
 
+  test('every path it prints is one the reader can actually open', async () => {
+    // alpha.12. The footer used to point at `docs/configuration-audit.md`, a
+    // relative path that resolves in a checkout and nowhere else — an installed
+    // package lives under `node_modules`, so a reader following it from their own
+    // project directory found nothing. A pointer only the author can follow is
+    // worse than no pointer, because it reads like an answer.
+    const f = await cliRoot();
+    try {
+      await mkdir(path.join(f.root, 'config'), { recursive: true });
+      await writeFile(path.join(f.root, 'config', 'config.toml'), configWith(''), 'utf8');
+
+      const result = await runCli({ args: ['doctor'], root: f.root });
+      const pointers = [...result.stdout.matchAll(/(\S*docs\/[a-z0-9-]+\.md)/g)].map((m) => m[1]!);
+
+      assert.ok(pointers.length > 0, `doctor printed no document pointer:\n${result.stdout}`);
+      for (const pointer of pointers) {
+        assert.ok(
+          path.isAbsolute(pointer),
+          `doctor printed the relative pointer "${pointer}"; a reader's cwd is their own project`,
+        );
+        assert.ok(existsSync(pointer), `doctor printed "${pointer}", which does not exist on this machine`);
+      }
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   test('changes nothing on disk', async () => {
     const f = await cliRoot();
     try {

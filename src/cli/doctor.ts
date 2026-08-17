@@ -20,6 +20,7 @@
 
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { APP_DISPLAY_NAME } from '../app.ts';
 import { loadConfig, describeConfig } from '../config/config.ts';
@@ -318,6 +319,28 @@ async function readBuildCommit(): Promise<string | null> {
   }
 }
 
+/**
+ * Where the shipped documentation actually is on this machine.
+ *
+ * `docs/configuration-audit.md` is a relative path that resolves in a checkout and
+ * nowhere else: an installed package lives under `node_modules`, so a reader who
+ * followed that pointer from their own project directory found nothing. alpha.12
+ * found the same defect in the provider document while assembling a bundle for a
+ * second operator — a pointer that only the author can follow is worse than no
+ * pointer, because it looks like an answer.
+ *
+ * Resolved from this module rather than from `process.cwd()`, which is the user's
+ * project and never holds our docs. Both layouts are two levels up: `dist/cli/` in
+ * a packed install, `src/cli/` in a checkout.
+ */
+function docsPath(name: string): string {
+  try {
+    return fileURLToPath(new URL(`../../docs/${name}`, import.meta.url));
+  } catch {
+    return `docs/${name}`;
+  }
+}
+
 function render(report: DoctorReport): string {
   const mark: Record<Level, string> = { ok: '  ok   ', warn: '  warn ', blocked: '  BLOCK' };
   const lines = [`${APP_DISPLAY_NAME} doctor`, ''];
@@ -338,7 +361,7 @@ function render(report: DoctorReport): string {
   );
   lines.push('');
   lines.push(
-    'Config keys that can relax a boundary are audited in `docs/configuration-audit.md`;',
+    `Config keys that can relax a boundary are audited in ${docsPath('configuration-audit.md')};`,
     `keys the system ceiling pins regardless of configuration: ${CEILING_PINNED.length} of them.`,
   );
   return lines.join('\n');

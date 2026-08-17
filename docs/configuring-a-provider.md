@@ -56,8 +56,14 @@ Then:
 ```bash
 export DEEPSEEK_API_KEY=sk-...
 cd /path/to/your/project
-pnpm --dir /Users/yangjinsey/MyCoder/kernel agent -m deepseek "fix the failing test"
+mycoder -m deepseek "fix the failing test"
 ```
+
+> **Which command you type depends on how you installed.** `mycoder` is the
+> installed command (`npm install -g`, see `docs/installing.md`). From a git
+> checkout there is no `mycoder` on your `PATH`; use `node bin/mycoder.mjs` in its
+> place, everywhere below. Every example in this document is written for the
+> installed form, because that is the one a reader who is not the author has.
 
 ### Reasoning models
 
@@ -187,14 +193,31 @@ vault. See `docs/threat-model.md` and ADR-0011.
 
 ## Verifying before you spend anything
 
+Neither of these sends a request to the provider, so neither costs anything:
+
 ```bash
-pnpm --dir /path/to/kernel agent --print-config     # shows warnings, resolves config
-pnpm --dir /path/to/kernel agent -m deepseek        # /status, then /model status
+mycoder --print-config     # resolves the config and prints every warning
+mycoder doctor             # ready, or blocked while naming the exact remedy
 ```
 
-Then the bounded live suite — a handful of tiny requests:
+`--print-config` is where a typo in `protocol`, an unreadable `api_key_file` or a
+provider a _project_ config tried to declare will show up. `doctor` answers the
+different question of whether this installation can start at all.
+
+Then the smallest real request there is — one turn, one alias:
 
 ```bash
+cd /path/to/your/project
+mycoder -m deepseek "say hello and change nothing"
+```
+
+Inside the session, `/status` reports the model, the backend and whether a
+credential is configured, and `/model status` reports the alias actually in use.
+
+From a checkout there is also a bounded live suite, a handful of tiny requests:
+
+```bash
+# in a checkout only
 KERNEL_LIVE_PROVIDER=deepseek \
 KERNEL_LIVE_KEY_ENV=DEEPSEEK_API_KEY \
 KERNEL_LIVE_MODEL=deepseek \
@@ -202,5 +225,5 @@ pnpm test:live:model
 ```
 
 It refuses to run without both `KERNEL_LIVE=1` (set by that script) and the
-credential, so a plain `pnpm test` can never fire a billed request even with the
+credential, so an ordinary test run can never fire a billed request even with the
 key exported.

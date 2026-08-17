@@ -22,6 +22,7 @@ import * as path from 'node:path';
 import {
   checkPackedFiles,
   checkPackedContents,
+  checkUserFacingDocs,
   packedFileList,
   FORBIDDEN,
   REQUIRED,
@@ -212,6 +213,87 @@ describe('the packaged artifact', { timeout: 180_000 }, () => {
     assert.deepEqual(
       checkPackedContents(['a.md'], () => 'ordinary prose'),
       [],
+    );
+  });
+});
+
+describe('what a shipped document tells the reader to type', () => {
+  // alpha.12. docs/configuring-a-provider.md shipped with
+  // `pnpm --dir /Users/<author>/MyCoder/kernel agent -m deepseek …` in the block a
+  // reader reaches straight after configuring a provider. Somebody who installed
+  // with `npm install -g` has no checkout and no pnpm; their command is `mycoder`,
+  // which those examples never mentioned. Found while assembling a bundle for a
+  // second operator — by reading, because nothing checked it.
+  /** One user-facing path, so a fixture states only the content under test. */
+  const doc = (): string[] => ['docs/configuring-a-provider.md'];
+
+  test('a fenced block telling the reader to run pnpm is refused', () => {
+    const found = checkUserFacingDocs(doc(), () =>
+      ['## Then', '', '```bash', 'pnpm --dir /path/to/kernel agent -m deepseek "fix it"', '```'].join('\n'),
+    );
+    assert.equal(found.length, 1, JSON.stringify(found));
+    assert.match(found[0]!.why, /installed package has no pnpm scripts/);
+  });
+
+  test('NEGATIVE CONTROL: a block marked as checkout-only is permitted', () => {
+    // The escape hatch is deliberate: "here is the checkout-only way" is a
+    // legitimate thing these documents say, and a rule with no way to say it is a
+    // rule somebody deletes.
+    assert.deepEqual(
+      checkUserFacingDocs(doc(), () =>
+        ['```bash', '# in a checkout only', 'pnpm test:live:model', '```'].join('\n'),
+      ),
+      [],
+    );
+
+    // And the marker may be the heading above the block, which is how README says it.
+    assert.deepEqual(
+      checkUserFacingDocs(doc(), () =>
+        ['## Running it from a checkout', '', '```bash', 'pnpm typecheck', '```'].join('\n'),
+      ),
+      [],
+    );
+  });
+
+  test('NEGATIVE CONTROL: prose about a maintainer step is not a command to the reader', () => {
+    // Only fenced blocks are instructions. Explaining in a sentence that
+    // `pnpm release:pack` builds the artifact is how a reader learns where the
+    // tarball came from.
+    assert.deepEqual(
+      checkUserFacingDocs(doc(), () => 'Building that artifact is a maintainer step: `pnpm release:pack`.'),
+      [],
+    );
+  });
+
+  test('an absolute home path is refused, in any packaged file', () => {
+    const found = checkUserFacingDocs(['docs/adr/ADR-0001-x.md'], () => 'see /Users/someone/MyCoder/kernel');
+    assert.equal(found.length, 1, JSON.stringify(found));
+    assert.match(found[0]!.why, /absolute home path/);
+  });
+
+  test('an ADR describing a pnpm script is not flagged', () => {
+    // A decision record documents a repository. ADR-0020 says
+    // `mycoder build-sandbox # or, in a checkout: pnpm build:sandbox` on purpose,
+    // and flagging that would make the rule unusable on the files it does not mean.
+    assert.deepEqual(
+      checkUserFacingDocs(['docs/adr/ADR-0020-native-launcher-distribution.md'], () =>
+        ['```bash', 'pnpm build:sandbox', '```'].join('\n'),
+      ),
+      [],
+    );
+  });
+
+  test('the shipped package tells nobody to run something they do not have', () => {
+    // Its own file list, not the one the block above builds: that `files` is
+    // scoped to the other describe, and reaching for it fails at runtime rather
+    // than at typecheck if the scope ever changes.
+    const found = checkUserFacingDocs(packedFileList(), (p) =>
+      readFileSync(path.join(process.cwd(), p), 'utf8'),
+    );
+    assert.deepEqual(
+      found.map((f) => `${f.path}:${f.line} ${f.why}`),
+      [],
+      'a packaged document instructs a command a packaged install cannot run',
     );
   });
 });
