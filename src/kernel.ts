@@ -138,6 +138,16 @@ export interface CreateKernelOptions {
   logSink?: (line: string) => void;
   nonInteractive?: boolean;
   prompter?: ApprovalPrompter;
+  /**
+   * Watch the session's event stream as it happens (alpha.12).
+   *
+   * The events already existed and nothing outside the session could see them, so
+   * a turn was silent until its final answer. This is a pass-through to
+   * `Session.onEvent` and nothing more: no new event, no new field, and a caller
+   * that ignores it gets exactly the previous behaviour. `src/cli/render.ts` is
+   * the only consumer.
+   */
+  onEvent?: (type: string, payload: unknown) => void;
   clock?: Clock;
   /** Test seams. */
   dirs?: KernelDirs;
@@ -1257,6 +1267,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     hooks,
     ...(resumedState ? { resumedState } : {}),
     ...(resumedUsage ? { resumedUsage } : {}),
+    ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
   });
 
   // 15. Delegated execution (ADR-0013).

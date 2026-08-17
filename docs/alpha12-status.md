@@ -17,7 +17,7 @@
 ## 1. Gates
 
 ```text
-offline suite      1334 tests · 1241 pass · 0 fail · 93 skip   (1322 at the tag)
+offline suite      1360 tests · 1267 pass · 0 fail · 93 skip   (1322 at the tag)
 architecture lint  16 rules · no violations
 lint self-tests    250 / 250          (172 in alpha.11; +39 acceptance, +39 mirrors)
 evidence gate      11 matrices · every claim resolves · corpus internally consistent
@@ -303,6 +303,37 @@ this machine silently returned nothing for `src/tools/builtin/shell.ts`, a file 
 contains the string being searched for. Every "covered by nothing" claim in §3 was
 therefore re-verified with an in-process search rather than the shell tool, and
 `tests/lint/mirrors.test.ts` asserts the builtin scan finds `Shell` for that reason.
+
+## 8.1 Two post-tag repairs that were asked for, not found
+
+**The CLI tests could validate code that was no longer there.** `bin/mycoder.mjs`
+loads `dist/cli/main.js` when it exists and falls back to `src/` only when it does
+not, so a stale `dist/` silently turns every CLI test into a test of an older build —
+which is how three new tests came out red against a refusal that had already been
+written. `tests/helpers/cli.ts` now rebuilds when `dist/` is older than `src/`, and
+`isDistStale` has both fixtures. A missing build is loudly missing; a stale one is
+not.
+
+**A turn used to print nothing until it finished.** `src/cli/render.ts` renders the
+session's existing event stream — `⏺ Read(src/app.ts)` with `⎿ 1.2 kB` under it, a
+spinner while the model thinks, a banner naming model, profile, isolation and cwd, and
+coloured diffs. It is a **renderer, not a TUI**: spec §1.3 keeps a full TUI as a
+NON-GOAL and there is no alternate screen, no panes, and no cursor addressing beyond
+one line that erases itself. Zero dependencies, per ADR-0009 — the escape codes are
+written out in one place with one switch, and that switch is off for `--json`, for a
+pipe, for `NO_COLOR` and for `TERM=dumb`.
+
+The only new plumbing is `onEvent` on `createKernel`, a pass-through to a hook
+`Session` already had. No new event, no new field, no new tool: a caller that ignores
+it gets exactly the previous behaviour.
+
+**And the first draft of the banner was a real regression, caught by a test written
+five milestones earlier.** It replaced the startup `/status` dump — accurate,
+unreadable — with a tidy `backend: local`, and in doing so dropped the honest
+isolation line that invariant 5 requires. `tests/integration/cli.test.ts` fails when
+that line is missing, which is exactly what it was for (alpha.5 §41). The banner now
+carries `isolation : policy-enforced — network from Shell is best-effort` and the full
+caveat beneath it, both from the enforcement descriptor rather than a literal.
 
 ## 9. What alpha.12 did not do
 

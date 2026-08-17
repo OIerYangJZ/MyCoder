@@ -19,6 +19,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import * as path from 'node:path';
 
+import { isDistStale } from '../helpers/cli.ts';
 import {
   checkPackedFiles,
   checkPackedContents,
@@ -214,6 +215,22 @@ describe('the packaged artifact', { timeout: 180_000 }, () => {
       checkPackedContents(['a.md'], () => 'ordinary prose'),
       [],
     );
+  });
+});
+
+describe('the build the shim actually loads', () => {
+  // `bin/mycoder.mjs` prefers dist/ when it exists, so a stale dist silently turns
+  // every CLI test into a test of code that is no longer in the tree. alpha.12 lost
+  // an hour to exactly that: three new tests were red against a refusal that had
+  // already been written.
+  test('a stale or missing dist is detected', () => {
+    assert.equal(isDistStale(2_000, 1_000), true, 'src newer than dist must count as stale');
+    assert.equal(isDistStale(1_000, undefined), true, 'a missing dist must count as stale');
+  });
+
+  test('NEGATIVE CONTROL: a dist newer than its sources is not stale', () => {
+    assert.equal(isDistStale(1_000, 2_000), false);
+    assert.equal(isDistStale(1_000, 1_000), false, 'equal mtimes are not staleness');
   });
 });
 

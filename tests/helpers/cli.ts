@@ -12,8 +12,8 @@
  * which is exactly the reader who is least likely to notice.
  */
 
-import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtemp, mkdir, rm, stat, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -41,7 +41,66 @@ export interface RunOptions {
   keepRoot?: boolean;
 }
 
+/**
+ * True when `dist/` is older than the sources it was emitted from.
+ *
+ * `bin/mycoder.mjs` loads `dist/cli/main.js` **when it exists** and falls back to
+ * `src/` only when it does not (ADR-0019 §1). So a `dist/` left over from an
+ * earlier build makes every test that runs through the shim exercise code that is
+ * no longer in the tree — and it fails or passes for reasons that have nothing to
+ * do with the change under test.
+ *
+ * alpha.12 hit this: three new CLI tests were red against a refusal that had been
+ * written, and the refusal was in `src/`. A stale build is worse than a missing one,
+ * because a missing one is loudly missing.
+ */
+export function isDistStale(newestSrcMs: number, distMs: number | undefined): boolean {
+  if (distMs === undefined) return true;
+  return newestSrcMs > distMs;
+}
+
+/** Newest mtime under a directory, in ms. */
+async function newestMtime(dir: string): Promise<number> {
+  let newest = 0;
+  const walk = async (current: string): Promise<void> => {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.name.endsWith('.ts')) newest = Math.max(newest, (await stat(full)).mtimeMs);
+    }
+  };
+  await walk(dir);
+  return newest;
+}
+
+/** Rebuild `dist/` when it is missing or stale. Once per process. */
+let distChecked: Promise<void> | undefined;
+async function ensureFreshDist(): Promise<void> {
+  distChecked ??= (async () => {
+    const dist = path.join(process.cwd(), 'dist', 'cli', 'main.js');
+    const distMs = await stat(dist)
+      .then((s) => s.mtimeMs)
+      .catch(() => undefined);
+    if (!isDistStale(await newestMtime(path.join(process.cwd(), 'src')), distMs)) return;
+
+    process.stderr.write('tests/helpers/cli: dist/ is missing or stale — rebuilding\n');
+    const tsc = path.join(process.cwd(), 'node_modules', 'typescript', 'bin', 'tsc');
+    const build = spawnSync(process.execPath, [tsc, '-p', 'tsconfig.build.json'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    });
+    if (build.status !== 0) {
+      throw new Error(`could not rebuild dist/: ${build.stdout ?? ''}${build.stderr ?? ''}`);
+    }
+  })();
+  return distChecked;
+}
+
 export async function runCli(opts: RunOptions): Promise<RunResult> {
+  // Only the shim reads `dist/`; a test that names `CLI` is running the sources
+  // and needs no build at all.
+  if ((opts.entry ?? BIN) === BIN) await ensureFreshDist();
+
   const root = opts.root ?? (await mkdtemp(path.join(tmpdir(), 'mycoder-cli-')));
 
   // An empty workspace inside the root, and *not* `process.cwd()`.

@@ -146,6 +146,25 @@ string: no capability, no new tool, nothing ADR-0027 §5 forbids.
 | `doctor` blocks on it and gives the same remedy                                               | PASS   | test:doctor blocks on it, and says the same thing                                            | Exit 3, a `workspace` finding; `doctor` explains rather than refusing to run                                                 |
 | every path `doctor` prints can be opened by the reader                                        | PASS   | test:every path it prints is one the reader can actually open                                | The footer pointed at a relative `docs/…` path that resolves only in a checkout; it now resolves from the installed location |
 
+## 8. The session renders what it is doing (post-tag)
+
+A renderer, not a TUI: spec §1.3's NON-GOAL is unchanged — no alternate screen, no
+panes, no cursor addressing beyond one spinner line that erases itself. Every event
+it prints already existed; nothing could see them.
+
+| Requirement                                                        | Status | Evidence                                                                                                                                  | Notes                                                                                          |
+| ------------------------------------------------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| a tool call and its result appear while the turn runs              | PASS   | test:a call and its result print in order                                                                                                 | `⏺ Read(a.ts)` then `⎿ 12 B`; before this a turn printed nothing until its final answer        |
+| a denial reads as "this did not happen"                            | PASS   | test:a denial is a failure line, whatever the payload says                                                                                | `tool.denied` carries no `isError`, and on screen it still has to look refused                 |
+| nothing is styled when the output is not a terminal                | PASS   | test:a plain palette emits no escape codes at all                                                                                         | Escape codes in a pipe end up in somebody's log                                                |
+| `NO_COLOR` wins over `FORCE_COLOR`                                 | PASS   | test:NO_COLOR wins over everything, including FORCE_COLOR                                                                                 | It is the flag people set after something got this wrong                                       |
+| the fallback glyph set is ASCII                                    | PASS   | test:the plain glyph set is ASCII, so a CI log stays readable                                                                             | Braille and box-drawing are mojibake in `cmd.exe` and in CI logs                               |
+| the spinner writes nothing when disabled, and erases only its line | PASS   | test:it writes nothing at all when disabled test:it erases its own line, and never moves the cursor anywhere else                         | `\r` and erase-to-end-of-line; nothing that survives the process                               |
+| an unknown event prints nothing                                    | PASS   | test:events it does not render produce nothing                                                                                            | The vocabulary grows; a renderer that printed everything would make each new event a UI change |
+| a malformed payload cannot crash a session                         | PASS   | test:a malformed payload does not throw                                                                                                   | It is `unknown` off an event bus                                                               |
+| **the banner still states the isolation honestly**                 | PASS   | test:the banner names what to check before typing, isolation included test:status is printed on startup and states the isolation honestly | The first draft dropped it for a tidy `backend: local`; invariant 5's test caught it           |
+| the isolation wording comes from the descriptor, never a literal   | PASS   | suite:lint                                                                                                                                | `no-enforcement-overclaim`, and the banner calls `describeEnforcement` like `/status` does     |
+
 ## Model provenance
 
 **Two live-model behavioural claims**, both in §5, and both measured on

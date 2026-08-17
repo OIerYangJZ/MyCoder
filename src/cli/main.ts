@@ -33,6 +33,7 @@ import { Redactor } from '../security/redactor.ts';
 import { resolveKernelDirs, sessionsDir } from '../util/platform.ts';
 import { toKernelError, type ErrorCode } from '../util/errors.ts';
 import { canonicalize } from '../util/paths.ts';
+import { describeEnforcement, networkEnforcementLabel, withForeignTools } from '../execution/enforcement.ts';
 import { checkWorkspaceRoot } from '../config/first-run.ts';
 import type { LogLevel } from '../util/logger.ts';
 import { buildSandbox } from '../execution/linux-native/build.ts';
@@ -43,6 +44,13 @@ import { EXIT, exitCodeForError, exitCodeForTurn, type ExitCode } from './exit-c
 import { runDoctor, printConfig } from './doctor.ts';
 import { setupCredential } from './setup-credential.ts';
 import { TerminalApprovalPrompter } from './prompter.ts';
+import {
+  banner,
+  colourEnabled,
+  glyphs as glyphSet,
+  palette as makePalette,
+  SessionRenderer,
+} from './render.ts';
 import { parseShellLine, describePlan } from './shell-parse.ts';
 
 /** The `--json` envelope. One object per line on stdout, nothing else. */
@@ -190,9 +198,26 @@ export async function main(argv: readonly string[]): Promise<number> {
     );
   }
 
+  // How this session will look. `live` is false for `--json` and for anything that
+  // is not a terminal: stdout is a contract and a log file should not receive
+  // spinner frames.
+  // lint-allow no-host-env-read: NO_COLOR / TERM / FORCE_COLOR decide styling only.
+  // Nothing read here reaches a child process, the model or a log, and no credential
+  // can be spelled `NO_COLOR` — the three names are read and nothing else is.
+  const colour = colourEnabled(process.env, stderr.isTTY === true) && !args.json;
+  const glyphs = glyphSet(colour);
+  const palette = makePalette(colour);
+  const renderer = new SessionRenderer({
+    write: (t) => stderr.write(t),
+    palette,
+    glyphs,
+    live: !args.json && stderr.isTTY === true,
+  });
+
   let kernel: Kernel;
   try {
     kernel = await createKernel({
+      onEvent: (type, payload) => renderer.on(type, payload),
       workspaceDir: cwd,
       ...(args.profile ? { profileOverride: args.profile } : {}),
       ...(args.model ? { modelOverride: args.model } : {}),
@@ -227,8 +252,29 @@ export async function main(argv: readonly string[]): Promise<number> {
     if (replayed) stderr.write(`${describeResume(replayed)}\n`);
   }
 
-  const status = await kernel.control.execute('/status');
-  stderr.write(`${status.message}\n\n`);
+  // The banner replaces a full `/status` dump at startup. `/status` still prints
+  // everything — the dump was accurate and unreadable, and four lines of it are
+  // what anybody actually checks before typing.
+  if (!args.json) {
+    // From the backend's own descriptor, via the same helper `/status` uses —
+    // never a literal (invariant 5, and the `no-enforcement-overclaim` lint rule).
+    const descriptor = withForeignTools(kernel.backend.environment.enforcement, []);
+    const enforcement = describeEnforcement(descriptor);
+    stderr.write(
+      `${banner(
+        {
+          version: KERNEL_VERSION,
+          model: kernel.session.activeModelAlias,
+          profile: kernel.config.security.permissionProfile ?? 'workspace-dev',
+          isolation: `${enforcement.label} — network from Shell is ${networkEnforcementLabel(descriptor)}`,
+          caveat: enforcement.caveat,
+          workspace: kernel.workspaceRoot,
+        },
+        palette,
+        glyphs,
+      )}\n\n`,
+    );
+  }
 
   let exitCode: ExitCode = EXIT.OK;
   try {
@@ -248,7 +294,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       return exitCode;
     }
 
-    stderr.write('Type a task, or /help for control commands. Ctrl-C to cancel a turn, Ctrl-D to exit.\n\n');
+    stderr.write(
+      `${palette.dim('Type a task, or /help for control commands. Ctrl-C cancels a turn, Ctrl-D exits.')}\n\n`,
+    );
 
     // Ctrl-C cancels the turn rather than killing the process — an interrupted
     // turn still has to close its tool calls and flush its event log.
@@ -260,7 +308,8 @@ export async function main(argv: readonly string[]): Promise<number> {
     for (;;) {
       let line: string;
       try {
-        line = await rl.question('> ');
+        renderer.quiet();
+        line = await rl.question(`${palette.cyan(glyphs.prompt)} `);
       } catch {
         break; // Ctrl-D
       }
@@ -269,6 +318,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       exitCode = await runOnce(kernel, line, args.json);
     }
   } finally {
+    renderer.quiet();
     await kernel.shutdown();
     rl?.close();
   }
