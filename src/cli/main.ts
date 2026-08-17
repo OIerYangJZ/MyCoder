@@ -47,6 +47,7 @@ import { TerminalApprovalPrompter } from './prompter.ts';
 import {
   banner,
   colourEnabled,
+  discardFrame,
   discardInput,
   glyphs as glyphSet,
   openInput,
@@ -364,8 +365,14 @@ export async function main(argv: readonly string[]): Promise<number> {
           );
         }
       } catch {
-        if (colour) stdin.off('keypress', keepFrame);
-        break; // Ctrl-D
+        // Ctrl-D. The cursor is inside the frame, so the frame has to be taken down
+        // from in there: leaving it draws a blue rule under the shell prompt of the
+        // shell we are handing control back to.
+        if (colour) {
+          stdin.off('keypress', keepFrame);
+          stderr.write(discardFrame());
+        }
+        break;
       }
       if (line.trim() === '') continue;
       if (line.trim() === '/exit' || line.trim() === '/quit') break;

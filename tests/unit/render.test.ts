@@ -17,6 +17,7 @@ import {
   banner,
   box,
   centre,
+  discardFrame,
   discardInput,
   formatDuration,
   inputRule,
@@ -533,6 +534,16 @@ describe('the input frame, before and after sending', () => {
       2,
       'the cursor must end up where the frame began',
     );
+  });
+
+  test('Ctrl-D takes the frame down from inside it', () => {
+    // On EOF the cursor is still on the input line and the bottom rule is *below* it,
+    // so clearing upwards leaves a blue line under the shell prompt of the shell we
+    // are handing control back to.
+    const gone = discardFrame();
+    assert.match(gone, /^\u001b\[1B/, 'the line below has to be cleared first');
+    assert.equal((gone.match(/\u001b\[2K/g) ?? []).length, 3, 'all three lines must be erased');
+    assert.equal((gone.match(/\u001b\[1A/g) ?? []).length, 2);
   });
 
   test('the bottom rule is re-drawn around readline, not by moving the cursor absolutely', () => {

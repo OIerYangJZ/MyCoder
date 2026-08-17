@@ -487,6 +487,18 @@ export function submitted(text: string, p: Palette, g: Glyphs, columns: number):
 }
 
 /**
+ * Throw the frame away from *inside* it — the Ctrl-D case.
+ *
+ * On EOF the cursor is still on the input line, with the bottom rule below it, so
+ * clearing upwards leaves that rule behind: a blue line under the shell prompt after
+ * the process has exited. This clears the line below first, then the input line, then
+ * the top rule, and leaves the cursor where the frame began.
+ */
+export function discardFrame(): string {
+  return `${DOWN(1)}\r${CLEAR_LINE}${UP(1)}\r${CLEAR_LINE}${UP(1)}\r${CLEAR_LINE}`;
+}
+
+/**
  * Throw the frame away without leaving a trace.
  *
  * An empty Enter used to print an inverse block containing nothing and then draw a
