@@ -96,8 +96,13 @@ describe('CLI', () => {
   });
 
   test('status is printed on startup and states the isolation honestly', async () => {
+    // The assertion is about substance, not punctuation: the startup surface names
+    // the isolation, says what the network guarantee is worth, and never claims OS
+    // isolation on the local backend (invariant 5). alpha.12 moved this from a
+    // `/status` dump into a banner and the label lost its colon; what must not
+    // change is that the line is there at all.
     const result = await runCli(['--non-interactive'], '');
-    assert.match(result.stderr, /isolation\s+: policy-enforced/);
+    assert.match(result.stderr, /isolation\s+policy-enforced/);
     assert.match(result.stderr, /network from Shell is best-effort/);
     assert.equal(
       /os-isolated/.test(result.stderr),
@@ -150,6 +155,6 @@ describe('CLI', () => {
 
   test('--profile read-only is reflected in status', async () => {
     const result = await runCli(['--non-interactive', '--profile', 'read-only'], '');
-    assert.match(result.stderr, /profile\s+: read-only/);
+    assert.match(result.stderr, /profile\s+read-only/);
   });
 });

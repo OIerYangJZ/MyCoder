@@ -48,6 +48,7 @@ import {
   banner,
   colourEnabled,
   glyphs as glyphSet,
+  inputRule,
   palette as makePalette,
   SessionRenderer,
 } from './render.ts';
@@ -201,6 +202,9 @@ export async function main(argv: readonly string[]): Promise<number> {
   // How this session will look. `live` is false for `--json` and for anything that
   // is not a terminal: stdout is a contract and a log file should not receive
   // spinner frames.
+  // The terminal's width, re-read each time: a window can be resized mid-session.
+  const columns = (): number => (stderr.isTTY === true ? (stderr.columns ?? 80) : 80);
+
   // lint-allow no-host-env-read: NO_COLOR / TERM / FORCE_COLOR decide styling only.
   // Nothing read here reaches a child process, the model or a log, and no credential
   // can be spelled `NO_COLOR` — the three names are read and nothing else is.
@@ -260,18 +264,21 @@ export async function main(argv: readonly string[]): Promise<number> {
     // never a literal (invariant 5, and the `no-enforcement-overclaim` lint rule).
     const descriptor = withForeignTools(kernel.backend.environment.enforcement, []);
     const enforcement = describeEnforcement(descriptor);
+    const resolved = kernel.modelRegistry.resolve(kernel.session.activeModelAlias);
     stderr.write(
       `${banner(
         {
           version: KERNEL_VERSION,
           model: kernel.session.activeModelAlias,
           profile: kernel.config.security.permissionProfile ?? 'workspace-dev',
+          ...(resolved ? { contextWindow: resolved.profile.contextWindow } : {}),
           isolation: `${enforcement.label} — network from Shell is ${networkEnforcementLabel(descriptor)}`,
           caveat: enforcement.caveat,
           workspace: kernel.workspaceRoot,
         },
         palette,
         glyphs,
+        columns(),
       )}\n\n`,
     );
   }
@@ -309,7 +316,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       let line: string;
       try {
         renderer.quiet();
-        line = await rl.question(`${palette.cyan(glyphs.prompt)} `);
+        stderr.write(`${inputRule(palette, glyphs, columns())}\n`);
+        line = await rl.question(`${palette.boldBlue(glyphs.prompt)} `);
+        stderr.write(`${inputRule(palette, glyphs, columns())}\n`);
       } catch {
         break; // Ctrl-D
       }

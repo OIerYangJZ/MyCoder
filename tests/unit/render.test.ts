@@ -16,6 +16,8 @@ import assert from 'node:assert/strict';
 import {
   banner,
   box,
+  centre,
+  inputRule,
   colourEnabled,
   diffBlock,
   formatBytes,
@@ -113,6 +115,73 @@ describe('boxes', () => {
     assert.equal(widths.size, 1, `ragged box: ${[...widths].join(', ')}`);
   });
 
+  test('the frame, the title and the prompt all use one accent colour', () => {
+    // Blue, and only blue: a frame in one colour and a title in another reads as
+    // two unrelated things. 34 is blue, `1;34` bold blue, `2;34` dim blue.
+    const framed = banner(
+      {
+        version: '0.1.0',
+        model: 'm',
+        profile: 'p',
+        workspace: '/w',
+        isolation: 'i',
+        caveat: 'c',
+      },
+      fancy,
+      glyphs(true),
+      80,
+    );
+    assert.match(framed, new RegExp(`${ESC}\\[34m╭`), 'the frame is not blue');
+    assert.match(framed, new RegExp(`${ESC}\\[1;34m◆`), 'the title mark is not bold blue');
+    assert.match(
+      inputRule(fancy, glyphs(true), 40),
+      new RegExp(`${ESC}\\[2;34m─+`),
+      'the input rule is not blue',
+    );
+  });
+
+  test('the input frame closes top and bottom and never at the sides', () => {
+    // Asked for, and also the only shape a readline prompt can keep: a right-hand
+    // border would need the input line rewritten on every keystroke, which is the
+    // TUI spec §1.3 rules out.
+    const rule = inputRule(plain, glyphs(true), 30);
+    assert.match(rule, /^─+$/, `the rule is not a bare horizontal: ${JSON.stringify(rule)}`);
+    assert.equal(rule.includes('│'), false, 'the input frame grew a side');
+  });
+
+  test('the banner is centred in the terminal, and follows a resize', () => {
+    const info = {
+      version: '0.1.0',
+      model: 'm',
+      profile: 'p',
+      workspace: '/w',
+      isolation: 'i',
+      caveat: 'c',
+    };
+    const narrow = banner(info, plain, glyphs(true), 60).split('\n')[0] ?? '';
+    const wide = banner(info, plain, glyphs(true), 120).split('\n')[0] ?? '';
+    const indent = (line: string): number => line.length - line.trimStart().length;
+
+    assert.ok(indent(wide) > indent(narrow), 'a wider terminal must push the box further right');
+    assert.equal(indent(narrow) >= 0, true);
+  });
+
+  test('the context window is shown when it is known, and omitted when it is not', () => {
+    const base = {
+      version: '0.1.0',
+      model: 'm',
+      profile: 'p',
+      workspace: '/w',
+      isolation: 'i',
+      caveat: 'c',
+    };
+    assert.match(
+      banner({ ...base, contextWindow: 65536 }, plain, glyphs(true), 80),
+      /context\s+65,536 tokens/,
+    );
+    assert.equal(/context/.test(banner(base, plain, glyphs(true), 80)), false);
+  });
+
   test('the banner names what to check before typing, isolation included', () => {
     // The isolation line is load-bearing, not decoration: invariant 5 forbids a
     // user-facing surface that presents policy as strong isolation, and the first
@@ -155,7 +224,7 @@ describe('boxes', () => {
       plain,
       glyphs(false),
     );
-    assert.match(text, /isolation\s+:\s+os-isolated/);
+    assert.match(text, /isolation\s+os-isolated/);
   });
 });
 

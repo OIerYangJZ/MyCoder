@@ -36,6 +36,10 @@ export interface Palette {
   green(s: string): string;
   yellow(s: string): string;
   cyan(s: string): string;
+  /** The accent. One colour carries the frame, the title and the prompt. */
+  blue(s: string): string;
+  boldBlue(s: string): string;
+  dimBlue(s: string): string;
 }
 
 const wrap = (on: boolean, code: string) => (s: string) => (on ? `[${code}m${s}[0m` : s);
@@ -49,6 +53,9 @@ export function palette(on: boolean): Palette {
     green: wrap(on, '32'),
     yellow: wrap(on, '33'),
     cyan: wrap(on, '36'),
+    blue: wrap(on, '34'),
+    boldBlue: wrap(on, '1;34'),
+    dimBlue: wrap(on, '2;34'),
   };
 }
 
@@ -67,6 +74,8 @@ export function colourEnabled(env: Record<string, string | undefined>, isTty: bo
 
 export interface Glyphs {
   call: string;
+  /** The title mark. `reference/clio` uses the same one. */
+  diamond: string;
   result: string;
   ok: string;
   bad: string;
@@ -85,6 +94,7 @@ export function glyphs(fancy: boolean): Glyphs {
   return fancy
     ? {
         call: '⏺',
+        diamond: '◆',
         result: '⎿',
         ok: '✓',
         bad: '✗',
@@ -99,6 +109,7 @@ export function glyphs(fancy: boolean): Glyphs {
       }
     : {
         call: '*',
+        diamond: '*',
         result: '`-',
         ok: 'ok',
         bad: 'x',
@@ -222,6 +233,8 @@ export interface BannerInfo {
   model: string;
   profile: string;
   workspace: string;
+  /** The model's context window, in tokens. Shown because compaction turns on it. */
+  contextWindow?: number;
   /**
    * How the isolation is described, from the enforcement descriptor — never a
    * literal (invariant 5, `no-enforcement-overclaim`).
@@ -231,8 +244,15 @@ export interface BannerInfo {
   caveat: string;
 }
 
+/** Pad a block of lines so it sits in the middle of the terminal. */
+export function centre(lines: readonly string[], columns: number): string[] {
+  const widest = Math.max(...lines.map(visibleWidth), 0);
+  const left = ' '.repeat(Math.max(0, Math.floor((columns - widest) / 2)));
+  return lines.map((line) => `${left}${line}`);
+}
+
 /**
- * What you are about to run, and what it can reach. Printed once.
+ * What you are about to run, and what it can reach. Printed once, centred.
  *
  * The isolation line is **not decoration** and is not optional. Invariant 5 says
  * the user-facing surface must never present policy as strong isolation, and the
@@ -240,33 +260,61 @@ export interface BannerInfo {
  * wording with a tidy `backend local` — which is how an accurate claim becomes a
  * missing one. `tests/integration/cli.test.ts` caught it, which is exactly what it
  * was written for (alpha.5 §41).
+ *
+ * The shape follows `reference/clio`'s banner, which is a Claude Code clone: one
+ * accent colour on the frame and the title, dim labels in a column, and the
+ * caveat as prose underneath rather than squeezed into a cell. Read for the
+ * design, not copied — `reference/**` is read-only (AGENTS.md rule 3) and none of
+ * its types cross into ours.
  */
-export function banner(info: BannerInfo, p: Palette, g: Glyphs, width = 96): string {
-  // `name        : value`, which is the shape `/status` already uses. Two surfaces
-  // describing the same session should not need two vocabularies, and
-  // `tests/integration/cli.test.ts` asserts on this shape.
-  const row = (name: string, value: string): string => `${p.dim(`${name.padEnd(11)}:`)} ${value}`;
+export function banner(info: BannerInfo, p: Palette, g: Glyphs, columns = 80): string {
+  const rows: Array<[string, string]> = [
+    ['model', info.model],
+    ...(info.contextWindow === undefined
+      ? []
+      : ([['context', `${info.contextWindow.toLocaleString('en-US')} tokens`]] as Array<[string, string]>)),
+    ['profile', info.profile],
+    ['isolation', info.isolation],
+    ['cwd', info.workspace],
+  ];
+
+  const label = Math.max(...rows.map(([k]) => k.length));
+  const body = rows.map(([k, v]) => `${p.dim(k.padEnd(label))}  ${v}`);
+  const title = `${p.boldBlue(g.diamond)} ${p.boldBlue('MyCoder')} ${p.dim(info.version)}`;
+
+  // Width from the content, capped so a wide terminal does not stretch a
+  // six-line box across two feet of screen.
+  const inner = Math.min(Math.max(visibleWidth(title), ...body.map(visibleWidth)), Math.max(20, columns - 8));
+  const pad = (line: string): string => `${line}${' '.repeat(Math.max(0, inner - visibleWidth(line)))}`;
+  const bar = g.horizontal.repeat(inner + 2);
+
+  const framed = [
+    p.blue(`${g.topLeft}${bar}${g.topRight}`),
+    // The title is centred inside the frame; the rows are not, because a column of
+    // labels is read by scanning down its left edge.
+    `${p.blue(g.vertical)} ${pad(centre([title], inner)[0] ?? title)} ${p.blue(g.vertical)}`,
+    `${p.blue(g.vertical)} ${pad('')} ${p.blue(g.vertical)}`,
+    ...body.map((line) => `${p.blue(g.vertical)} ${pad(line)} ${p.blue(g.vertical)}`),
+    p.blue(`${g.bottomLeft}${bar}${g.bottomRight}`),
+  ];
 
   return [
-    box(
-      [
-        `${p.bold('MyCoder')} ${p.dim(info.version)}`,
-        '',
-        row('model', info.model),
-        row('profile', info.profile),
-        row('isolation', info.isolation),
-        row('cwd', info.workspace),
-      ],
-      p,
-      g,
-      width,
-    ),
-    // Outside the box, wrapped: the caveat is several sentences and it is the part
-    // invariant 5 is about, so it is neither truncated nor squeezed into a cell.
-    wrapText(info.caveat, Math.min(width, 88))
-      .map((line) => p.dim(line))
-      .join('\n'),
+    ...centre(framed, columns),
+    '',
+    ...wrapText(info.caveat, Math.min(columns - 4, 84)).map((line) => `  ${p.dim(line)}`),
   ].join('\n');
+}
+
+/**
+ * The input frame: a rule above and a rule below, and nothing at the sides.
+ *
+ * Closed top and bottom, open left and right — asked for, and it is also the only
+ * shape that survives a `readline` prompt. A full box would need the input line
+ * rewritten on every keystroke to keep a right-hand border in place, which is a
+ * TUI, which is spec §1.3's NON-GOAL.
+ */
+export function inputRule(p: Palette, g: Glyphs, columns = 80): string {
+  return p.dimBlue(g.horizontal.repeat(Math.max(8, Math.min(columns - 2, 96))));
 }
 
 /** Greedy wrap. Long words are left long rather than broken mid-path. */
