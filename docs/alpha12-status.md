@@ -39,6 +39,27 @@ The second line is load-bearing. On any machine without `research/` — CI, and 
 consumer of the package — it reads `NOT re-derived`, because the normative
 specification is not there. A check that could not run says so rather than passing.
 
+### The release gate, at the commit the tag names
+
+```text
+tag        v0.1.0-alpha.12
+commit     16587267216b7e85532246ebe18cb688c2535e7c
+dispatch   run 32019683827 — green on every tier, before the tag existed
+tag push   run 32019900190 — green on every tier, at the same commit
+```
+
+Both runs are green on all six jobs: offline gates on ubuntu **and** macOS, the
+container tier with `KERNEL_CONTAINER_REQUIRED=1`, the native Landlock tier with
+`KERNEL_NATIVE_REQUIRED=1`, and the artifact build. The `_REQUIRED` variables are
+what make the two enforcement lines evidence rather than a runner that happened to
+lack Docker — and they are also where the suite's T1 and T2 content actually lives,
+since T2 has no acceptance items of its own.
+
+**Gated twice, and the tag was not moved.** This paragraph lands in a commit _after_
+both runs, deliberately: a docs-only commit before the gate means tagging an ungated
+tree, and after it the gated commit is left exactly as it was gated. alpha.9 fell
+into the first version of this; alpha.10 and alpha.11 got it right the same way.
+
 ## 2. MAIN — the Full Acceptance Suite
 
 `docs/acceptance-suite.md`. 62 items: 59 clauses quoted verbatim from the

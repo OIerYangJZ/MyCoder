@@ -114,15 +114,16 @@ uncovered in the suite, and each names its entry in the index.
 
 ## 6. The tiers, as actually run
 
-| Requirement                                     | Status     | Evidence                                       | Notes                                                                                                           |
-| ----------------------------------------------- | ---------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| **T0** the offline suite, on this machine       | PASS       | artifact:docs/alpha12-status.md                | 1322 tests · 1229 pass · 0 fail · 93 skip                                                                       |
-| **T1** the SSH tier, against a real `sshd`      | PASS       | suite:test:ssh                                 | 73 tests, loopback OpenSSH. The authoritative separate-host run is alpha.3's, and the matrices distinguish them |
-| **T1** the container tier                       | PASS       | ci:Container Enforcement (native Linux Docker) | Run by the release gate with `KERNEL_CONTAINER_REQUIRED=1`, on a native Linux kernel rather than Docker Desktop |
-| **T2** native Linux Landlock + seccomp          | PASS       | ci:Native Linux Sandbox (Landlock + seccomp)   | Zero suite items sit here by construction; the tier's content is alpha.7's matrix and this job [scope]          |
-| **T3** a live provider                          | PASS       | artifact:docs/alpha12-undo-utility.md          | `deepseek-chat` and `gpt-5.6-terra`, 24 live attempts each                                                      |
-| **T4** a person who did not write this          | NOT TESTED | artifact:docs/second-operator-invitation.md    | The tier that gates `rc.1`, and the one no amount of CI can produce [open:A1]                                   |
-| the remainder is named rather than rounded away | PASS       | artifact:docs/acceptance-suite.md              | §9 lists the eight uncovered items and what would close each                                                    |
+| Requirement                                               | Status     | Evidence                                        | Notes                                                                                                                    |
+| --------------------------------------------------------- | ---------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| **T0** the offline suite, on this machine                 | PASS       | artifact:docs/alpha12-status.md                 | 1322 tests · 1229 pass · 0 fail · 93 skip                                                                                |
+| **T1** the SSH tier, against a real `sshd`                | PASS       | suite:test:ssh                                  | 73 tests, loopback OpenSSH. The authoritative separate-host run is alpha.3's, and the matrices distinguish them          |
+| **T1** the container tier                                 | PASS       | ci:Container Enforcement (native Linux Docker)  | Run by the release gate with `KERNEL_CONTAINER_REQUIRED=1`, on a native Linux kernel rather than Docker Desktop          |
+| **T2** native Linux Landlock + seccomp                    | PASS       | ci:Native Linux Sandbox (Landlock + seccomp)    | Zero suite items sit here by construction; the tier's content is alpha.7's matrix and this job [scope]                   |
+| **T3** a live provider                                    | PASS       | artifact:docs/alpha12-undo-utility.md           | `deepseek-chat` and `gpt-5.6-terra`, 24 live attempts each                                                               |
+| **T4** a person who did not write this                    | NOT TESTED | artifact:docs/second-operator-invitation.md     | The tier that gates `rc.1`, and the one no amount of CI can produce [open:A1]                                            |
+| the release gate is green end to end at the tagged commit | PASS       | ci:Release Gate artifact:docs/alpha12-status.md | dispatch 32019683827 and tag-push 32019900190, both at `16587267216b7e85532246ebe18cb688c2535e7c`, green on all six jobs |
+| the remainder is named rather than rounded away           | PASS       | artifact:docs/acceptance-suite.md               | §9 lists the eight uncovered items and what would close each                                                             |
 
 ## Model provenance
 
