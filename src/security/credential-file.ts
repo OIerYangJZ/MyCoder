@@ -134,6 +134,38 @@ export async function checkCredentialFile(
   ).path;
 
   if (opts.workspaceRoot && isWithin(opts.workspaceRoot, target)) {
+    // Two different situations reach this line, and telling the user to do the
+    // same thing in both sends half of them the wrong way.
+    //
+    // The ordinary one is a credential sitting in a project: move it out, which
+    // is what the message has always said.
+    //
+    // The other one is a **workspace so broad that it contains the config
+    // directory** — running `mycoder` from `$HOME` is enough. Then the credential
+    // is exactly where it belongs, `~/.config/mycoder/secrets/`, and the thing
+    // that is wrong is the workspace. "Move it outside the repository" is not just
+    // unhelpful there: following it moves a correctly-placed key somewhere worse.
+    //
+    // Found on a fresh Linux install by running `mycoder` in the home directory,
+    // which is the first thing anybody does.
+    const configDir = (
+      await canonicalize(opts.cwd, {
+        cwd: opts.cwd,
+        ...(opts.home !== undefined ? { home: opts.home } : {}),
+      })
+    ).path;
+
+    if (isWithin(opts.workspaceRoot, configDir) && isWithin(configDir, target)) {
+      throw insecure(
+        target,
+        'workspace-contains-config',
+        `is inside the workspace, because the workspace is ${opts.workspaceRoot}, which contains ` +
+          `your config directory ${configDir}. The credential is in the right place; the workspace ` +
+          'is not. Run from the project directory you mean, or pass `--cwd <project>` — there is no ' +
+          'need to move the credential',
+      );
+    }
+
     throw insecure(
       target,
       'inside-workspace',

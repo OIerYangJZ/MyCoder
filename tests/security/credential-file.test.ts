@@ -158,6 +158,49 @@ describe('credential file requirements (§6)', () => {
     );
   });
 
+  test('a workspace that contains the config directory blames the workspace, not the credential', async () => {
+    // alpha.12, found on a fresh Linux install: `mycoder` run from `$HOME` makes
+    // the workspace the home directory, which contains ~/.config/mycoder — so a
+    // correctly-placed credential is "inside the workspace". The old message said
+    // "Move it outside the repository", and following that would move a key from
+    // the right place to a worse one.
+    const workspace = (await canonicalize(base, { cwd: base })).path;
+    const configDir = path.join(workspace, '.config', 'mycoder');
+    await mkdir(path.join(configDir, 'secrets'), { recursive: true });
+    const key = path.join(configDir, 'secrets', 'provider.key');
+    await writeFile(key, KEY_VALUE, 'utf8');
+    await chmod(key, 0o600);
+
+    assert.equal(
+      await checkFails(key, { cwd: configDir, workspaceRoot: workspace }),
+      'workspace-contains-config',
+      'a credential in the config directory must not be blamed for a workspace that swallowed it',
+    );
+  });
+
+  test('the remedy names --cwd rather than moving the credential', async () => {
+    const workspace = (await canonicalize(base, { cwd: base })).path;
+    const configDir = path.join(workspace, '.config', 'mycoder');
+    await mkdir(path.join(configDir, 'secrets'), { recursive: true });
+    const key = path.join(configDir, 'secrets', 'k.key');
+    await writeFile(key, KEY_VALUE, 'utf8');
+    await chmod(key, 0o600);
+
+    await assert.rejects(
+      () => checkCredentialFile(key, { cwd: configDir, workspaceRoot: workspace }),
+      (e: unknown) => {
+        const message = toKernelError(e).message;
+        assert.match(message, /--cwd/, 'the remedy has to name the lever that actually fixes it');
+        assert.doesNotMatch(
+          message,
+          /Move it outside the repository/,
+          'this is the case where moving the credential is the wrong advice',
+        );
+        return true;
+      },
+    );
+  });
+
   test('a credential inside a reference tree is rejected', async () => {
     const reference = (await canonicalize(path.join(base, 'ref'), { cwd: base })).path;
     await mkdir(reference, { recursive: true });

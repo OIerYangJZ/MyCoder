@@ -17,7 +17,7 @@
 ## 1. Gates
 
 ```text
-offline suite      1329 tests · 1236 pass · 0 fail · 93 skip   (1322 at the tag)
+offline suite      1331 tests · 1238 pass · 0 fail · 93 skip   (1322 at the tag)
 architecture lint  16 rules · no violations
 lint self-tests    250 / 250          (172 in alpha.11; +39 acceptance, +39 mirrors)
 evidence gate      11 matrices · every claim resolves · corpus internally consistent
@@ -250,6 +250,24 @@ Fixed on the branch, with the tag left where it is.
    path that resolves in a checkout and nowhere else. It now resolves from the
    installed location, and a test asserts every path doctor prints exists
 ```
+
+```text
+7  `mycoder` run from `$HOME` refused to start with "The credential file
+   ~/.config/mycoder/secrets/deepseek.key is inside the workspace … Move it
+   outside the repository". The refusal is right — a workspace that wide does
+   contain the config directory — but the remedy was wrong twice over: the
+   credential was in exactly the right place, and following the advice would move
+   a correctly-placed key somewhere worse. Found on a fresh Linux install by
+   running the command in the home directory, which is the first thing anybody
+   does
+```
+
+That one is a message, not a boundary: the check still refuses, and now says which
+of the two things is misplaced. When the workspace contains the config directory and
+the credential is inside that config directory, the problem code is
+`workspace-contains-config` and the remedy names `--cwd`. Every other route keeps
+`inside-workspace` and "move it outside the repository", which is right for a key
+sitting in a project.
 
 Both are now checked rather than fixed: `checkUserFacingDocs` in
 `scripts/package-check.ts` refuses a fenced `pnpm` block in a user-facing document
