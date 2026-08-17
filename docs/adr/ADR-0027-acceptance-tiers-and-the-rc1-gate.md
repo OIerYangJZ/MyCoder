@@ -61,7 +61,7 @@ that never runs.
 
 ```text
 T0  offline        `pnpm test` — any machine, no credentials, no daemon
-T1  container      a Docker daemon; native Linux for the strong claims
+T1  local daemon   a Docker runtime, or an OpenSSH server
 T2  native Linux   Landlock + seccomp, no container runtime
 T3  live model     a provider credential and money
 T4  human          a person who did not write this
@@ -70,6 +70,19 @@ T4  human          a person who did not write this
 The tiering is not administrative. It records that some of what v0.1 claims
 **cannot be established by any amount of CI**, which six milestones of green
 builds have quietly obscured.
+
+**T1 was widened while the suite was being derived, on 2026-08-17, and the change
+is recorded here rather than made silently in the suite.** The plan's list called
+T1 "container", because it was written out of the enforcement milestones. Spec
+§1.1's SSH clause and four of §28's need a running `sshd` and no container at all,
+so a tier list with nowhere to put them would have pushed five items either into
+T0 — which is "no daemon", and would have been false — or into T2, which is about a
+kernel feature they have nothing to do with. T1 is therefore "a local daemon the
+suite has to start", and the container claims' strong form is what keeps T2
+separate: Docker Desktop on macOS is a Linux VM, so the isolation claims are only
+worth their full strength on a native Linux kernel (ADR-0007, alpha.5 §37–§38).
+The derivation finding one hole in the tiering on its first pass is a small piece of
+evidence for deriving from clauses rather than from what is already known.
 
 ### 3. What gates `v0.1.0-rc.1`
 
