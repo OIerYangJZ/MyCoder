@@ -17,7 +17,7 @@
 ## 1. Gates
 
 ```text
-offline suite      1360 tests · 1267 pass · 0 fail · 93 skip   (1322 at the tag)
+offline suite      1364 tests · 1271 pass · 0 fail · 93 skip   (1322 at the tag)
 architecture lint  16 rules · no violations
 lint self-tests    250 / 250          (172 in alpha.11; +39 acceptance, +39 mirrors)
 evidence gate      11 matrices · every claim resolves · corpus internally consistent
@@ -322,6 +322,15 @@ NON-GOAL and there is no alternate screen, no panes, and no cursor addressing be
 one line that erases itself. Zero dependencies, per ADR-0009 — the escape codes are
 written out in one place with one switch, and that switch is off for `--json`, for a
 pipe, for `NO_COLOR` and for `TERM=dumb`.
+
+The design follows `reference/clio` — a Claude Code clone in the reference tree —
+**read for its shape, not copied**: one accent colour (blue) on the frame, the title
+and the prompt; dim labels in a column; the caveat as prose under the box rather than
+squeezed into a cell; a centred frame whose width is read per print, so a resize is
+followed. `reference/**` is read-only (AGENTS.md rule 3) and none of its types cross
+into ours. The input frame is closed top and bottom and open at the sides — asked
+for, and also the only shape a `readline` prompt can hold, since a right-hand border
+would need the input line rewritten on every keystroke.
 
 The only new plumbing is `onEvent` on `createKernel`, a pass-through to a hook
 `Session` already had. No new event, no new field, no new tool: a caller that ignores
