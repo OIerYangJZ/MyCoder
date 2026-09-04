@@ -673,7 +673,8 @@ export function applyApprovalMode(session: Session, requested: string): ControlR
     projection:
       `[control] The approval mode is now "${target}". ${described.summary}` +
       (target === 'plan'
-        ? ' Propose a plan rather than attempting changes; mutation is denied by a read-only policy layer.'
+        ? ' Propose a plan rather than attempting changes: the mutating tools are denied, and a ' +
+          'command needs the user to approve it.'
         : ''),
     data: { mode: target, previous: result.previous },
   };

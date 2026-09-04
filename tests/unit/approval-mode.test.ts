@@ -423,6 +423,37 @@ describe('a mode is not a capability', () => {
     assert.ok(!autoAnswered('plan').includes('file.write'));
   });
 
+  /**
+   * Plan mode does **not** make the session immutable, and its summary must not
+   * say it does.
+   *
+   * The first version claimed "nothing can be changed even by approving it".
+   * That was false and no test here caught it — it was caught by running a shell
+   * command on a real VM in plan mode, approving it, and finding the file. Under
+   * `read-only`, `process.exec` for a development executable is `ask` by design
+   * (Appendix A: a review session can still run the tests), and `bash` is on
+   * that list, so one approval is arbitrary shell.
+   *
+   * Asserted from both ends: the engine really does say `ask`, and the prose
+   * really does not promise otherwise.
+   */
+  test('a development command is asked under read-only, not denied — so plan mode is not immutable', () => {
+    const decision = engine('read-only').decide(access.exec);
+    assert.equal(
+      decision.action,
+      'ask',
+      'read-only no longer asks about a dev command; plan mode’s wording assumes it does',
+    );
+
+    const summary = describeApprovalMode('plan').summary;
+    assert.ok(
+      !/nothing can be changed/i.test(summary),
+      'plan mode claims immutability, which an approved shell command falsifies',
+    );
+    // And it says the true thing in its place.
+    assert.match(summary, /still asked|subprocess/i);
+  });
+
   test('intersecting the read-only layer can only narrow what workspace-dev allowed', () => {
     const base = engine('workspace-dev');
     const planned = base.narrow({ name: 'mode:plan', source: 'session', profile: readOnlyProfile(CTX) });

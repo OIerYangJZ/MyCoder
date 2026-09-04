@@ -157,11 +157,24 @@ const MODE_LABELS: Readonly<Record<ApprovalMode, string>> = {
  * Only plan states a disposition, and it is entitled to: its read-only layer is
  * a fact about the mode, not a guess about the stack. Manual's is the definition
  * of the default. Neither predicts what any other layer will do.
+ *
+ * Plan's wording is careful for a reason. It first said "nothing can be changed
+ * even by approving it", which was **false**, and was caught by running it on a
+ * real machine rather than by any test here. Under `read-only`, `process.exec`
+ * for a development executable is `ask` — Appendix A says so deliberately, so
+ * that a review session can still run the test suite — and `bash` is on that
+ * list. Approving one shell command in plan mode therefore writes whatever the
+ * command writes, which the probe confirmed by doing it.
+ *
+ * So the sentence now says what is actually denied (the mutating *tools*, which
+ * no approval can reach) and what is not (a command, which is still asked and is
+ * a subprocess policy cannot follow once it runs).
  */
 const NO_GRANT_PROSE: Readonly<Partial<Record<ApprovalMode, string>>> = {
   plan:
-    'Read and analyse only. A read-only policy layer denies writes, deletions, network, VCS ' +
-    'mutation, secrets and MCP tools outright, so nothing can be changed even by approving it.',
+    'Read and analyse. A read-only layer denies the mutating tools outright — writes, deletions, ' +
+    'network, VCS and MCP — and no approval can reach them. Running a development command is ' +
+    'still asked, and an approved command is a subprocess the policy engine cannot follow.',
   manual: 'Every approval the policy engine raises is put to you.',
 };
 
