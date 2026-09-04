@@ -51,7 +51,8 @@
     "test:ssh": "KERNEL_SSH=1 node --test --experimental-strip-types \"tests/live/ssh-live.test.ts\" \"tests/live/ssh-session.test.ts\" \"tests/live/ssh-delegation.test.ts\"",
     "test:trajectory": "node --test --experimental-strip-types tests/integration/agent-loop.test.ts",
     "test:unit": "node --test --experimental-strip-types \"tests/unit/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:editor:pty": "bash tests/live/editor-pty.sh"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

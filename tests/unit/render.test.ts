@@ -17,14 +17,10 @@ import {
   banner,
   box,
   centre,
-  discardFrame,
-  discardInput,
   formatDuration,
   inputRule,
-  openInput,
   pickTips,
-  redrawBottomRule,
-  ruleOf,
+  sessionList,
   statusLine,
   submitted,
   TIPS,
@@ -37,6 +33,7 @@ import {
   SessionRenderer,
   Spinner,
   summariseArgs,
+  timeAgo,
   toolCallLine,
   toolResultLine,
   visibleWidth,
@@ -119,6 +116,163 @@ describe('a tool call, as one line', () => {
   });
 });
 
+describe('how wide a string actually is', () => {
+  // Everything that lines up in this file — the box, the banner frame, the centred
+  // title, the guard that decides whether a sent line can be redrawn — is padded
+  // from `visibleWidth`. It used to be `String.length` with the escape codes
+  // stripped, which is right for ASCII and wrong for the two cases below.
+
+  test('an escape code takes no columns', () => {
+    assert.equal(visibleWidth(fancy.bold('abc')), 3);
+    assert.equal(visibleWidth(`${fancy.dim('a')}${fancy.red('b')}`), 2);
+  });
+
+  test('a CJK character occupies two columns, not one', () => {
+    // `reference/clio` measures this with `.length` and its input line corrupts
+    // itself the moment somebody types Chinese. A task written in Chinese is not
+    // an edge case here.
+    assert.equal(visibleWidth('修复失败的测试'), 14);
+    assert.equal(visibleWidth('a好b'), 4);
+    assert.equal(visibleWidth('（全角）'), 8, 'fullwidth punctuation is wide too');
+    assert.equal(visibleWidth('ｱ'), 1, 'halfwidth kana is not');
+  });
+
+  test('a surrogate pair is one character, not two', () => {
+    assert.equal('𝄞'.length, 2, 'the premise: UTF-16 counts this twice');
+    assert.equal(visibleWidth('𝄞'), 1);
+    assert.equal(visibleWidth('𠮷'), 2, 'an astral CJK ideograph is still wide');
+  });
+
+  test('a combining mark adds nothing to the width', () => {
+    assert.equal(visibleWidth('é'), 1, 'e + combining acute is one column');
+    assert.equal(visibleWidth('a​b'), 2, 'a zero-width space is zero-width');
+  });
+
+  test('a box around CJK still lines up', () => {
+    const rendered = box(['修复失败的测试', 'ok'], fancy, glyphs(true));
+    const widths = new Set(rendered.split('\n').map(visibleWidth));
+    assert.equal(widths.size, 1, `ragged box: ${[...widths].join(', ')}`);
+  });
+
+  test('the banner frame closes on a workspace path that is not ASCII', () => {
+    const rendered = banner(
+      {
+        version: '0.1.0',
+        model: 'deepseek',
+        profile: 'workspace-dev',
+        workspace: '/Users/me/项目/我的代码',
+        isolation: 'policy only',
+        caveat: 'Policy is not a sandbox.',
+      },
+      fancy,
+      glyphs(true),
+      80,
+      [],
+    );
+    const framed = rendered.split('\n').filter((l) => l.includes('│'));
+    const widths = new Set(framed.map(visibleWidth));
+    assert.equal(widths.size, 1, `the frame is ragged: ${[...widths].join(', ')}`);
+  });
+
+  test('a value wider than the frame wraps inside it, rather than breaking out', () => {
+    // Reported two milestones before it was fixed, and true of plain ASCII as well as
+    // CJK: a long value was padded by `max(0, …)` — which is to say not padded — and
+    // printed past the closing rule.
+    const wide = (workspace: string, cols: number): string[] =>
+      banner(
+        {
+          version: '0.1.0',
+          model: 'deepseek',
+          profile: 'workspace-dev',
+          workspace,
+          isolation: 'policy-enforced — network from Shell is best-effort and not a sandbox',
+          caveat: 'Policy is not a sandbox.',
+        },
+        fancy,
+        glyphs(true),
+        cols,
+        ['a tip that is reasonably long here', 'b', 'c', 'd'],
+      )
+        .split('\n')
+        .filter((l) => l.includes('│'));
+
+    for (const [what, ws, cols] of [
+      ['a long ASCII path', `/Users/me/${'a'.repeat(110)}`, 100],
+      ['a long CJK path', `/Users/me/${'项目'.repeat(20)}`, 100],
+      ['a narrow terminal', '/Users/me/code', 40],
+    ] as Array<[string, string, number]>) {
+      const widths = new Set(wide(ws, cols).map(visibleWidth));
+      assert.equal(widths.size, 1, `${what}: ragged frame ${[...widths].join(', ')}`);
+    }
+  });
+
+  test('and the isolation line survives whole, because truncating it changes the claim', () => {
+    // Tips are decoration and may be dropped; a policy statement cut short reads as a
+    // narrower policy. Invariant 5, the same reason the tips give way first.
+    const isolation = 'policy-enforced — network from Shell is best-effort and not a sandbox';
+    const rendered = banner(
+      {
+        version: '0.1.0',
+        model: 'deepseek',
+        profile: 'workspace-dev',
+        workspace: '/Users/me/code',
+        isolation,
+        caveat: 'Policy is not a sandbox.',
+      },
+      plain,
+      glyphs(true),
+      48,
+      [],
+    );
+    const flattened = rendered.replace(/[│\n ]+/g, ' ');
+    for (const word of isolation.split(' ')) {
+      assert.ok(flattened.includes(word), `'${word}' was lost from the isolation line`);
+    }
+  });
+
+  test('a wide path makes the tips give way, because the budget now counts columns', () => {
+    // The left column's width used to be re-derived from the label and the value
+    // separately, in characters. A path in Chinese was therefore budgeted at half
+    // its width, the tips column looked affordable, and the row it produced ran past
+    // the frame. Tips are decoration and the left column is not, so the correct
+    // outcome is the one the narrow-terminal case already had: no tips.
+    // Fixed tips rather than picked ones — a random tip length would make this a
+    // coin toss.
+    const wide = (workspace: string): string =>
+      banner(
+        {
+          version: '0.1.0',
+          model: 'deepseek',
+          profile: 'workspace-dev',
+          workspace,
+          isolation: 'policy only',
+          caveat: 'Policy is not a sandbox.',
+        },
+        fancy,
+        glyphs(true),
+        100,
+        ['a tip that is reasonably long here', 'b', 'c', 'd'],
+      );
+
+    assert.match(wide('/Users/me/code'), /Tips/, 'a short path leaves room for tips');
+    assert.equal(
+      /Tips/.test(wide(`/Users/me/${'项目'.repeat(20)}`)),
+      false,
+      'a 90-column path still looked affordable, so the tips were kept and overflowed',
+    );
+  });
+
+  test('truncation counts columns and never splits a character in half', () => {
+    const summary = summariseArgs('Read', JSON.stringify({ path: '中'.repeat(100) }), 20);
+    assert.ok(visibleWidth(summary) <= 20, `${visibleWidth(summary)} columns is over budget`);
+    assert.match(summary, /…$/);
+    // A cut in the middle of a surrogate pair produces a lone surrogate, which is
+    // what mojibake in a terminal is made of.
+    const astral = summariseArgs('Read', JSON.stringify({ path: '𝄞'.repeat(40) }), 10);
+    assert.equal(/[\uD800-\uDFFF]/.test(astral.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')), false);
+  });
+});
+
 describe('boxes', () => {
   test('every line is padded to the same width, ignoring escape codes', () => {
     const rendered = box(['short', fancy.bold('bold and longer')], fancy, glyphs(true));
@@ -126,6 +280,24 @@ describe('boxes', () => {
     assert.equal(widths.size, 1, `ragged box: ${[...widths].join(', ')}`);
   });
 
+  test('a line wider than the box is wrapped into it, not printed past the edge', () => {
+    // The approval box is the one screen a user is required to read, and its longest
+    // line — the sentence describing what a session-scoped grant covers — ran past
+    // the right-hand rule. `max(0, …)` padded it by nothing and the frame went
+    // ragged there.
+    const long = 'scope    : this call only, or the rest of this session for exactly this action';
+    const rendered = box(['short', long], plain, glyphs(true), 60);
+    const widths = new Set(rendered.split('\n').map(visibleWidth));
+    assert.equal(widths.size, 1, `ragged box: ${[...widths].join(', ')}`);
+    // Wrapped, not cut: a truncated policy statement reads as a narrower claim.
+    assert.match(rendered, /exactly this action/);
+  });
+
+  test('a CJK line wider than the box wraps without breaking the frame either', () => {
+    const rendered = box(['ok', '修复'.repeat(30)], plain, glyphs(true), 40);
+    const widths = new Set(rendered.split('\n').map(visibleWidth));
+    assert.equal(widths.size, 1, `ragged box: ${[...widths].join(', ')}`);
+  });
   test('the frame, the title and the prompt all use one accent colour', () => {
     // Blue, and only blue: a frame in one colour and a title in another reads as
     // two unrelated things. 34 is blue, `1;34` bold blue, `2;34` dim blue.
@@ -496,69 +668,39 @@ describe('what it did, once it has done it', () => {
 });
 
 describe('the input frame, before and after sending', () => {
-  test('both rules are drawn before the cursor arrives', () => {
-    // The frame has to be closed while you type, which means the rules are written
-    // first and the cursor comes back up between them.
-    const opened = openInput(plain, glyphs(true), 40);
-    const rules = opened.split('\n').filter((l) => /^─+$/.test(l));
-    assert.equal(rules.length, 2, `expected two rules, got ${rules.length}`);
-    assert.match(opened, /\u001b\[2A\r$/, 'the cursor is not brought back between the rules');
-    assert.equal(opened.includes('│'), false, 'the input frame grew a side');
-  });
-
-  test('what was sent is redrawn as an inverse block, with the frame closed under it', () => {
+  test('what was sent is written as an inverse block, with a rule under it', () => {
     const block = submitted('fix the failing test', fancy, glyphs(true), 80);
     assert.match(block, /\u001b\[47;30m > fix the failing test \u001b\[0m/);
-    assert.match(block, /\u001b\[1A/, 'it must replace the line that was typed, not add one');
-    assert.ok(
-      block.endsWith('\n') && block.includes('─'),
-      'the bottom rule has to be re-drawn under the block',
-    );
+    assert.ok(block.endsWith('\n') && block.includes('─'), 'the rule has to be drawn under the block');
   });
 
-  test('a line that wrapped is left exactly as typed, and still gets its rule', () => {
-    // Moving up one line would land in the middle of a wrapped input and erase half
-    // of it. Leaving it alone is the honest failure mode — but the frame still closes.
+  test('it moves no cursor, because the editor has already taken its block down', () => {
+    // It used to step up one row and clear, which was right when input was one
+    // readline row. The editor's block is the prompt line, any wrapped rows, and the
+    // rule — so stepping up one left the prompt line on screen and the sent line
+    // appeared twice: once as typed, once as the inverse block. Found under a pty.
+    const block = submitted('fix the failing test', fancy, glyphs(true), 80);
+    assert.equal(/\u001b\[\d*[ABCDJK]/.test(block), false, `it still moves: ${JSON.stringify(block)}`);
+  });
+
+  test('a long line still gets its block, because that is when it matters most', () => {
+    // There used to be a guard dropping the inverse block for anything wider than
+    // the terminal — a leftover from when this moved the cursor up one row. Once the
+    // editor started clearing its own block, that guard meant a long line disappeared
+    // from the transcript altogether.
     const block = submitted('x'.repeat(100), fancy, glyphs(true), 80);
-    assert.equal(/47;30m/.test(block), false, 'a wrapped line must not be re-rendered');
-    assert.ok(block.endsWith('\n') && block.includes('─'));
+    assert.match(block, /47;30m > x{100} /, 'a long line lost its marker');
+    assert.ok(block.includes('─'), 'and its rule');
   });
 
-  test('an empty Enter erases the frame instead of stacking another one', () => {
-    // Holding Enter used to produce a ladder of empty boxes, each with an inverse
-    // block containing nothing.
-    const discarded = discardInput();
-    assert.equal((discarded.match(/\u001b\[2K/g) ?? []).length, 3, 'all three lines must be erased');
-    assert.equal(
-      (discarded.match(/\u001b\[1A/g) ?? []).length,
-      2,
-      'the cursor must end up where the frame began',
-    );
-  });
-
-  test('Ctrl-D takes the frame down from inside it', () => {
-    // On EOF the cursor is still on the input line and the bottom rule is *below* it,
-    // so clearing upwards leaves a blue line under the shell prompt of the shell we
-    // are handing control back to.
-    const gone = discardFrame();
-    assert.match(gone, /^\u001b\[1B/, 'the line below has to be cleared first');
-    assert.equal((gone.match(/\u001b\[2K/g) ?? []).length, 3, 'all three lines must be erased');
-    assert.equal((gone.match(/\u001b\[1A/g) ?? []).length, 2);
-  });
-
-  test('the bottom rule is re-drawn around readline, not by moving the cursor absolutely', () => {
-    // readline erases everything below its line on every keystroke, so the rule has
-    // to be put back — with save, one line down, restore, and nothing else.
-    const redraw = redrawBottomRule(plain, glyphs(true), 40);
-    assert.match(redraw, /^\u001b7/, 'the cursor position must be saved first');
-    assert.match(redraw, /\u001b8$/, 'and restored afterwards');
-    assert.match(redraw, /\u001b\[1B/, 'one line down, relatively');
-    assert.equal(/\u001b\[\d+;\d+H/.test(redraw), false, 'no absolute positioning');
+  test('a CJK line that wraps keeps its block too', () => {
+    const block = submitted('中'.repeat(50), fancy, glyphs(true), 80);
+    assert.match(block, /47;30m/);
   });
 
   test('the rule spans the terminal, like the banner above it', () => {
-    assert.equal(visibleWidth(ruleOf(plain, glyphs(true), 200)), 198);
-    assert.equal(visibleWidth(ruleOf(plain, glyphs(true), 40)), 38);
+    assert.equal(visibleWidth(inputRule(plain, glyphs(true), 200)), 198);
+    assert.equal(visibleWidth(inputRule(plain, glyphs(true), 40)), 38);
   });
 
   test('the status line reports what the session counted, and no context percentage', () => {
@@ -583,5 +725,210 @@ describe('the input frame, before and after sending', () => {
     // one computed here would disagree with `/status`, which is the shape of half
     // the defects this milestone found.
     assert.equal(/%/.test(line), false, 'a context percentage appeared from somewhere');
+  });
+});
+
+describe('the answer, streamed', () => {
+  // `model.stream` has always been emitted — `Session` forwards every `ModelEvent`
+  // to the host. Nothing listened, so the answer was assembled in silence and
+  // printed whole while the spinner said `Thinking`.
+
+  function streaming() {
+    const err: string[] = [];
+    const out: string[] = [];
+    const renderer = new SessionRenderer({
+      write: (s) => err.push(s),
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+      writeAnswer: (s) => out.push(s),
+      answerPalette: plain,
+      columns: () => 80,
+    });
+    return { renderer, err, out, answer: (): string => out.join('') };
+  }
+
+  test('text deltas are written to the answer sink, not to the chrome one', () => {
+    const s = streaming();
+    s.renderer.on('turn.started', {});
+    s.renderer.on('model.stream', { type: 'text_delta', text: 'hello ' });
+    s.renderer.on('model.stream', { type: 'text_delta', text: 'world\n' });
+    assert.match(s.answer(), /hello world/);
+    assert.equal(s.err.join('').includes('hello'), false, 'the answer leaked onto stderr');
+  });
+
+  test('a renderer with no answer sink streams nothing, which is what --json needs', () => {
+    const err: string[] = [];
+    const renderer = new SessionRenderer({
+      write: (s) => err.push(s),
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+    });
+    renderer.on('turn.started', {});
+    renderer.on('model.stream', { type: 'text_delta', text: 'hello' });
+    assert.equal(renderer.streamedAnswer(), false);
+    assert.equal(err.join('').includes('hello'), false);
+  });
+
+  test('anything that is not visible text is ignored, reasoning included', () => {
+    const s = streaming();
+    s.renderer.on('turn.started', {});
+    s.renderer.on('model.stream', { type: 'reasoning_delta', text: 'let me think' });
+    s.renderer.on('model.stream', { type: 'usage', usage: {} });
+    s.renderer.on('model.stream', { type: 'tool_call_start', id: 'a', name: 'Read' });
+    assert.equal(s.answer(), '');
+    assert.equal(s.renderer.streamedAnswer(), false);
+  });
+
+  test('the caller is told whether it streamed, so the answer is not printed twice', () => {
+    const s = streaming();
+    s.renderer.on('turn.started', {});
+    assert.equal(s.renderer.streamedAnswer(), false, 'nothing streamed yet');
+    s.renderer.on('model.stream', { type: 'text_delta', text: 'partial' });
+    assert.equal(s.renderer.streamedAnswer(), true);
+    s.renderer.on('turn.started', {});
+    assert.equal(s.renderer.streamedAnswer(), false, 'the next turn starts clean');
+  });
+
+  test('a tool call closes off the sentence the model was mid-way through', () => {
+    // Otherwise `⏺ Read(...)` lands inside the prose on the same row.
+    const s = streaming();
+    s.renderer.on('turn.started', {});
+    s.renderer.on('model.stream', { type: 'text_delta', text: 'Let me look at' });
+    s.renderer.on('tool.call', { name: 'Read', toolCallId: 'c1', argsSummary: '{"path":"a.ts"}' });
+    assert.match(s.answer(), /Let me look at\n$/, 'the answer was left mid-line');
+  });
+
+  test('a cancelled turn does not leave the cursor inside the prose', () => {
+    const s = streaming();
+    s.renderer.on('turn.started', {});
+    s.renderer.on('model.stream', { type: 'text_delta', text: 'half a sen' });
+    s.renderer.on('turn.cancelled', {});
+    assert.match(s.answer(), /\n$/);
+  });
+
+  test('a code block in the answer is highlighted on the way past', () => {
+    const seen: string[] = [];
+    const renderer = new SessionRenderer({
+      write: () => {},
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+      writeAnswer: (s) => seen.push(s),
+      // The answer's palette, not the chrome's: this is the one that decides
+      // whether the code block is coloured.
+      answerPalette: fancy,
+      columns: () => 80,
+    });
+    renderer.on('turn.started', {});
+    renderer.on('model.stream', { type: 'text_delta', text: '```ts\nconst x = 1;\n```\n' });
+    assert.match(seen.join(''), /\[34mconst\[0m/);
+  });
+
+  test('control characters from the model never reach the terminal', () => {
+    // The answer is bytes a model chose, printed to something that obeys escape
+    // sequences. This is the one property here that is not cosmetic.
+    const s = streaming();
+    s.renderer.on('turn.started', {});
+    s.renderer.on('model.stream', { type: 'text_delta', text: `a${ESC}[2Jb\n` });
+    assert.equal(s.answer().includes(ESC), false);
+    assert.match(s.answer(), /a\[2Jb/);
+  });
+});
+
+describe('live figures, without a scroll region', () => {
+  // clio reserves a bottom bar with DECSTBM — absolute terminal state that outlives
+  // the process, so a crash before it is restored leaves the terminal broken. The
+  // spinner line is already live and already erases itself, so the figures go there.
+
+  function ticking() {
+    const out: string[] = [];
+    let now = 0;
+    const s = new Spinner(
+      (t) => out.push(t),
+      plain,
+      glyphs(true),
+      true,
+      () => now,
+    );
+    return { s, out, advance: (ms: number) => (now += ms), last: () => out[out.length - 1] ?? '' };
+  }
+
+  test('the detail is appended to the line the spinner already writes', () => {
+    const t = ticking();
+    t.s.start('Thinking');
+    t.s.setDetail('1.2k tokens · $0.0041');
+    t.s.tick();
+    assert.match(t.last(), /Thinking.*1\.2k tokens · \$0\.0041/);
+    t.s.stop();
+  });
+
+  test('no detail means the line is exactly what it was before', () => {
+    const t = ticking();
+    t.s.start('Thinking');
+    t.s.tick();
+    assert.equal(t.last().includes('·'), false, `an empty detail left a separator: ${t.last()}`);
+    t.s.stop();
+  });
+
+  test('it is still one line that erases itself, and no cursor is addressed', () => {
+    const t = ticking();
+    t.s.start('Running Shell');
+    t.s.setDetail('99.9k tokens');
+    t.advance(4000);
+    t.s.tick();
+    const line = t.last();
+    assert.match(line, /^\r\[K/, 'a frame must start by clearing its own line');
+    assert.equal(line.includes('\n'), false, 'the spinner grew a second row');
+    assert.equal(/\[\d*[ABr]/.test(line), false, 'the spinner moved the cursor off its line');
+    t.s.stop();
+  });
+
+  test('the renderer resets the figures when a new turn starts', () => {
+    const out: string[] = [];
+    const renderer = new SessionRenderer({
+      write: (x) => out.push(x),
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+    });
+    renderer.on('turn.started', {});
+    renderer.on('model.request.completed', { usage: { inputTokens: 1000, outputTokens: 200 }, costUsd: 0.5 });
+    renderer.on('model.request.completed', { usage: { inputTokens: 1000, outputTokens: 200 }, costUsd: 0.5 });
+    // Two requests accumulate; a new turn starts from nothing. Asserted through the
+    // public surface rather than by reaching into the renderer's fields.
+    renderer.on('turn.started', {});
+    assert.equal(renderer.streamedAnswer(), false);
+  });
+});
+describe('the session picker (ADR-0029)', () => {
+  test('ages are read at a glance, not to the second', () => {
+    const now = 1_000_000_000;
+    assert.equal(timeAgo(now - 5_000, now), 'just now');
+    assert.equal(timeAgo(now - 14 * 60_000, now), '14m ago');
+    assert.equal(timeAgo(now - 3 * 3_600_000, now), '3h ago');
+    assert.equal(timeAgo(now - 50 * 3_600_000, now), '2d ago');
+  });
+
+  test('a session is offered by what it was asked, with the id still available', () => {
+    const now = 1_000_000_000;
+    const text = sessionList(
+      [
+        { sessionId: 'ses_a', title: 'fix the flaky ssh test', model: 'gpt', updatedAt: now, toolCalls: 12 },
+        { sessionId: 'ses_b', model: 'fake', updatedAt: now - 86_400_000, toolCalls: 1 },
+      ],
+      '/repo',
+      now,
+      plain,
+    );
+
+    assert.match(text, /Sessions in \/repo/);
+    assert.match(text, /1 {2}just now {2}fix the flaky ssh test/);
+    assert.match(text, /gpt · 12 tool calls · ses_a/);
+    // A session nobody asked anything is a real state, and it must not look like
+    // a missing field.
+    assert.match(text, /\(nothing was asked in this session\)/);
+    assert.match(text, /1 tool call · ses_b/);
   });
 });

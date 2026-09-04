@@ -20,6 +20,14 @@ const ORDER: Record<LogLevel, number> = {
   trace: 5,
 };
 
+/**
+ * The accepted levels, in order.
+ *
+ * Derived from `ORDER` rather than written out again, so `--log-level`'s
+ * validation cannot drift from the levels the logger actually understands.
+ */
+export const LOG_LEVELS = Object.keys(ORDER) as readonly LogLevel[];
+
 export type Sanitizer = (text: string) => string;
 
 let sanitizer: Sanitizer = (t) => t;

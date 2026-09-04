@@ -92,6 +92,37 @@ export interface ToolSchema {
   inputSchema: JsonSchema;
 }
 
+/**
+ * How hard the model should think, as a level rather than a token count.
+ *
+ * A level, not a budget, because the budget form is gone: `budget_tokens` is
+ * rejected outright by every current Anthropic frontier model, and the
+ * replacement — adaptive thinking steered by an effort level — is the only shape
+ * the providers still accept. The five names are the Anthropic set because it is
+ * the superset; `clampEffort` narrows it for protocols that carry fewer.
+ *
+ * Ordered weakest to strongest, and the order is load-bearing: `clampEffort`
+ * compares indices, so nothing may be inserted out of sequence.
+ */
+export const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return typeof value === 'string' && (REASONING_EFFORTS as readonly string[]).includes(value);
+}
+
+/**
+ * The weaker of two levels.
+ *
+ * Used wherever an effort meets a ceiling — a profile's cap, a protocol's
+ * vocabulary — so the composition rule is the same one the policy engine uses:
+ * the stricter side wins, and a ceiling is a ceiling rather than a suggestion.
+ */
+export function clampEffort(effort: ReasoningEffort, ceiling: ReasoningEffort): ReasoningEffort {
+  return REASONING_EFFORTS.indexOf(effort) <= REASONING_EFFORTS.indexOf(ceiling) ? effort : ceiling;
+}
+
 export interface ModelRequest {
   requestId: string;
   /** Provider-agnostic model identifier resolved from the alias. */
@@ -102,6 +133,12 @@ export interface ModelRequest {
   tools: readonly ToolSchema[];
   maxOutputTokens?: number;
   temperature?: number;
+  /**
+   * How hard to think. Absent means "send nothing and take the provider's
+   * default", which is what a profile that does not claim `supportsReasoning`
+   * resolves to.
+   */
+  effort?: ReasoningEffort;
   toolChoice?: 'auto' | 'none' | 'required';
   /** Opaque per-provider knobs resolved from configuration, never from the model. */
   providerOptions?: Record<string, unknown>;

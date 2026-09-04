@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import { WEAKENING_KEYS, CEILING_PINNED, disclosures } from '../../src/config/weakening.ts';
 import { configFromToml, defaultConfig, mergeConfig, applySystemCeiling } from '../../src/config/schema.ts';
 import { parseToml } from '../../src/util/toml.ts';
+import { DEFAULT_LOOP_BUDGET } from '../../src/session/step.ts';
 
 function layer(toml: string, label = 'test'): ReturnType<typeof configFromToml> {
   return configFromToml(parseToml(toml), label);
@@ -134,11 +135,17 @@ content = true
     assert.equal(config.security.telemetryContent, false);
     assert.equal(config.security.traceUpload, false);
     assert.equal(config.telemetry.content, false);
-    // 16, not 100000 and not the 200 ceiling: `minDefined` has already taken the
-    // smaller of the default (16) and the requested value before the ceiling is
-    // applied at all. A layer asking for *more* does not reach the ceiling — it
-    // loses to the default on the way there, which is the stronger property.
-    assert.equal(config.loop.maxSteps, 16, 'a layer asking for more never gets more');
+    // The default, not 100000 and not the 200 ceiling: `minDefined` has already
+    // taken the smaller of the default and the requested value before the ceiling
+    // is applied at all. A layer asking for *more* does not reach the ceiling — it
+    // loses to the default on the way there, which is the stronger property. The
+    // default itself is read rather than written down here; it moved once already
+    // (ADR-0030) and this test is about the clamp.
+    assert.equal(
+      config.loop.maxSteps,
+      defaultConfig().loop.maxSteps,
+      'a layer asking for more never gets more',
+    );
     assert.equal(config.loop.maxDelegationDepth, 1, 'clamped to the one depth alpha.4 validated');
   });
 
@@ -231,5 +238,21 @@ content = true
     const accountedFor = `${WEAKENING_KEYS.map((k) => k.key).join(' ')} ${CEILING_PINNED.join(' ')}`;
     assert.equal(accountedFor.includes('allow_unrestricted_everything'), false);
     assert.ok(accountedFor.includes('allow_benchmark_range'), 'a known key must be found by the same test');
+  });
+});
+
+describe('the interactive loop budget has one value, not two', () => {
+  test('defaultConfig() and DEFAULT_LOOP_BUDGET agree', () => {
+    // Two copies of the same four numbers: `defaultConfig().loop` is what a
+    // session without `[loop]` config runs under, and `DEFAULT_LOOP_BUDGET` is
+    // what the kernel falls back to and what delegation sizes children from.
+    // They are equal today and nothing said so, which is how the number a user
+    // hits stops being the number the code documents.
+    const loop = defaultConfig().loop;
+    assert.equal(loop.maxSteps, DEFAULT_LOOP_BUDGET.maxSteps);
+    assert.equal(loop.maxToolCalls, DEFAULT_LOOP_BUDGET.maxToolCalls);
+    assert.equal(loop.maxModelRequests, DEFAULT_LOOP_BUDGET.maxModelRequests);
+    assert.equal(loop.maxWallTimeMs, DEFAULT_LOOP_BUDGET.maxWallTimeMs);
+    assert.equal(loop.maxRepeatedFailures, DEFAULT_LOOP_BUDGET.maxRepeatedEquivalentFailures);
   });
 });

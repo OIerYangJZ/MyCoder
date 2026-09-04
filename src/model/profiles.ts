@@ -10,6 +10,7 @@
 
 export type EditStrategyName = 'exact' | 'search_replace' | 'apply_patch';
 
+import { clampEffort, type ReasoningEffort } from './ir.ts';
 import type { ModelPricing } from './usage.ts';
 
 export interface ModelProfile {
@@ -23,6 +24,28 @@ export interface ModelProfile {
   toolReliability: 'low' | 'medium' | 'high';
   /** Tokens reserved for the response when deciding whether to compact. */
   reservedOutputTokens: number;
+  /**
+   * How hard this class of model should think by default.
+   *
+   * A profile property because a profile already describes *model behaviour* —
+   * `autonomy` and `toolReliability` are the same kind of statement — and because
+   * one global number cannot be right for both a frontier model and a small fast
+   * one. `[model] effort` overrides it; `effortCeiling` bounds that override.
+   *
+   * Only sent when `supportsReasoning` is true. On a profile that does not claim
+   * reasoning this value is therefore dormant rather than decorative: pointing
+   * such a profile at a thinking model means setting `supports_reasoning = true`
+   * in config, and this is the level it then runs at.
+   */
+  effort?: ReasoningEffort;
+  /**
+   * The strongest level this class of model actually accepts.
+   *
+   * Exists because the levels are not universally supported — Haiku 4.5 rejects
+   * `xhigh` and `max` outright — and a global `[model] effort = "max"` must not
+   * turn a working small-model session into a 400. Absent means all five.
+   */
+  effortCeiling?: ReasoningEffort;
   /**
    * Pricing is configuration, never a constant baked into the kernel: it
    * changes, it varies by tier, and a wrong number produces confident wrong
@@ -69,6 +92,12 @@ const DEFAULT_PROFILES: Record<string, ModelProfile> = {
     autonomy: 'long',
     toolReliability: 'high',
     reservedOutputTokens: 32_000,
+    // The long-horizon profile is the one that answers hard questions, and this
+    // is the level the providers recommend for coding and agentic work. It is
+    // one notch below `max` deliberately: `max` buys thoroughness at a cost that
+    // only a genuinely hard problem repays, and it is the level to raise *to*
+    // once a measurement shows headroom — not the level to sit at.
+    effort: 'xhigh',
   },
   'frontier-normal': {
     family: 'frontier',
@@ -80,6 +109,7 @@ const DEFAULT_PROFILES: Record<string, ModelProfile> = {
     autonomy: 'normal',
     toolReliability: 'high',
     reservedOutputTokens: 16_000,
+    effort: 'high',
   },
   'mid-tier': {
     family: 'mid',
@@ -91,6 +121,9 @@ const DEFAULT_PROFILES: Record<string, ModelProfile> = {
     autonomy: 'normal',
     toolReliability: 'medium',
     reservedOutputTokens: 8_000,
+    effort: 'medium',
+    // Haiku 4.5 is what this profile points at, and it rejects `xhigh`/`max`.
+    effortCeiling: 'high',
   },
   'small-fast': {
     family: 'small',
@@ -102,6 +135,8 @@ const DEFAULT_PROFILES: Record<string, ModelProfile> = {
     autonomy: 'short',
     toolReliability: 'low',
     reservedOutputTokens: 4_000,
+    effort: 'low',
+    effortCeiling: 'high',
   },
   fake: {
     family: 'fake',
@@ -193,5 +228,27 @@ export class ModelRegistry {
    */
   static usableContextTokens(profile: ModelProfile, safetyMarginTokens = 4_000): number {
     return Math.max(1_000, profile.contextWindow - profile.reservedOutputTokens - safetyMarginTokens);
+  }
+
+  /**
+   * The effort level a request actually runs at.
+   *
+   * Three inputs, in one order that does not vary: the profile's default, the
+   * configured override if there is one, then the profile's ceiling. The ceiling
+   * comes last because it is a ceiling — an override may pick any level and still
+   * cannot exceed what the model accepts, which is the same shape as the loop
+   * budget's `Math.min` and the policy engine's strictest-wins.
+   *
+   * `undefined` means send nothing at all. A profile that does not claim
+   * `supportsReasoning` gets that regardless of what is configured: naming a
+   * level for a model that has no thinking to steer would put a parameter on the
+   * wire that the provider either ignores or rejects, and both of those are
+   * worse than the provider's own default.
+   */
+  static effortFor(profile: ModelProfile, override?: ReasoningEffort): ReasoningEffort | undefined {
+    if (!profile.supportsReasoning) return undefined;
+    const chosen = override ?? profile.effort;
+    if (chosen === undefined) return undefined;
+    return profile.effortCeiling ? clampEffort(chosen, profile.effortCeiling) : chosen;
   }
 }

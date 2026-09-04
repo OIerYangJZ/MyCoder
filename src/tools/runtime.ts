@@ -17,6 +17,7 @@
  */
 
 import { renderErrorForModel, toKernelError, type KernelError } from '../util/errors.ts';
+import { truncateForModel, type TruncationBudget } from '../util/text.ts';
 import { formatIssues, validate } from '../util/jsonschema.ts';
 import type { Logger } from '../util/logger.ts';
 import type { CanonicalPath } from '../util/paths.ts';
@@ -59,9 +60,26 @@ export interface ApprovalRequest {
   delegation?: { agent: string; delegationId: string; depth: number };
 }
 
+/**
+ * How an approval was answered — and, since alpha.12, **who** answered it.
+ *
+ * `answeredByMode` exists because the durable log could not tell the difference.
+ * An approval mode that answers on the user's behalf still returns
+ * `{decision: 'allow'}`, so `approval.decided` recorded `granted: true` for a
+ * deletion nobody looked at in exactly the bytes it records one the user pressed
+ * `y` for. The event log is what an audit reads after the fact, and "which of
+ * these did a human actually review" is the first question anybody would ask of
+ * a session that ran in `auto`.
+ *
+ * A boolean rather than a `decidedBy: 'user' | 'mode'` enum on purpose: with an
+ * enum, absent has to mean one of the two, and the one it would mean is the
+ * consequential one. Absent here means "not answered by a mode", which is true
+ * of the terminal prompter, the scripted prompter and the non-interactive
+ * refusal alike, and stays true of a prompter nobody has written yet.
+ */
 export type ApprovalOutcome =
-  | { decision: 'allow'; scope: 'once' | 'session' }
-  | { decision: 'deny'; scope: 'once' | 'session'; reason?: string };
+  | { decision: 'allow'; scope: 'once' | 'session'; answeredByMode?: boolean }
+  | { decision: 'deny'; scope: 'once' | 'session'; reason?: string; answeredByMode?: boolean };
 
 export interface ApprovalPrompter {
   request(request: ApprovalRequest): Promise<ApprovalOutcome>;
@@ -91,9 +109,24 @@ export interface ToolExecutionRecord {
   truncated: boolean;
   errorCode?: string;
   artifactRef?: string;
+  /**
+   * A bounded, redacted look at what the tool actually returned (ADR-0031).
+   *
+   * Absent unless the host asked for it. A session that never asks carries no tool
+   * content in its record at all — "off" means the bytes were never put here, not
+   * that something declined to print them.
+   */
+  preview?: string;
   decisions: PolicyDecision[];
   metadata?: Record<string, unknown>;
 }
+
+/**
+ * How much of a tool's output a preview may carry (ADR-0031).
+ *
+ * Small and fixed. It is a look at what happened, not a copy of it.
+ */
+export const PREVIEW_BUDGET: TruncationBudget = { maxBytes: 2048, maxLines: 20 };
 
 export interface ToolRuntimeOptions {
   registry: ToolRegistry;
@@ -110,6 +143,11 @@ export interface ToolRuntimeOptions {
   now(): number;
   /** Per-tool wall clock ceiling. */
   toolTimeoutMs?: number;
+  /**
+   * Whether to attach a redacted preview of tool output to each record (ADR-0031).
+   * A function rather than a flag: `/verbose` changes it mid-session.
+   */
+  previewOutput?: () => boolean;
   /** Spill oversized output and return a reference. */
   writeArtifact?: (name: string, content: string) => Promise<string>;
   /**
@@ -126,7 +164,21 @@ export interface ToolRuntimeOptions {
   ) => Promise<void>;
   onRecord?: (record: ToolExecutionRecord) => void;
   onPolicyDecision?: (decision: PolicyDecision, toolCallId: string) => void;
-  onApproval?: (subjectKey: string, granted: boolean, scope: 'once' | 'session', summary: string) => void;
+  /**
+   * An approval was answered. One object, not five positional arguments.
+   *
+   * It was four positional arguments until `answeredByMode` had to join them,
+   * and a fifth boolean at the end of a positional list is how the wrong value
+   * lands in the wrong slot at the one call site nobody re-reads.
+   */
+  onApproval?: (event: {
+    subjectKey: string;
+    granted: boolean;
+    scope: 'once' | 'session';
+    summary: string;
+    /** True when an approval mode answered instead of the user. */
+    answeredByMode: boolean;
+  }) => void;
   /** Where calls executed by this runtime sit in the delegation tree. */
   delegationScope?: DelegationScope;
   /** Dispatch a bounded child scope, for the `Delegate` tool. */
@@ -139,6 +191,14 @@ export interface BatchOutcome {
   results: ToolResultPart[];
   /** Set when the doom-loop guard decided the turn must stop. */
   terminalFailure?: KernelError;
+  /**
+   * Bounded, redacted previews by tool call id (ADR-0031), when the host asked.
+   *
+   * Carried here rather than on `ToolResultPart` because that part is the IR the
+   * model is shown, and a preview is for the person watching. Empty unless
+   * `previewOutput` says otherwise.
+   */
+  previews: ReadonlyMap<string, string>;
 }
 
 export class ToolRuntime {
@@ -204,6 +264,7 @@ export class ToolRuntime {
     signal: AbortSignal,
   ): Promise<BatchOutcome> {
     const results: ToolResultPart[] = [];
+    const previews = new Map<string, string>();
     let terminalFailure: KernelError | undefined;
 
     for (const call of calls) {
@@ -290,6 +351,11 @@ export class ToolRuntime {
       if (result.errorCode) record.errorCode = result.errorCode;
       if (artifactRef) record.artifactRef = artifactRef;
       if (result.metadata) record.metadata = result.metadata;
+      const preview = this.previewOf(result.content);
+      if (preview !== undefined) {
+        record.preview = preview;
+        previews.set(call.id, preview);
+      }
       this.opts.onRecord?.(record);
 
       const part: ToolResultPart = {
@@ -317,7 +383,7 @@ export class ToolRuntime {
       });
     }
 
-    return terminalFailure ? { results, terminalFailure } : { results };
+    return terminalFailure ? { results, previews, terminalFailure } : { results, previews };
   }
 
   /**
@@ -358,10 +424,28 @@ export class ToolRuntime {
       stepId: step.stepId,
       ...(result.errorCode ? { errorCode: result.errorCode } : {}),
       ...(result.metadata ? { metadata: result.metadata } : {}),
+      ...(this.previewOf(result.content) === undefined ? {} : { preview: this.previewOf(result.content) }),
     });
     return result;
   }
 
+  /**
+   * A bounded, redacted look at what a tool returned (ADR-0031).
+   *
+   * **Redacted before it is truncated, and that order is the point.** Truncating
+   * first can cut a secret in half; half a token matches no literal and no shape, so
+   * it survives redaction and gets printed. Redacting more text than is kept costs
+   * one pass per tool call and is worth it.
+   *
+   * Truncation is `truncateForModel` with a smaller budget rather than a rule of its
+   * own — a second truncation rule is how the two end up disagreeing, which is what
+   * A15 is about.
+   */
+  private previewOf(content: string): string | undefined {
+    if (this.opts.previewOutput?.() !== true) return undefined;
+    if (content === '') return undefined;
+    return truncateForModel(this.opts.redactor.redact(content), PREVIEW_BUDGET).text;
+  }
   private async executeOne(
     call: ToolCallPart,
     step: StepContext,
@@ -484,12 +568,13 @@ export class ToolRuntime {
           this.opts.now(),
         );
       }
-      this.opts.onApproval?.(
-        execution.approvalSubject.key,
-        outcome.decision === 'allow',
-        outcome.scope,
+      this.opts.onApproval?.({
+        subjectKey: execution.approvalSubject.key,
+        granted: outcome.decision === 'allow',
+        scope: outcome.scope,
         summary,
-      );
+        answeredByMode: outcome.answeredByMode === true,
+      });
 
       if (outcome.decision === 'deny') {
         return {

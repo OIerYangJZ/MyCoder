@@ -91,6 +91,9 @@ const EXIT_FOR_ERROR: Record<ErrorCode, ExitCode> = {
   CREDENTIAL_FILE_INSECURE: EXIT.CONFIG,
   CONFIG_INVALID: EXIT.CONFIG,
   PROVIDER_NOT_CONFIGURED: EXIT.CONFIG,
+  // The invocation named a session this directory cannot resume; nothing about
+  // the installation is wrong, so it is 2 rather than 3 (ADR-0029).
+  SESSION_NOT_RESUMABLE: EXIT.USAGE,
 
   // --- a boundary said no ----------------------------------------------------
   TOOL_DENIED: EXIT.DENIED,

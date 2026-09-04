@@ -197,6 +197,12 @@ export interface ToolResultPayload {
   errorCode?: string;
   /** Set when full output was spilled to `artifacts/`. */
   artifactRef?: string;
+  /**
+   * At most 2 kB and 20 lines of the output, redacted before it was truncated
+   * (ADR-0031). Present only when the host asked for it, so the default posture of
+   * §21.2 — no tool content in the event log — is unchanged for anyone who did not.
+   */
+  preview?: string;
 }
 
 export interface PolicyDecisionPayload {

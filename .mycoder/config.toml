@@ -5,7 +5,7 @@ workspace = "."
 reference_roots = ["../reference"]
 
 [model]
-# `fake` keeps development offline by default; switch with `agent -m balanced`.
+# `fake` keeps development offline by default; switch with `mycoder -m balanced`.
 default = "fake"
 
 [security]
@@ -14,9 +14,10 @@ secret_redaction = true
 telemetry_content = false
 trace_upload = false
 
+# Deliberately empty of step/tool-call limits: these repeated the defaults
+# verbatim, so raising the defaults (ADR-0030) would have left the kernel's own
+# workspace — the one its author works in — pinned to the old ones.
 [loop]
-max_steps = 16
-max_tool_calls = 64
 max_repeated_failures = 3
 
 [shell]

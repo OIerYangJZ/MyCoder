@@ -24,6 +24,7 @@ import {
 } from '../helpers/workspace.ts';
 import type { ModelRequest } from '../../src/model/ir.ts';
 import type { KernelEvent } from '../../src/session/events.ts';
+import { DEFAULT_LOOP_BUDGET } from '../../src/session/step.ts';
 
 const REVIEW_SKILL = skillFile({
   name: 'security-review',
@@ -217,8 +218,11 @@ describe('a skill can only narrow (§23, §24)', () => {
       // `NotATool` was requested and does not exist: reported, not invented.
       assert.match(outcome.message, /NotATool/);
 
-      // The step budget was clamped rather than raised to 999.
-      assert.ok(ws.kernel.session.budgetCeiling.maxSteps <= 16);
+      // The step budget was clamped rather than raised to 999. Compared against
+      // the default rather than a literal: the number moved once (ADR-0030) and
+      // this assertion is about the clamp, not about what the default happens to
+      // be this milestone.
+      assert.equal(ws.kernel.session.budgetCeiling.maxSteps, DEFAULT_LOOP_BUDGET.maxSteps);
     } finally {
       await ws.cleanup();
     }

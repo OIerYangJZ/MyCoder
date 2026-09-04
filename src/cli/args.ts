@@ -18,6 +18,8 @@
  */
 
 import { APP_DISPLAY_NAME } from '../app.ts';
+import { listProfileNames } from '../policy/profiles.ts';
+import { LOG_LEVELS } from '../util/logger.ts';
 
 /**
  * Subcommands (alpha.8).
@@ -39,6 +41,14 @@ export interface CliArgs {
   commandArg?: string;
   continueSession: boolean;
   resumeSessionId?: string;
+  /**
+   * `-r` with no id: pick from the recent sessions instead (ADR-0029).
+   *
+   * Separate from `resumeSessionId` rather than a sentinel value, because "resume
+   * the session I choose" and "resume this id" fail in different ways and say
+   * different things when there is nothing to resume.
+   */
+  resumePicker: boolean;
   model?: string;
   profile?: string;
   cwd?: string;
@@ -54,6 +64,8 @@ export interface CliArgs {
   backend?: 'local' | 'container' | 'linux-native';
   readOnly: boolean;
   noTelemetry: boolean;
+  /** Attach a bounded, redacted preview of tool output to each result (ADR-0031). */
+  verbose: boolean;
   json: boolean;
   /** Print the effective config and exit. */
   printConfig: boolean;
@@ -72,8 +84,10 @@ export interface CliArgs {
 export function parseArgs(argv: readonly string[]): CliArgs {
   const args: CliArgs = {
     continueSession: false,
+    resumePicker: false,
     readOnly: false,
     noTelemetry: false,
+    verbose: false,
     json: false,
     printConfig: false,
     sandboxStatus: false,
@@ -107,8 +121,15 @@ export function parseArgs(argv: readonly string[]): CliArgs {
 
       case '-r':
       case '--resume': {
-        const v = takeValue(arg);
-        if (v) args.resumeSessionId = v;
+        // The only flag whose value is optional (ADR-0029). Nobody remembers a
+        // session id, so `-r` on its own lists the recent sessions of this
+        // workspace and resumes the one you point at. `-r <id>` is unchanged.
+        const next = argv[i + 1];
+        if (next === undefined || next.startsWith('-')) args.resumePicker = true;
+        else {
+          i += 1;
+          args.resumeSessionId = next;
+        }
         break;
       }
 
@@ -158,6 +179,9 @@ export function parseArgs(argv: readonly string[]): CliArgs {
         args.readOnly = true;
         break;
 
+      case '--verbose':
+        args.verbose = true;
+        break;
       case '--no-telemetry':
         args.noTelemetry = true;
         break;
@@ -214,13 +238,27 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     args.prompt = positional.join(' ');
   }
 
+  // A misspelled value is a usage error, not a preference the run may ignore.
+  // Until alpha.12 both of these were accepted and dropped: `--profile read-onl`
+  // started a *workspace-dev* session, which is wider than the one that was
+  // asked for, and said so only in a warning line above the banner.
+  if (args.profile !== undefined && !listProfileNames().includes(args.profile)) {
+    args.errors.push(`--profile must be one of ${listProfileNames().join(', ')}, not "${args.profile}"`);
+  }
+  if (args.logLevel !== undefined && !(LOG_LEVELS as readonly string[]).includes(args.logLevel)) {
+    args.errors.push(`--log-level must be one of ${LOG_LEVELS.join(', ')}, not "${args.logLevel}"`);
+  }
+
   // `--read-only` is a hard narrowing, so it wins over an explicit --profile
-  // rather than being silently overridden by it.
+  // rather than being silently overridden by it. The run still stops: nothing
+  // was started, and a message claiming a profile "was applied" to a process
+  // that exited before building a kernel is a claim about a session that never
+  // existed.
   if (args.readOnly && args.profile && args.profile !== 'read-only') {
     args.errors.push(
-      `--read-only conflicts with --profile ${args.profile}. --read-only was applied; drop one of them.`,
+      `--read-only conflicts with --profile ${args.profile}. Nothing was started; ` +
+        'drop one of them (--read-only is the narrower).',
     );
-    args.profile = 'read-only';
   }
   if (args.readOnly) args.profile = 'read-only';
 
@@ -241,8 +279,9 @@ export const USAGE = `${APP_DISPLAY_NAME} — a coding agent kernel
 
 Usage:
   mycoder [prompt]                  start a session, optionally with a first task
-  mycoder -c, --continue            continue the most recent session
-  mycoder -r, --resume <id>         resume a specific session
+  mycoder -c, --continue            continue this workspace's most recent session
+  mycoder -r, --resume [id]         resume a session; with no id, pick from the
+                                    recent ones in this workspace
   mycoder -m, --model <alias>       select a model (see /model list)
   mycoder --profile <name>          permission profile: read-only | workspace-dev | review
   mycoder --cwd <path>              workspace root (defaults to the current directory)
@@ -250,6 +289,7 @@ Usage:
   mycoder --backend <kind>          local | container (container fails if docker is unusable)
   mycoder --read-only               force the read-only profile
   mycoder --no-telemetry            disable telemetry entirely
+  mycoder --verbose                 show a redacted preview of what each tool returned
   mycoder --json                    emit machine-readable events on stdout
   mycoder --non-interactive         deny anything that would need approval
   mycoder --print-config            print the effective configuration and exit
@@ -270,7 +310,11 @@ Exit codes (ADR-0021):
   0 ok   1 incomplete   2 usage   3 config   4 denied   5 unavailable   6 internal
 
 Inside a session, control commands change kernel state directly:
-  /model  /goal  /loop  /permissions  /status  /compact  /remote  /help
+  /model  /effort  /goal  /loop  /mode  /permissions  /status  /compact
+  /remote  /skills  /agents  /hooks  /undo  /cancel  /verbose  /help
+
+  /mode switches who answers an approval, and Shift-Tab cycles it. /effort sets
+  how hard the model thinks. Run either with no argument to see the choices.
 `;
 
 /**
@@ -293,6 +337,7 @@ export const CONTRACT_FLAGS: readonly string[] = [
   '--remote',
   '--read-only',
   '--no-telemetry',
+  '--verbose',
   '--json',
   '--non-interactive',
   '--print-config',

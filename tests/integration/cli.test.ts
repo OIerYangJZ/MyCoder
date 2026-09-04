@@ -16,6 +16,16 @@ import * as path from 'node:path';
 
 const CLI = path.join(process.cwd(), 'src', 'cli', 'main.ts');
 
+/**
+ * The least config a temp workspace needs to run a turn.
+ *
+ * Tests that run turns from `process.cwd()` inherit the repository's own
+ * `.mycoder/config.toml`, which pins `model = "fake"`. A test that points `--cwd`
+ * somewhere else inherits nothing and dies at startup with PROVIDER_NOT_CONFIGURED —
+ * which is the correct behaviour and a confusing test failure.
+ */
+const FAKE_MODEL_CONFIG = '[project]\nname = "t"\nworkspace = "."\n\n[model]\ndefault = "fake"\n';
+
 interface RunResult {
   stdout: string;
   stderr: string;
@@ -129,6 +139,37 @@ describe('CLI', () => {
     assert.match(result.stdout, /fake model/);
   });
 
+  test('@path resolves the same way on every input path, not only interactively', async () => {
+    // It was interactive-only at first, on the argument that a pipe has no user to be
+    // helpful to. `mycoder "explain @src/app.ts"` is a person at a shell, and a
+    // feature that works in one of three places is a feature nobody trusts.
+    const ws = await mkdtemp(path.join(tmpdir(), 'agent-at-'));
+    await mkdir(path.join(ws, '.mycoder'), { recursive: true });
+    await writeFile(path.join(ws, '.mycoder', 'config.toml'), FAKE_MODEL_CONFIG);
+    await mkdir(path.join(ws, 'src'), { recursive: true });
+    await writeFile(path.join(ws, 'src', 'thing.ts'), 'export const marker = 1;\n');
+
+    const piped = await runCli(['--cwd', ws, '--non-interactive'], 'look at @src/thing.ts\n');
+    assert.match(piped.stderr, /attached src\/thing\.ts/, 'a piped @ was not resolved');
+
+    const oneShot = await runCli(['--cwd', ws, '--non-interactive', 'look at @src/thing.ts']);
+    assert.match(oneShot.stderr, /attached src\/thing\.ts/, 'a one-shot @ was not resolved');
+
+    await rm(ws, { recursive: true, force: true });
+  });
+
+  test('a reference outside the workspace stays literal text, in a pipe as well', async () => {
+    // The rules do not relax because nobody is watching: the same boundary check runs
+    // on every path, and what it refuses it says out loud rather than silently drops.
+    const ws = await mkdtemp(path.join(tmpdir(), 'agent-at-'));
+    await mkdir(path.join(ws, '.mycoder'), { recursive: true });
+    await writeFile(path.join(ws, '.mycoder', 'config.toml'), FAKE_MODEL_CONFIG);
+    const result = await runCli(['--cwd', ws, '--non-interactive'], 'read @../../etc/hosts\n');
+    assert.match(result.stderr, /left as text — outside the workspace/);
+    assert.equal(/attached/.test(result.stderr), false);
+    await rm(ws, { recursive: true, force: true });
+  });
+
   test('--read-only conflicting with --profile is refused', async () => {
     const result = await runCli(['--read-only', '--profile', 'workspace-dev']);
     assert.equal(result.code, 2);
@@ -156,5 +197,49 @@ describe('CLI', () => {
   test('--profile read-only is reflected in status', async () => {
     const result = await runCli(['--non-interactive', '--profile', 'read-only'], '');
     assert.match(result.stderr, /profile\s+read-only/);
+  });
+
+  test('a misspelled --profile is refused rather than dropped', async () => {
+    // It used to start a `workspace-dev` session — wider than the one asked for —
+    // and say so only in a warning above the banner.
+    const result = await runCli(['--non-interactive', '--profile', 'read-onl'], '');
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--profile must be one of read-only, review, workspace-dev/);
+  });
+
+  test('a misspelled --log-level is refused rather than dropped', async () => {
+    const result = await runCli(['--non-interactive', '--log-level', 'verbose'], '');
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--log-level must be one of/);
+  });
+
+  test('--print-config answers for the flags on the same command line', async () => {
+    // "The effective configuration" includes the flags, which sit above every
+    // file layer (§22). Printing the file layers alone described a session the
+    // command as typed would not have started.
+    const plain = await runCli(['--print-config']);
+    assert.match(plain.stdout, /permission profile\s+: workspace-dev/);
+
+    const narrowed = await runCli(['--print-config', '--read-only']);
+    assert.equal(narrowed.code, 0);
+    assert.match(narrowed.stdout, /permission profile\s+: read-only/);
+
+    const quiet = await runCli(['--print-config', '--no-telemetry']);
+    assert.match(quiet.stdout, /telemetry\s+: off/);
+  });
+
+  test('-r with an id nothing was recorded under is refused, not started fresh', async () => {
+    // It used to become the id of a *new* session: a resume that said nothing and
+    // began from zero, whatever the mistake behind the id was.
+    const result = await runCli(['--non-interactive', '-r', 'ses_not_a_session'], '');
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /No session "ses_not_a_session" was found/);
+    assert.equal(/Resumed session/.test(result.stderr), false);
+  });
+
+  test('doctor terminates its last line', async () => {
+    // Without it the last line and the next shell prompt share a row.
+    const result = await runCli(['doctor']);
+    assert.ok(result.stdout.endsWith('\n'), 'doctor output must end with a newline');
   });
 });

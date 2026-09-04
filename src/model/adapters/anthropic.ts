@@ -35,6 +35,16 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter {
       messages: toAnthropicMessages(request.messages),
     };
     if (request.system) body.system = request.system;
+    // Effort nests inside `output_config`; a top-level `effort` is silently
+    // ignored, which is the worst of the three possible outcomes.
+    //
+    // All five levels reach the wire unchanged — this protocol is where the
+    // vocabulary comes from, so there is nothing to narrow. What is deliberately
+    // *not* sent is a `thinking` block: the frontier models this adapter talks to
+    // think adaptively by default, `budget_tokens` is rejected outright, and
+    // `{type: "disabled"}` at a high effort is a 400. Naming the level and saying
+    // nothing about thinking is the whole of the supported surface.
+    if (request.effort !== undefined) body.output_config = { effort: request.effort };
     if (request.temperature !== undefined) body.temperature = request.temperature;
     if (request.tools.length > 0) {
       body.tools = request.tools.map((t) => ({

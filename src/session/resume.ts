@@ -311,20 +311,77 @@ export function workspaceIdentity(workspaceRoot: string, gitRoot?: string): stri
   return sha256Hex(`${workspaceRoot}\n${gitRoot ?? ''}`).slice(0, 16);
 }
 
-/** The most recent resumable session, for `agent -c`. */
-export async function findMostRecentSession(store: SessionStore): Promise<SessionMetadata | undefined> {
+/**
+ * The most recent session that can be resumed *here*, for `mycoder -c`.
+ *
+ * Scoped to the workspace, because a session from another directory cannot be
+ * resumed into this one — `checkResumeIdentity` refuses it. Until alpha.12 this
+ * returned the newest session on the machine, so `-c` in a project you had not
+ * touched today picked up a session from somewhere else and died on the identity
+ * check, in a directory where a perfectly good session of its own was waiting.
+ */
+export async function findMostRecentSession(
+  store: SessionStore,
+  workspaceRoot?: string,
+): Promise<SessionMetadata | undefined> {
   const sessions = await store.listSessions();
-  return sessions[0];
+  if (workspaceRoot === undefined) return sessions[0];
+  return sessions.find((s) => s.workspaceRoot === workspaceRoot);
+}
+
+/**
+ * The sessions `-r` with no id offers (ADR-0029).
+ *
+ * Sorted newest first and limited, because the list is meant to be read in one
+ * glance. Only this workspace's: offering a session the identity check would
+ * refuse is offering a choice that cannot be taken.
+ */
+export async function listResumableSessions(
+  store: SessionStore,
+  workspaceRoot: string,
+  limit = 9,
+): Promise<{ sessions: SessionMetadata[]; elsewhere: number }> {
+  const all = await store.listSessions();
+  const here = all.filter((s) => s.workspaceRoot === workspaceRoot);
+  return { sessions: here.slice(0, limit), elsewhere: all.length - here.length };
+}
+
+/**
+ * A session's title: the first thing the user asked it, on one line.
+ *
+ * The id identifies the session to the machine and to nobody else. Written at
+ * the first user turn and never rewritten — see `Session.firstUserInput`.
+ */
+export function sessionTitle(input: string, max = 64): string {
+  const flat = input.replace(/\s+/g, ' ').trim();
+  if (flat.length <= max) return flat;
+  return `${flat.slice(0, max - 1).trimEnd()}…`;
 }
 
 /** Human summary shown when a session is resumed. */
-export function describeResume(replayed: ReplayedSession): string {
+export function describeResume(
+  replayed: ReplayedSession,
+  /**
+   * What the resumed session is actually running under.
+   *
+   * Passed in rather than read from the metadata, because the two can differ:
+   * `-m` overrides the recorded alias, and the permission profile is never
+   * restored from a log. Without this the summary described the *record* in the
+   * present tense, three lines above a banner describing the session.
+   */
+  inForce?: { model: string; profile: string },
+): string {
+  const recordedModel = replayed.metadata.model;
+  const recordedProfile = replayed.metadata.permissionProfile;
+  const model = inForce?.model ?? recordedModel;
+  const profile = inForce?.profile ?? recordedProfile;
+
   const lines = [
     `Resumed session ${replayed.metadata.sessionId}`,
-    `  events replayed : ${replayed.eventCount}`,
+    `  events replayed  : ${replayed.eventCount}`,
     `  messages         : ${replayed.messages.length}`,
-    `  model            : ${replayed.metadata.model}`,
-    `  profile          : ${replayed.metadata.permissionProfile}`,
+    `  model            : ${model}${model === recordedModel ? '' : ` (was ${recordedModel})`}`,
+    `  profile          : ${profile}${profile === recordedProfile ? '' : ` (was ${recordedProfile})`}`,
   ];
   if (replayed.editedPaths.length > 0) {
     lines.push(

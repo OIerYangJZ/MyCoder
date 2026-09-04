@@ -23,7 +23,7 @@ import { replaySession, checkResumeIdentity, workspaceIdentity } from '../../src
 import { FakeClock } from '../../src/util/clock.ts';
 import type { SessionId } from '../../src/util/ids.ts';
 import type { SessionMetadata } from '../../src/session/store.ts';
-import { parseArgs } from '../../src/cli/args.ts';
+import { parseArgs, USAGE } from '../../src/cli/args.ts';
 import { parseDuration, tokenize } from '../../src/control/control-plane.ts';
 import { renderApproval } from '../../src/cli/prompter.ts';
 
@@ -105,6 +105,53 @@ describe('/loop', () => {
     }
   });
 
+  test('a cost above the ceiling is shown clamped, in the flag the user typed', async () => {
+    // The number printed is the number enforced. `--max-cost 999` against a
+    // $0.50 ceiling printed `cost: $999.00` and a line saying it had been
+    // clamped, on the same screen; `LoopBudgetTracker.applyCeiling` had been
+    // enforcing $0.50 all along.
+    const ws = await createTestWorkspace({ files: {}, userConfig: '[loop]\nmax_cost_usd = 0.5\n' });
+    try {
+      const result = await ws.kernel.control.execute('/loop start --max-cost 999');
+      assert.ok(result.ok, result.message);
+      assert.match(result.message, /cost\s+: \$0\.50/);
+      assert.equal(/\$999/.test(result.message), false, 'printed a budget it does not enforce');
+      assert.match(result.message, /Clamped to the session ceiling: --max-cost/);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('a narrowed budget is what /status and /loop report, not the ceiling', async () => {
+    // The reported number and the enforced number were different things: after
+    // `/loop start --max-steps 2`, both surfaces still said 16 — and then the
+    // turn stopped at 2, which reads as the kernel misbehaving rather than as
+    // the narrowing somebody asked for.
+    const ws = await createTestWorkspace({ files: {} });
+    try {
+      await ws.kernel.control.execute('/loop start --max-steps 2');
+
+      const status = await ws.kernel.control.execute('/status');
+      assert.match(status.message, /loop budget\s+: 2 steps/);
+      assert.match(status.message, /narrowed by \/loop start/);
+      assert.match(status.message, /per turn/);
+
+      const loop = await ws.kernel.control.execute('/loop status');
+      assert.match(loop.message, /Budget for the next turn \(narrowed by \/loop start\)/);
+      assert.match(loop.message, /Session budget ceiling/);
+
+      await ws.kernel.control.execute('/loop stop');
+      const after = await ws.kernel.control.execute('/status');
+      assert.match(
+        after.message,
+        new RegExp(`loop budget\\s+: ${ws.kernel.session.budgetCeiling.maxSteps} steps`),
+      );
+      assert.equal(/narrowed by/.test(after.message), false);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
   test('duration parsing accepts the documented suffixes', () => {
     assert.equal(parseDuration('20m'), 1_200_000);
     assert.equal(parseDuration('90s'), 90_000);
@@ -145,8 +192,13 @@ describe('/permissions', () => {
         assert.equal(commands.includes(forbidden), false, `/${forbidden} must not exist`);
       }
       const attempt = await ws.kernel.control.execute('/permissions disable-all-security');
-      // Unknown subcommand falls through to `show`; what matters is that nothing changed.
-      assert.match(attempt.message, /Permission profile/);
+      // Refused by name rather than falling through to `show`: nothing changed
+      // either way, but a subcommand that prints the permission table when asked
+      // to disable security reads like it did something.
+      assert.equal(attempt.ok, false);
+      assert.match(attempt.message, /Unknown subcommand "\/permissions disable-all-security"/);
+      const after = await ws.kernel.control.execute('/permissions');
+      assert.match(after.message, /Permission profile/);
     } finally {
       await ws.cleanup();
     }
@@ -209,6 +261,20 @@ describe('/remote', () => {
       await ws.cleanup();
     }
   });
+
+  test('a disconnect that did not happen is not projected to the model', async () => {
+    // v0.1 cannot switch backends mid-session, and the refusal used to be
+    // followed by "[control] Execution returned to the local workspace" anyway —
+    // leaving the model resolving paths against a machine it had not left.
+    const ws = await createTestWorkspace({ files: {} });
+    try {
+      const result = await ws.kernel.control.execute('/remote disconnect');
+      assert.equal(result.ok, false);
+      assert.equal(result.projection, undefined);
+    } finally {
+      await ws.cleanup();
+    }
+  });
 });
 
 describe('command dispatch', () => {
@@ -218,6 +284,35 @@ describe('command dispatch', () => {
       const result = await ws.kernel.control.execute('/statuss');
       assert.equal(result.ok, false);
       assert.match(result.message, /Did you mean "\/status"/);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('an unknown subcommand is refused rather than silently becoming status', async () => {
+    const ws = await createTestWorkspace({ files: {} });
+    try {
+      for (const input of ['/goal clera', '/model uses fake', '/remote conect x', '/skills usee x']) {
+        const result = await ws.kernel.control.execute(input);
+        assert.equal(result.ok, false, `${input} was accepted`);
+        assert.match(result.message, /Unknown subcommand/);
+      }
+      // A bare command is still its status view; that is not a mistake.
+      assert.equal((await ws.kernel.control.execute('/goal')).ok, true);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('--help lists every command the control plane registers', async () => {
+    // They drifted for four milestones: `--help` named eight of thirteen, and the
+    // five it left out included `/undo`.
+    const ws = await createTestWorkspace({ files: {} });
+    try {
+      const listed = new Set([...USAGE.matchAll(/\/([a-z-]+)/g)].map((m) => m[1]!));
+      for (const command of ws.kernel.control.commandNames()) {
+        assert.ok(listed.has(command), `/${command} is registered and --help does not mention it`);
+      }
     } finally {
       await ws.cleanup();
     }

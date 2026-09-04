@@ -14,6 +14,15 @@
 import { APP_DISPLAY_NAME, PROJECT_DIR } from '../app.ts';
 import { describeEnforcement, networkEnforcementLabel } from '../execution/enforcement.ts';
 import type { EnforcementDescriptor } from '../execution/enforcement.ts';
+import { isReasoningEffort, REASONING_EFFORTS } from '../model/ir.ts';
+import {
+  APPROVAL_MODES,
+  cycleApprovalMode,
+  describeApprovalMode,
+  autoAnswered,
+  isApprovalMode,
+  type ApprovalMode,
+} from '../policy/approval-mode.ts';
 import { ModelRegistry } from '../model/profiles.ts';
 import type { GoalState } from '../context/context-engine.ts';
 import type { LoopBudget } from '../session/step.ts';
@@ -62,6 +71,15 @@ export interface ControlHost {
    * backend's view while the model was being told the session's.
    */
   enforcement: EnforcementDescriptor;
+  /**
+   * Turn the tool-output preview on or off mid-session (ADR-0031), and report it.
+   *
+   * A host without one has nothing to show a preview on — the JSON envelope carries
+   * no rendering — so `/verbose` reports that rather than pretending it worked.
+   */
+  /** Whether the preview is currently on, so `/verbose` with no argument can toggle. */
+  verbose?: boolean;
+  setVerbose?: (on: boolean) => boolean;
   modelRegistry: ModelRegistry;
   configSources: readonly string[];
   remotes: readonly RemoteConfig[];
@@ -149,8 +167,10 @@ export class ControlPlane {
   constructor(host: ControlHost) {
     this.host = host;
     this.register('model', handleModel);
+    this.register('effort', handleEffort);
     this.register('goal', handleGoal);
     this.register('loop', handleLoop);
+    this.register('mode', handleMode);
     this.register('permissions', handlePermissions);
     this.register('status', handleStatus);
     this.register('compact', handleCompact);
@@ -160,6 +180,7 @@ export class ControlPlane {
     this.register('hooks', handleHooks);
     this.register('undo', handleUndo);
     this.register('cancel', handleCancel);
+    this.register('verbose', handleVerbose);
     this.register('help', (args) => handleHelp(args, this.commandNames()));
   }
 
@@ -216,8 +237,27 @@ export class ControlPlane {
 
 // --- handlers --------------------------------------------------------------
 
+/**
+ * A subcommand nobody registered is a mistake, not a request for the default.
+ *
+ * Every handler here resolves an absent subcommand to its status view, which is
+ * right — and then resolved an *unrecognised* one to the same view, which meant
+ * `/permissions reset` printed the permission table and cleared nothing, and
+ * `/goal clera` printed the goal it had not cleared. `/undo` was the only
+ * command that said so; now they all do.
+ */
+function unknownSub(command: string, sub: string, known: readonly string[]): ControlResult {
+  return {
+    ok: false,
+    command,
+    message: `Unknown subcommand "/${command} ${sub}". Try: ${known.map((k) => `/${command} ${k}`).join(', ')}.`,
+  };
+}
+
 const handleModel: ControlHandler = (args, host) => {
   const sub = args[0] ?? 'status';
+  if (!['list', 'use', 'status'].includes(sub))
+    return unknownSub('model', sub, ['list', 'use <alias>', 'status']);
 
   if (sub === 'list') {
     const lines = host.modelRegistry.listAliases().map((a) => {
@@ -285,6 +325,8 @@ const handleModel: ControlHandler = (args, host) => {
 
 const handleGoal: ControlHandler = (args, host) => {
   const sub = args[0] ?? 'status';
+  const subs = ['set', 'criteria', 'status', 'pause', 'resume', 'clear'];
+  if (!subs.includes(sub)) return unknownSub('goal', sub, subs);
   const goal = host.session.goal;
 
   switch (sub) {
@@ -360,6 +402,7 @@ const handleGoal: ControlHandler = (args, host) => {
 
 const handleLoop: ControlHandler = (args, host) => {
   const sub = args[0] ?? 'status';
+  if (!['status', 'start', 'stop'].includes(sub)) return unknownSub('loop', sub, ['status', 'start', 'stop']);
   const ceiling = host.session.budgetCeiling;
 
   if (sub === 'start') {
@@ -378,12 +421,26 @@ const handleLoop: ControlHandler = (args, host) => {
       ),
       maxToolCalls: Math.min(requested.budget.maxToolCalls ?? ceiling.maxToolCalls, ceiling.maxToolCalls),
       maxRepeatedEquivalentFailures: ceiling.maxRepeatedEquivalentFailures,
-      ...(requested.budget.maxCostUsd !== undefined ? { maxCostUsd: requested.budget.maxCostUsd } : {}),
+      // Clamped like every other field. It was not, and a `--max-cost 999`
+      // against a $0.50 ceiling printed `cost: $999.00` on the same screen as
+      // the line saying it had been clamped — the enforced budget was the
+      // ceiling all along (`LoopBudgetTracker.applyCeiling`), so the number was
+      // the only thing that was wrong, which is the worst place for it to be.
+      ...(requested.budget.maxCostUsd !== undefined
+        ? {
+            maxCostUsd: Math.min(requested.budget.maxCostUsd, ceiling.maxCostUsd ?? Number.POSITIVE_INFINITY),
+          }
+        : ceiling.maxCostUsd !== undefined
+          ? { maxCostUsd: ceiling.maxCostUsd }
+          : {}),
     };
 
+    // Named as the person typed them, from the parse rather than a second table:
+    // `maxWallTimeMs` is this file's word for a thing the user spelled
+    // `--max-time`, and a lookup here would be one more list to keep in step.
     const clamped = Object.entries(requested.budget)
       .filter(([k, v]) => typeof v === 'number' && v > (ceiling as unknown as Record<string, number>)[k]!)
-      .map(([k]) => k);
+      .map(([k]) => requested.flags[k] ?? k);
 
     return {
       ok: true,
@@ -416,21 +473,43 @@ const handleLoop: ControlHandler = (args, host) => {
     };
   }
 
+  // The budget the next turn runs under, then the ceiling it was cut from. The
+  // ceiling alone was what this printed, which is the wrong number whenever
+  // anything has narrowed it — and the narrowing is exactly when somebody asks.
+  const inForce = host.session.effectiveBudget;
+  const narrowedBy = host.session.budgetNarrowedBy;
+
   return {
     ok: true,
     command: 'loop',
     message:
-      `Session budget ceiling:\n` +
+      (narrowedBy
+        ? `Budget for the next turn (narrowed by ${narrowedBy}):\n` +
+          `  steps          : ${inForce.maxSteps}\n` +
+          `  model requests : ${inForce.maxModelRequests}\n` +
+          `  tool calls     : ${inForce.maxToolCalls}\n` +
+          `  wall clock     : ${Math.round(inForce.maxWallTimeMs / 1000)}s\n` +
+          (inForce.maxCostUsd !== undefined ? `  cost           : $${inForce.maxCostUsd.toFixed(2)}\n` : '') +
+          `  /loop stop returns to the ceiling below.\n\n`
+        : '') +
+      `Session budget ceiling, per turn:\n` +
       `  steps          : ${ceiling.maxSteps}\n` +
       `  model requests : ${ceiling.maxModelRequests}\n` +
       `  tool calls     : ${ceiling.maxToolCalls}\n` +
       `  wall clock     : ${Math.round(ceiling.maxWallTimeMs / 1000)}s\n` +
+      // Only when configured: a session with no cost ceiling should not be
+      // told a number, and `unlimited` would be a promise about the provider's
+      // billing that this kernel cannot make.
+      (ceiling.maxCostUsd !== undefined ? `  cost           : $${ceiling.maxCostUsd.toFixed(2)}\n` : '') +
       `  repeated failures before stopping: ${ceiling.maxRepeatedEquivalentFailures}`,
   };
 };
 
 const handlePermissions: ControlHandler = (args, host) => {
   const sub = args[0] ?? 'show';
+  if (!['show', 'explain', 'reset-session'].includes(sub)) {
+    return unknownSub('permissions', sub, ['show', 'explain <subject>', 'reset-session']);
+  }
 
   if (sub === 'reset-session') {
     const count = host.policy.approvals.size;
@@ -473,6 +552,11 @@ const handlePermissions: ControlHandler = (args, host) => {
     message:
       `Permission profile : ${host.config.security.permissionProfile}\n` +
       `Available profiles : ${listProfileNames().join(', ')}\n` +
+      // The profile says what is permitted; the mode says who is asked about the
+      // rest. Both, on this screen, because a reader who saw only the profile
+      // would have no way to tell that nobody is answering its `ask` rules.
+      `Approval mode      : ${describeApprovalMode(host.session.approvalMode).label} ` +
+      `(/mode to change, Shift-Tab to cycle)\n` +
       `Policy layers      : ${layers.map((l) => `${l.name}(${l.profile})`).join(' ∩ ')}\n` +
       `Isolation          : ${sandbox.label}\n` +
       // Per dimension, not just the summary: the summary is a rounding of these,
@@ -486,6 +570,200 @@ const handlePermissions: ControlHandler = (args, host) => {
       'SSH agent forwarding, privilege escalation, and telemetry carrying content.',
   };
 };
+
+/**
+ * What a mode auto-approves, as a whole clause.
+ *
+ * A clause rather than a list because the two modes that answer nothing need to
+ * say *why* — and "auto-approved: nothing" invites the reader to wonder whether
+ * that is the same sentence in plan mode as in manual. It is not: manual puts
+ * every approval to the user, and plan never raises most of them.
+ */
+function approvedLine(mode: ApprovalMode): string {
+  const answered = autoAnswered(mode);
+  if (answered.length > 0) return `auto-approves ${answered.join(', ')}`;
+  return mode === 'plan'
+    ? 'a read-only layer denies mutation before an approval is raised'
+    : 'every approval is put to you';
+}
+
+/**
+ * `/mode [plan|manual|accept-edits|auto|next]` — who answers an approval.
+ *
+ * `next` is what Shift-Tab runs, so the keystroke and the command share one
+ * implementation. Two paths to a security-relevant state change is how the two
+ * end up disagreeing about what the state now is.
+ *
+ * Every switch into a weaker mode reprints the disclosure. §12 requires it at
+ * startup; a mode that can be changed at runtime owes it on each change too,
+ * because a banner from an hour ago is not a disclosure of what is true now.
+ */
+const handleMode: ControlHandler = (args, host) => {
+  const requested = args[0];
+  const session = host.session;
+
+  if (requested === undefined) {
+    const current = describeApprovalMode(session.approvalMode);
+    const lines = APPROVAL_MODES.map((mode) => {
+      const described = describeApprovalMode(mode);
+      const marker = mode === session.approvalMode ? '*' : ' ';
+      return `${marker} ${mode.padEnd(13)} ${described.summary}`;
+    });
+    return {
+      ok: true,
+      command: 'mode',
+      message:
+        `Approval mode : ${current.label}\n` +
+        `In force      : ${approvedLine(session.approvalMode)}\n\n` +
+        `${lines.join('\n')}\n\n` +
+        'Shift-Tab cycles these. No mode can permit what a policy layer denied: privilege escalation, ' +
+        'protected paths and host-environment reads stay refused in every one of them. Run ' +
+        '/permissions to see what the layers themselves allow, ask about and deny.',
+      data: { mode: session.approvalMode, autoApproved: [...autoAnswered(session.approvalMode)] },
+    };
+  }
+
+  return applyApprovalMode(session, requested);
+};
+
+/**
+ * Change the mode and describe what happened. **Synchronous, and that matters.**
+ *
+ * Exported and separate from `handleMode` because Shift-Tab needs it without
+ * going through `ControlPlane.execute`, which is `async`. The keystroke path
+ * originally awaited a promise and wrote its message from the `.then()` — which
+ * lands *after* the line editor has already redrawn its block. Captured through
+ * a real pty, the result was the message printed into the middle of the prompt,
+ * and the next redraw moving up one line against five lines of leftover text.
+ *
+ * So both callers use this: the command awaits nothing it does not need to, and
+ * the keystroke gets its text back in time to write it *before* the redraw.
+ * There is still exactly one implementation, which is the point — a keystroke
+ * that did three fewer things than the command is the version that goes wrong.
+ */
+export function applyApprovalMode(session: Session, requested: string): ControlResult {
+  const target = requested === 'next' ? cycleApprovalMode(session.approvalMode) : requested;
+  if (!isApprovalMode(target)) {
+    return {
+      ok: false,
+      command: 'mode',
+      message: `Unknown mode "${requested}". Try: ${APPROVAL_MODES.join(', ')}, or next.`,
+    };
+  }
+
+  const result = session.setApprovalMode(target);
+  const described = describeApprovalMode(target);
+  return {
+    ok: true,
+    command: 'mode',
+    message:
+      (result.changed
+        ? `Approval mode: ${result.previous} → ${described.label}.`
+        : `Already in ${described.label}.`) +
+      `\n${described.summary}` +
+      (result.disclosure ? `\n\n${result.disclosure}` : ''),
+    // The model is told, because the mode changes what its tool calls will do:
+    // an agent that does not know it is in plan mode spends its budget proposing
+    // edits that will be denied, and one that does not know it is in auto mode
+    // cannot tell the user which of its actions nobody reviewed.
+    //
+    // The system prompt carries the *current* mode as well (see
+    // `ProjectorOptions.approvalMode`); this carries the *change*. A session that
+    // started in plan mode has no change to project, which is why both exist.
+    projection:
+      `[control] The approval mode is now "${target}". ${described.summary}` +
+      (target === 'plan'
+        ? ' Propose a plan rather than attempting changes; mutation is denied by a read-only policy layer.'
+        : ''),
+    data: { mode: target, previous: result.previous },
+  };
+}
+
+/**
+ * `/effort [level|default]` — how hard the model thinks.
+ *
+ * Prints the level *each alias resolves to* rather than the override alone,
+ * because the override is not the answer for every model: a profile ceiling
+ * lowers it silently and correctly, and a screen that hid that would be lying by
+ * omission the moment somebody ran `/model use fast`.
+ */
+const handleEffort: ControlHandler = (args, host) => {
+  const state = host.session.effortState();
+  const requested = args[0];
+
+  if (requested !== undefined) {
+    if (requested === 'default') {
+      host.session.setEffortOverride(undefined);
+      return {
+        ok: true,
+        command: 'effort',
+        message: 'Effort override cleared. Each model runs at its profile default.',
+        projection: '[control] The thinking effort override was cleared.',
+      };
+    }
+    if (!isReasoningEffort(requested)) {
+      return {
+        ok: false,
+        command: 'effort',
+        message: `Unknown effort "${requested}". Try: ${REASONING_EFFORTS.join(', ')}, or "default".`,
+      };
+    }
+    host.session.setEffortOverride(requested);
+    const after = host.session.effortState();
+    const active = after.resolved.find((r) => r.alias === host.session.activeModelAlias);
+    return {
+      ok: true,
+      command: 'effort',
+      message:
+        `Effort set to ${requested}. It takes effect from the next request.` +
+        (active && active.effort !== requested
+          ? `\nNote: ${active.alias} resolves to ${active.effort} — its profile caps the level it accepts.`
+          : ''),
+      projection: `[control] Thinking effort was set to ${requested}, from the next request.`,
+      data: { effort: requested },
+    };
+  }
+
+  const lines = state.resolved.map((r) => {
+    const marker = r.alias === host.session.activeModelAlias ? '*' : ' ';
+    return `${marker} ${r.alias.padEnd(16)} ${r.effort}`;
+  });
+  return {
+    ok: true,
+    command: 'effort',
+    message:
+      `Effort override : ${state.override ?? 'none (each profile uses its own default)'}\n` +
+      `Levels          : ${REASONING_EFFORTS.join(' < ')}\n` +
+      `Per model:\n${lines.join('\n')}\n\n` +
+      'A model whose profile does not claim reasoning shows "provider default": no effort is sent ' +
+      'for it at all. Set one for this session with /effort <level>, or /effort default to clear it.',
+    data: { override: state.override ?? null },
+  };
+};
+
+/**
+ * The `/status` effort line: the level in force, and where it came from.
+ *
+ * Says "provider default" *without* a source clause when nothing is sent, which
+ * is the case the first version got wrong: a profile that does not claim
+ * reasoning gets no parameter at all, and printing "(from [model] effort)" next
+ * to it claimed an override had taken effect when it had been discarded.
+ */
+function effortLine(host: ControlHost): string {
+  const model = host.modelRegistry.resolve(host.session.activeModelAlias);
+  if (!model) return 'unknown — the active model alias does not resolve';
+
+  const { override } = host.session.effortState();
+  const level = ModelRegistry.effortFor(model.profile, override);
+  if (level === undefined) {
+    return `provider default — ${model.profile.family} does not report reasoning, so no level is sent`;
+  }
+
+  if (override === undefined) return `${level} (profile default)`;
+  return level === override
+    ? `${level} (from /effort or [model] effort)`
+    : `${level} — ${override} was requested; this profile caps the level it accepts`;
+}
 
 const handleStatus: ControlHandler = (_args, host) => {
   const usage = host.contextUsage();
@@ -507,10 +785,24 @@ const handleStatus: ControlHandler = (_args, host) => {
     message: [
       `session      : ${session.sessionId}`,
       `model        : ${session.activeModelAlias}${model ? ` (${model.provider.id}/${model.modelId})` : ''}`,
+      // The level the *active* model resolves to, not the override. Those differ
+      // whenever a profile ceiling applies, and this line is the one people read
+      // to answer "why did that answer feel shallow".
+      `effort       : ${effortLine(host)}`,
       `workspace    : ${session.workspaceRoot}`,
       `backend      : ${host.environment.description}`,
       `remote       : ${host.activeRemote ?? 'none (local)'}`,
       `profile      : ${host.config.security.permissionProfile}`,
+      // §12's third requirement for a weakening key: visible in /status. Printed
+      // in every mode rather than only the weak ones, because "no line about the
+      // mode" is not the same signal as "the mode asks about everything".
+      //
+      // Reports what the mode *answers*, never what it leaves to be asked. The
+      // complement reads better and was wrong: in plan mode it listed the
+      // capabilities the read-only layer denies outright as things about to be
+      // put to the user. `/permissions` is where the layers' own dispositions
+      // live, and this line now points at it rather than paraphrasing it.
+      `approvals    : ${describeApprovalMode(session.approvalMode).label} — ${approvedLine(session.approvalMode)}`,
       `isolation    : ${sandbox.label} — network from Shell is ${networkEnforcementLabel(host.enforcement)}`,
       // §41. The backend contributes its own lines rather than the control plane
       // learning what a container is: the runtime, the image and its digest, the
@@ -521,7 +813,13 @@ const handleStatus: ControlHandler = (_args, host) => {
       ...sandbox.lines.map((line) => `             ${line}`),
       ...(host.enforcement.platformNotes ?? []).map((note) => `platform     : ${note}`),
       `context      : ~${usage.estimatedTokens.toLocaleString()} / ${usage.budgetTokens.toLocaleString()} tokens (${pct}%)`,
-      `loop budget  : ${session.budgetCeiling.maxSteps} steps, ${session.budgetCeiling.maxToolCalls} tool calls`,
+      // Per turn, and the number in force rather than the ceiling: a turn that
+      // stops at 2 steps while this line says 16 reads as a defect in the kernel
+      // rather than as the narrowing somebody asked for.
+      `loop budget  : ${session.effectiveBudget.maxSteps} steps, ${session.effectiveBudget.maxToolCalls} tool calls per turn` +
+        (session.budgetNarrowedBy
+          ? ` (narrowed by ${session.budgetNarrowedBy}; ceiling is ${session.budgetCeiling.maxSteps}/${session.budgetCeiling.maxToolCalls})`
+          : ''),
       `goal         : ${session.goal ? `${session.goal.objective} (${session.goal.status})` : 'none'}`,
       `usage        : ${u.inputTokens.toLocaleString()} in / ${u.outputTokens.toLocaleString()} out, ` +
         `${u.modelRequests} requests, ${u.toolCalls} tool calls` +
@@ -569,7 +867,12 @@ const handleStatus: ControlHandler = (_args, host) => {
 };
 
 const handleCompact: ControlHandler = async (args, host) => {
-  if ((args[0] ?? '') === 'status') {
+  const sub = args[0] ?? '';
+  if (sub !== '' && sub !== 'status' && sub !== 'now') {
+    return unknownSub('compact', sub, ['(no argument)', 'status']);
+  }
+
+  if (sub === 'status') {
     const usage = host.contextUsage();
     return {
       ok: true,
@@ -597,6 +900,9 @@ const handleCompact: ControlHandler = async (args, host) => {
 
 const handleRemote: ControlHandler = async (args, host) => {
   const sub = args[0] ?? 'status';
+  if (!['list', 'connect', 'status', 'disconnect'].includes(sub)) {
+    return unknownSub('remote', sub, ['list', 'connect <name>', 'status', 'disconnect']);
+  }
 
   if (sub === 'list') {
     if (host.remotes.length === 0) {
@@ -639,11 +945,14 @@ const handleRemote: ControlHandler = async (args, host) => {
 
   if (sub === 'disconnect') {
     const result = await host.disconnectRemote();
+    // Projected only when it happened. A failed disconnect that still told the
+    // model "execution returned to the local workspace" would leave it resolving
+    // paths against the wrong machine — and in v0.1 the disconnect always fails.
     return {
       ok: result.ok,
       command: 'remote',
       message: result.message,
-      projection: '[control] Execution returned to the local workspace.',
+      ...(result.ok ? { projection: '[control] Execution returned to the local workspace.' } : {}),
     };
   }
 
@@ -658,6 +967,7 @@ const handleRemote: ControlHandler = async (args, host) => {
 
 const handleSkills: ControlHandler = async (args, host) => {
   const sub = args[0] ?? 'list';
+  if (!['list', 'use'].includes(sub)) return unknownSub('skills', sub, ['list', 'use <name>']);
 
   if (sub === 'use') {
     const name = args[1];
@@ -837,6 +1147,29 @@ const handleUndo: ControlHandler = async (args, host) => {
   return { ok: outcome.ok, command: 'undo', message: outcome.message, projection: outcome.message };
 };
 
+const handleVerbose: ControlHandler = (args, host) => {
+  if (!host.setVerbose) {
+    return {
+      ok: false,
+      command: 'verbose',
+      message: 'This session has nothing to show a preview on.',
+    };
+  }
+  const asked = (args[0] ?? '').toLowerCase();
+  if (asked !== '' && asked !== 'on' && asked !== 'off') {
+    return { ok: false, command: 'verbose', message: 'Usage: /verbose [on|off]' };
+  }
+  // No argument toggles, which is what a reader reaching for it usually wants.
+  const now = host.setVerbose(asked === '' ? !host.verbose : asked === 'on');
+  return {
+    ok: true,
+    command: 'verbose',
+    message: now
+      ? 'Tool output preview on: up to 2 kB and 20 lines per result, redacted.'
+      : 'Tool output preview off.',
+  };
+};
+
 const handleCancel: ControlHandler = (_args, host) => {
   const cancelled = host.session.cancel();
   return {
@@ -854,9 +1187,15 @@ function handleHelp(args: string[], commands: readonly string[]): ControlResult 
     message: [
       'Control commands (these change kernel state directly and are never interpreted by the model):',
       '  /model [list|use <alias>|status]        select the model; takes effect next step',
+      // Interpolated, not typed out: the levels and the modes are vocabularies
+      // this help text would otherwise mirror, and `docs/alpha12-enumeration-audit.md`
+      // classifies both as CLOSED on the strength of exactly this.
+      `  /effort [${REASONING_EFFORTS.join('|')}|default]  how hard the model thinks`,
       '  /goal [set|criteria|status|pause|resume|clear]',
       '  /loop [status|start [--max-steps N --max-time 20m --max-cost 1.50]|stop]',
+      `  /mode [${APPROVAL_MODES.join('|')}|next]  who answers an approval; Shift-Tab cycles`,
       '  /permissions [show|explain <subject>|reset-session]',
+      '  /verbose [on|off]                        show what each tool returned, redacted',
       '  /status                                 session, model, context, budget, dirty files',
       '  /compact [status]                       summarise older conversation',
       '  /remote [list|connect <name>|status|disconnect]',
@@ -905,9 +1244,12 @@ export function tokenize(input: string): string[] {
 
 export function parseLoopFlags(args: readonly string[]): {
   budget: Partial<LoopBudget>;
+  /** Budget field → the flag that set it, so a message can quote what was typed. */
+  flags: Record<string, string>;
   errors: string[];
 } {
   const budget: Partial<LoopBudget> = {};
+  const flags: Record<string, string> = {};
   const errors: string[] = [];
 
   for (let i = 0; i < args.length; i += 1) {
@@ -918,28 +1260,40 @@ export function parseLoopFlags(args: readonly string[]): {
       case '--max-steps': {
         const n = Number.parseInt(value ?? '', 10);
         if (!Number.isFinite(n) || n <= 0) errors.push('--max-steps needs a positive integer');
-        else budget.maxSteps = n;
+        else {
+          budget.maxSteps = n;
+          flags.maxSteps = flag;
+        }
         i += 1;
         break;
       }
       case '--max-tool-calls': {
         const n = Number.parseInt(value ?? '', 10);
         if (!Number.isFinite(n) || n <= 0) errors.push('--max-tool-calls needs a positive integer');
-        else budget.maxToolCalls = n;
+        else {
+          budget.maxToolCalls = n;
+          flags.maxToolCalls = flag;
+        }
         i += 1;
         break;
       }
       case '--max-time': {
         const ms = parseDuration(value ?? '');
         if (ms === undefined) errors.push('--max-time needs a duration such as 20m, 90s or 1h');
-        else budget.maxWallTimeMs = ms;
+        else {
+          budget.maxWallTimeMs = ms;
+          flags.maxWallTimeMs = flag;
+        }
         i += 1;
         break;
       }
       case '--max-cost': {
         const n = Number.parseFloat(value ?? '');
         if (!Number.isFinite(n) || n <= 0) errors.push('--max-cost needs a positive number');
-        else budget.maxCostUsd = n;
+        else {
+          budget.maxCostUsd = n;
+          flags.maxCostUsd = flag;
+        }
         i += 1;
         break;
       }
@@ -948,7 +1302,7 @@ export function parseLoopFlags(args: readonly string[]): {
     }
   }
 
-  return { budget, errors };
+  return { budget, flags, errors };
 }
 
 export function parseDuration(text: string): number | undefined {

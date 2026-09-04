@@ -32,6 +32,7 @@
  * and disclosed at startup when set.
  */
 
+import { DEFAULT_APPROVAL_MODE, describeApprovalMode, weakensApproval } from '../policy/approval-mode.ts';
 import type { KernelConfig } from './schema.ts';
 
 export type Layer = 'user-only' | 'any-layer';
@@ -194,6 +195,40 @@ export const WEAKENING_KEYS: WeakeningKey[] = [
     enforcedBy: 'loadConfig intersects `use` against the final user-declared server set',
     isSet: () => false,
     disclose: () => '',
+  },
+  // The only key in this table that removes the *user* rather than moving a
+  // boundary, and the one whose row is the reason §12 asks for a fourth field.
+  // Everything else here redirects where bytes go or what code exists; this
+  // decides whether anybody is asked before an action the engine flagged. It is
+  // also the only weakening a session can perform on itself at runtime — via
+  // Shift-Tab — which is why `disclose` is written to be printable both at
+  // startup and on each switch into a weaker mode.
+  {
+    key: '[security] approval_mode',
+    weakens:
+      'the rule that an action the policy engine flagged is put to the user: `accept-edits` answers ' +
+      'workspace writes, and `auto` also answers deletions and commands',
+    stillDenied:
+      'credentials, network, git history and MCP tools ask in every mode; `deny` and `hard_deny` never ' +
+      'become approvals at all, so privilege escalation, protected paths and host-environment reads ' +
+      'stay refused whatever the mode is. No mode can grant what a policy layer denied — a mode only ' +
+      'answers questions the layers already decided to raise',
+    layer: 'user-only',
+    enforcedBy:
+      'loadConfig drops a project-declared security.approval_mode with a warning; mergeSecurity keeps ' +
+      'the stricter of two modes, so a layer may only ask *more*',
+    isSet: (c) => weakensApproval(c.security.approvalMode ?? DEFAULT_APPROVAL_MODE),
+    // The summary already carries the "still asks" list — it is generated from
+    // `AUTO_ANSWERED` — so this adds only the ceiling and the way back out.
+    // Restating the list here produced it twice in one sentence.
+    disclose: (c) => {
+      const described = describeApprovalMode(c.security.approvalMode ?? DEFAULT_APPROVAL_MODE);
+      return (
+        `Approval mode is "${described.label}": ${described.summary} ` +
+        'Nothing a policy layer denied becomes permitted by this. ' +
+        'Press Shift-Tab or run /mode manual to be asked about everything again.'
+      );
+    },
   },
   {
     key: '[security] permission_profile',

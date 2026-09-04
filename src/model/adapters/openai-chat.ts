@@ -15,7 +15,13 @@
 import type { SseMessage } from '../../util/sse.ts';
 import { kernelError, type KernelError } from '../../util/errors.ts';
 import type { ToolCallId } from '../../util/ids.ts';
-import type { FinishReason, ModelEvent, ModelMessage, ModelRequest } from '../ir.ts';
+import {
+  clampEffort,
+  type FinishReason,
+  type ModelEvent,
+  type ModelMessage,
+  type ModelRequest,
+} from '../ir.ts';
 import type { ResolvedModelProfile } from '../profiles.ts';
 import { mapToolCallId, type AdapterState, type ProtocolAdapter, type WireRequest } from '../runtime.ts';
 
@@ -31,6 +37,13 @@ export class OpenAiChatAdapter implements ProtocolAdapter {
     };
     const maxTokens = request.maxOutputTokens ?? resolved.profile.maxOutputTokens;
     if (maxTokens !== undefined) body.max_completion_tokens = maxTokens;
+    // Flat `reasoning_effort`, not the Responses API's nested `reasoning` object,
+    // and clamped to `high` for the same reason: this protocol has no `xhigh` or
+    // `max`. The two shapes are why the effort is a level on the IR and a wire
+    // detail here — three protocols spell the same intent three ways.
+    if (resolved.profile.supportsReasoning && request.effort !== undefined) {
+      body.reasoning_effort = clampEffort(request.effort, 'high');
+    }
     if (request.temperature !== undefined) body.temperature = request.temperature;
     if (request.tools.length > 0) {
       body.tools = request.tools.map((t) => ({

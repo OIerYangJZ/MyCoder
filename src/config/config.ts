@@ -64,6 +64,26 @@ export interface LoadConfigOptions {
   readFileImpl?: (p: string) => Promise<string>;
 }
 
+/**
+ * The layer CLI flags contribute (§22 puts them above user and project config).
+ *
+ * One function rather than one expression per caller: `--print-config` printed
+ * the file layers alone until alpha.12, so `mycoder --read-only --print-config`
+ * answered a question about a *different* session than the one those flags would
+ * have started.
+ */
+export function cliOverrides(flags: {
+  profile?: string | undefined;
+  model?: string | undefined;
+  telemetryDisabled?: boolean | undefined;
+}): Partial<KernelConfig> {
+  const overrides: Partial<KernelConfig> = {};
+  if (flags.profile) overrides.security = { permissionProfile: flags.profile };
+  if (flags.model) overrides.model = { default: flags.model };
+  if (flags.telemetryDisabled) overrides.telemetry = { enabled: false, content: false, traceUpload: false };
+  return overrides;
+}
+
 export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig> {
   const read = opts.readFileImpl ?? ((p: string) => readFile(p, 'utf8'));
   const sources: string[] = [];
@@ -125,6 +145,26 @@ export async function loadConfig(opts: LoadConfigOptions): Promise<LoadedConfig>
           'decision, not something a repository may trigger.',
       ];
       delete layer.container.pullIfMissing;
+    }
+
+    // The approval mode, same rule, and the reason is the sharpest one yet: a
+    // repository that could set `approval_mode = "auto"` would be a repository
+    // that decides nobody needs to be asked before its own code is run. Every
+    // other key in this list redirects something; this one removes the person.
+    //
+    // Note what is *not* dropped: a project asking for `plan` would be a project
+    // narrowing its own session, which is always permitted. It is dropped anyway.
+    // A repository has no business setting the mode in either direction, and a
+    // rule with an exception is a rule somebody has to remember — the value here
+    // is that "the mode comes from you, never from a checkout" needs no caveat.
+    if (label === 'project config' && layer.security?.approvalMode !== undefined) {
+      layer.warnings = [
+        ...(layer.warnings ?? []),
+        `project config set security.approval_mode = "${layer.security.approvalMode}"; it was ignored. ` +
+          `The approval mode may only be set in ${userPath} — a repository does not decide whether ` +
+          'you are asked before its code runs. Change it for this session with Shift-Tab or /mode.',
+      ];
+      delete layer.security.approvalMode;
     }
 
     // Same rule again, and this is the strongest case for it (ADR-0022 §3). A

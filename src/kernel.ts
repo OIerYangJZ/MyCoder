@@ -14,9 +14,9 @@
 
 import * as path from 'node:path';
 
-import { PROJECT_DIR, projectDir } from './app.ts';
+import { APP_NAME, PROJECT_DIR, projectDir } from './app.ts';
 import { canonicalize, displayPath, type CanonicalPath } from './util/paths.ts';
-import { kernelError, KernelErrorException, toKernelError } from './util/errors.ts';
+import { fail, kernelError, KernelErrorException, toKernelError } from './util/errors.ts';
 import { newSessionId, newTurnId, type SessionId } from './util/ids.ts';
 import { createLogger, installLogSanitizer, type Logger, type LogLevel } from './util/logger.ts';
 import { systemClock, type Clock } from './util/clock.ts';
@@ -37,7 +37,19 @@ import {
 } from './security/egress-gate.ts';
 
 import { ProtectedPaths } from './policy/protected-paths.ts';
-import { buildProfile, workspaceDevProfile, type PermissionProfile } from './policy/profiles.ts';
+import {
+  buildProfile,
+  readOnlyProfile,
+  workspaceDevProfile,
+  type PermissionProfile,
+} from './policy/profiles.ts';
+import {
+  ApprovalModeState,
+  DEFAULT_APPROVAL_MODE,
+  describeApprovalMode,
+  ModeGatedPrompter,
+  weakensApproval,
+} from './policy/approval-mode.ts';
 import { PolicyEngine, SessionApprovalStore, type PolicyLayer } from './policy/policy-engine.ts';
 
 import { LocalExecutionBackend } from './execution/local.ts';
@@ -95,7 +107,7 @@ import { replaySession, workspaceIdentity, checkResumeIdentity } from './session
 import { replayTerminalState, type SessionTerminalState } from './session/terminal-state.ts';
 import { DelegationService, ROOT_SCOPE, type DelegateFn } from './session/delegation.ts';
 
-import { loadConfig, projectRulesProfile } from './config/config.ts';
+import { cliOverrides, loadConfig, projectRulesProfile } from './config/config.ts';
 import { disclosures } from './config/weakening.ts';
 import { assessReadiness } from './config/first-run.ts';
 import { loadRemotes } from './config/remotes.ts';
@@ -137,6 +149,8 @@ export interface CreateKernelOptions {
   /** Redirect log output. Used by the security suite to capture the debug sink. */
   logSink?: (line: string) => void;
   nonInteractive?: boolean;
+  /** Attach a bounded, redacted preview of tool output to each record (ADR-0031). */
+  verbose?: boolean;
   prompter?: ApprovalPrompter;
   /**
    * Watch the session's event stream as it happens (alpha.12).
@@ -256,10 +270,11 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   const projectRoot = projectResolved.path;
 
   // 3. Configuration, then remotes.
-  const overrides: Partial<KernelConfig> = {};
-  if (opts.profileOverride) overrides.security = { permissionProfile: opts.profileOverride };
-  if (opts.modelOverride) overrides.model = { default: opts.modelOverride };
-  if (opts.telemetryDisabled) overrides.telemetry = { enabled: false, content: false, traceUpload: false };
+  const overrides = cliOverrides({
+    profile: opts.profileOverride,
+    model: opts.modelOverride,
+    telemetryDisabled: opts.telemetryDisabled,
+  });
 
   // Project configuration is read from the *local* tree. A config file that
   // names a remote cannot be read through that remote.
@@ -561,10 +576,15 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     generatedPaths: config.generatedPaths,
   };
   const profileName = config.security.permissionProfile ?? 'workspace-dev';
-  const sessionProfile: PermissionProfile =
-    buildProfile(profileName, profileContext) ?? workspaceDevProfile(profileContext);
-  if (!buildProfile(profileName, profileContext)) {
+  const requestedProfile = buildProfile(profileName, profileContext);
+  const sessionProfile: PermissionProfile = requestedProfile ?? workspaceDevProfile(profileContext);
+  if (!requestedProfile) {
     config.warnings.push(`Unknown permission profile "${profileName}"; using workspace-dev.`);
+    // The name in the config is now a name nothing is enforcing, and `/status`,
+    // `/permissions` and `--print-config` all read it. Reporting the requested
+    // profile rather than the effective one is how a session claimed to be
+    // `review` while running `workspace-dev`.
+    config.security.permissionProfile = sessionProfile.name;
   }
 
   const layers: PolicyLayer[] = [
@@ -584,6 +604,18 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     layers,
     approvals: new SessionApprovalStore(),
   });
+
+  // Plan mode's layer, built once from the same context as the session profile.
+  //
+  // The builtin `read-only` profile rather than a bespoke set of deny rules,
+  // because a second definition of "may not change anything" is a second thing
+  // to keep correct — and this one would be the copy nobody audits. Reusing it
+  // means plan mode is exactly as read-only as `--read-only`, by construction.
+  const planModeLayer: PolicyLayer = {
+    name: 'mode:plan',
+    source: 'session',
+    profile: readOnlyProfile(profileContext),
+  };
 
   // 8. Egress. Model hosts come from the provider endpoints; everything else
   //    stays closed unless configuration opens it.
@@ -655,6 +687,8 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       preferredEditStrategy: entry.preferredEditStrategy ?? 'exact',
       autonomy: entry.autonomy ?? 'normal',
       toolReliability: entry.toolReliability ?? 'medium',
+      ...(entry.effort !== undefined ? { effort: entry.effort } : {}),
+      ...(entry.effortCeiling !== undefined ? { effortCeiling: entry.effortCeiling } : {}),
       ...(entry.inputPerMTok !== undefined || entry.outputPerMTok !== undefined
         ? {
             pricing: {
@@ -790,10 +824,28 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   // record built from it would be describing a session that does not exist.
   const enforcement = withForeignTools(backend.environment.enforcement, mcp.serverNames());
   const sandbox = describeEnforcement(enforcement);
+  // The approval mode, ahead of everything that reads it.
+  //
+  // Three components need it and they are built in a fixed order: the projector
+  // puts it in the system prompt, the approval gate consults it per request, and
+  // the session owns changing it. Constructing it here rather than next to the
+  // gate is what lets the projector close over it without depending on a `const`
+  // declared two hundred lines further down.
+  //
+  // Logged at `debug`, not `info`. A mode change is already visible three other
+  // ways — the prompt indicator, the command's own message and the projection —
+  // and an `info` line drew straight onto the line editor's block mid-redraw.
+  const approvalModeState = new ApprovalModeState(
+    config.security.approvalMode ?? DEFAULT_APPROVAL_MODE,
+    (mode, previous) =>
+      logger.debug('approval mode changed', { from: previous, to: mode, weakens: weakensApproval(mode) }),
+  );
+
   const projector = new ContextProjector({
     sandboxDescription: `${sandbox.label} — ${sandbox.caveat}`,
     networkEnforcement: networkEnforcementLabel(enforcement),
     permissionProfile: sessionProfile.name,
+    approvalMode: () => describeApprovalMode(approvalModeState.mode),
     backendDescription: backend.environment.description,
     editJournal,
     // Only when there is something to delegate to, and only if the user has not
@@ -957,7 +1009,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   };
 
   // 13. Tool runtime.
-  const prompter: ApprovalPrompter =
+  const basePrompter: ApprovalPrompter =
     opts.prompter ??
     (opts.nonInteractive
       ? new DenyAllPrompter()
@@ -965,12 +1017,32 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
           `Approval is required. Run without --non-interactive, or grant it in ${PROJECT_DIR}/permissions.toml.`,
         ));
 
+  // Wrapped, not replaced. In `manual` and `plan` the gate delegates every
+  // request untouched, so the interactive prompter, the deny-all prompter and a
+  // test's scripted prompter all behave exactly as they did before this existed —
+  // which is the property that makes the mode a layer rather than a fork.
+  const prompter: ApprovalPrompter = new ModeGatedPrompter({
+    delegate: basePrompter,
+    mode: () => approvalModeState.mode,
+    onAutoAnswer: (event) => {
+      // Logged and evented, never recorded as an approval: `/permissions show`
+      // means "what the user decided", and this was not put to them. The event is
+      // how the transcript can still say an action happened without asking.
+      logger.debug('approval answered by mode', { ...event });
+      opts.onEvent?.('approval.auto', event);
+    },
+  });
+
+  // A holder rather than a value: `/verbose` flips it mid-session, and the runtime
+  // asks each time rather than being rebuilt.
+  const verbose = { on: opts.verbose === true };
   const toolRuntime = new ToolRuntime({
     registry: toolRegistry,
     policy,
     backend,
     secrets,
     redactor,
+    previewOutput: () => verbose.on,
     freshness,
     prompter,
     logger: logger.child('tools'),
@@ -1023,6 +1095,9 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
             errorCode: record.errorCode ?? 'UNKNOWN',
             durationMs: record.durationMs,
             contentBytes: record.contentBytes,
+            // No preview here. This event is written straight to the store and never
+            // reaches the host, so a preview on it would be persisted tool output that
+            // nothing ever displays — all of the exposure and none of the benefit.
           },
           ...scope,
         });
@@ -1113,10 +1188,20 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       });
     },
 
-    onApproval: (subjectKey, granted, scope, summary) => {
+    // `answeredByMode` is recorded, not inferred. An approval mode returns the
+    // same `allow` a person does, so without this field the log states that a
+    // deletion nobody looked at was granted in exactly the bytes it states one
+    // the user approved — and the log is what an audit reads.
+    onApproval: (event) => {
       void store.append(sessionId, {
         type: 'approval.decided',
-        payload: { subject: subjectKey, granted, scope, summary },
+        payload: {
+          subject: event.subjectKey,
+          granted: event.granted,
+          scope: event.scope,
+          summary: event.summary,
+          answeredByMode: event.answeredByMode,
+        },
       });
     },
   });
@@ -1151,7 +1236,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     }
   });
 
-  const modelAlias = config.model.default ?? 'fake';
+  let modelAlias = config.model.default ?? 'fake';
   const metadata: SessionMetadata = {
     sessionId,
     createdAt: clock.now(),
@@ -1189,11 +1274,49 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
         ...(backend.environment.hostIdentity ? { remoteIdentity: backend.environment.hostIdentity } : {}),
       });
       if (!check.ok) {
-        throw new Error(`Cannot resume this session:\n  ${check.problems.join('\n  ')}`);
+        // A named session that belongs somewhere else is a wrong invocation, not
+        // a kernel defect. A bare `throw` put it through `toKernelError`, which
+        // has one answer for anything untyped: INTERNAL_ERROR, exit 6.
+        fail('SESSION_NOT_RESUMABLE', `Cannot resume this session:\n  ${check.problems.join('\n  ')}`, {
+          safeDetails: {
+            remedy:
+              "Run `mycoder -r` with no id to pick one of this workspace's own sessions, " +
+              'or `mycoder` to start a new one.',
+          },
+        });
       }
       context.replaceHistory(replayed.messages, 0);
       context.addFact({ id: 'resume-freshness', priority: 'critical', text: replayed.freshnessNote });
       config.warnings.push(...check.warnings, ...replayed.warnings);
+
+      // The model the session was last using is part of what is being resumed.
+      // An explicit `-m` still wins — it is a CLI flag, and §22 puts those above
+      // everything — but without one, a `-c` used to drop back to the config
+      // default while the resume summary went on printing the recorded alias.
+      // One of the two was wrong on every resume after a `/model use`.
+      const recorded = replayed.metadata.model;
+      if (!opts.modelOverride && recorded && recorded !== modelAlias) {
+        if (modelRegistry.resolve(recorded)) {
+          modelAlias = recorded;
+        } else {
+          config.warnings.push(
+            `This session was using the model "${recorded}", which is no longer configured; ` +
+              `continuing with "${modelAlias}".`,
+          );
+        }
+      }
+
+      // Not restored, and said so rather than left to be noticed: a permission
+      // profile recorded in a log is not a grant. Adopting `workspace-dev` from
+      // a log because a previous process ran under it would let an old session
+      // widen a workspace that has since been narrowed.
+      if (replayed.metadata.permissionProfile !== sessionProfile.name) {
+        config.warnings.push(
+          `This session was recorded under the "${replayed.metadata.permissionProfile}" permission ` +
+            `profile; it is resuming under "${sessionProfile.name}". Permissions are never restored ` +
+            'from a log.',
+        );
+      }
 
       // What the previous process recorded, reconstructed from the log itself
       // rather than from the replayed *messages* — the messages deliberately omit
@@ -1262,7 +1385,10 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
     clock,
     kernelVersion: KERNEL_VERSION,
     modelAlias,
+    ...(config.model.effort !== undefined ? { effortOverride: config.model.effort } : {}),
     permissionProfile: sessionProfile.name,
+    approvalModeState,
+    planModeLayer,
     loopBudgetCeiling: loopBudget,
     hooks,
     ...(resumedState ? { resumedState } : {}),
@@ -1285,6 +1411,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       secrets,
       redactor,
       prompter,
+      approvalModeState,
       hooks,
       store,
       modelRuntime,
@@ -1322,6 +1449,14 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
 
   // 16. Control plane.
   const host: ControlHost = {
+    // The preview holder, so `/verbose` flips the same switch `--verbose` set.
+    get verbose() {
+      return verbose.on;
+    },
+    setVerbose: (on: boolean) => {
+      verbose.on = on;
+      return verbose.on;
+    },
     session,
     policy,
     config,
@@ -1378,7 +1513,7 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
         ok: false,
         message:
           `Switching backend mid-session is applied after the current tool call completes (spec §19.4), ` +
-          `and is not wired up in v0.1. Restart with: agent --remote ${name}`,
+          `and is not wired up in v0.1. Restart with: ${APP_NAME} --remote ${name}`,
       };
     },
 

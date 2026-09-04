@@ -93,6 +93,11 @@ export const ERROR_CODES = [
   'RUNTIME_UNSUPPORTED',
   'CONFIG_INVALID',
   'PROVIDER_NOT_CONFIGURED',
+  // The named session cannot be resumed *here* (ADR-0029): it belongs to another
+  // workspace, or to a remote the current invocation is not connected to. The
+  // invocation is wrong, not the installation — which is why it is its own code
+  // and not `INTERNAL_ERROR`, where a plain `throw` used to put it.
+  'SESSION_NOT_RESUMABLE',
   'LOOP_BUDGET_EXCEEDED',
   'REPEATED_FAILURE',
   'DELEGATION_DENIED',
@@ -183,6 +188,7 @@ const DEFAULT_BLAME: Record<ErrorCode, Blame> = {
   RUNTIME_UNSUPPORTED: 'environment',
   CONFIG_INVALID: 'user',
   PROVIDER_NOT_CONFIGURED: 'user',
+  SESSION_NOT_RESUMABLE: 'user',
   LOOP_BUDGET_EXCEEDED: 'kernel',
   REPEATED_FAILURE: 'model',
   // A refused delegation is the configuration speaking, the same as TOOL_DENIED.

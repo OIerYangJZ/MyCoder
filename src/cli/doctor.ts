@@ -23,7 +23,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { APP_DISPLAY_NAME } from '../app.ts';
-import { loadConfig, describeConfig } from '../config/config.ts';
+import { cliOverrides, loadConfig, describeConfig } from '../config/config.ts';
 import { assessReadiness, checkWorkspaceRoot } from '../config/first-run.ts';
 import { WEAKENING_KEYS, CEILING_PINNED } from '../config/weakening.ts';
 import { checkCredentialFile, chooseCredentialSource } from '../security/credential-file.ts';
@@ -183,14 +183,26 @@ export async function runDoctor(opts: DoctorOptions): Promise<{ report: DoctorRe
   return { report, text: opts.json ? `${JSON.stringify(report)}\n` : render(report) };
 }
 
-/** `--print-config`, without needing a kernel that can start. */
+/**
+ * `--print-config`, without needing a kernel that can start.
+ *
+ * The flags on the same command line are part of the answer: `--help` calls this
+ * "the effective configuration", and a run that printed the file layers while
+ * ignoring `--profile`, `--read-only`, `-m` and `--no-telemetry` described a
+ * session nobody had asked for.
+ */
 export async function printConfig(opts: {
   workspaceDir: string;
   dirs?: KernelDirs;
+  flags?: { profile?: string | undefined; model?: string | undefined; telemetryDisabled?: boolean };
 }): Promise<{ text: string; exit: ExitCode }> {
   const dirs = opts.dirs ?? resolveKernelDirs();
   const workspaceRoot = (await canonicalize(opts.workspaceDir, { cwd: process.cwd() })).path;
-  const loaded = await loadConfig({ workspaceRoot, userConfigDir: dirs.config });
+  const loaded = await loadConfig({
+    workspaceRoot,
+    userConfigDir: dirs.config,
+    overrides: cliOverrides(opts.flags ?? {}),
+  });
   return { text: `${describeConfig(loaded.config, loaded.sources)}\n`, exit: EXIT.OK };
 }
 
@@ -376,5 +388,7 @@ function render(report: DoctorReport): string {
     `Config keys that can relax a boundary are audited in ${docsPath('configuration-audit.md')};`,
     `keys the system ceiling pins regardless of configuration: ${CEILING_PINNED.length} of them.`,
   );
-  return lines.join('\n');
+  // Terminated, like every other stream this CLI writes: without it the last
+  // line and the next shell prompt shared a row.
+  return `${lines.join('\n')}\n`;
 }

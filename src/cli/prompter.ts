@@ -15,6 +15,7 @@ import type { Interface as ReadlineInterface } from 'node:readline/promises';
 
 import { describeAccess } from '../policy/access.ts';
 import type { ApprovalOutcome, ApprovalPrompter, ApprovalRequest } from '../tools/runtime.ts';
+import { select, type KeySource } from './select.ts';
 import {
   box,
   diffBlock,
@@ -33,6 +34,24 @@ export interface TerminalPrompterOptions {
   palette?: Palette;
   glyphs?: Glyphs;
   columns?: () => number;
+  /**
+   * Stop whatever else is drawing on the terminal, before this prompt draws.
+   *
+   * An approval opens *during* a tool call, and the renderer's spinner is running
+   * for exactly that tool call. The spinner erases its own line every 90ms with
+   * carriage-return and erase-to-end — which is the line the user is typing the
+   * answer on. The keystrokes reached readline and Enter worked, so the prompt
+   * functioned; it simply could not be seen, and what stayed on screen was
+   * `⠹ Running Shell` with the cursor after it.
+   *
+   * Optional because the scripted and piped paths have nothing to quieten.
+   */
+  quiet?: () => void;
+  /**
+   * Raw keys, for the arrow-key menu. Absent means no terminal, and the typed
+   * prompt is used instead — a scripted or piped run has no arrows to press.
+   */
+  keys?: KeySource;
 }
 
 export class TerminalApprovalPrompter implements ApprovalPrompter {
@@ -41,6 +60,8 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
   private readonly p: Palette;
   private readonly g: Glyphs;
   private readonly columns: () => number;
+  private readonly quiet: () => void;
+  private readonly keys: KeySource | undefined;
 
   constructor(opts: TerminalPrompterOptions) {
     this.rl = opts.rl;
@@ -48,6 +69,8 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
     this.p = opts.palette ?? makePalette(false);
     this.g = opts.glyphs ?? glyphSet(false);
     this.columns = opts.columns ?? (() => 80);
+    this.quiet = opts.quiet ?? ((): void => {});
+    this.keys = opts.keys;
   }
 
   /**
@@ -67,9 +90,47 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
   }
 
   async request(request: ApprovalRequest): Promise<ApprovalOutcome> {
+    this.quiet();
     this.write(`\n${this.frame(request)}\n`);
 
+    const choices = approvalChoices(request);
+    if (this.keys) {
+      // Arrow keys need the terminal to themselves, and readline is holding it.
+      this.rl.pause();
+      try {
+        const picked = await select({
+          items: choices.map((c) => c.label),
+          // On the safe answer. Enter without reading must not grant anything, which
+          // was true of the typed prompt and stays true here.
+          initial: choices.findIndex((c) => c.outcome.decision === 'deny'),
+          write: this.write,
+          palette: this.p,
+          glyphs: this.g,
+          input: this.keys,
+          columns: this.columns,
+        });
+        // Abandoned with Escape or Ctrl-C. The caller decides what that means and
+        // here it means no — the one reading it is a security question.
+        return choices[picked ?? -1]?.outcome ?? { decision: 'deny', scope: 'once' };
+      } finally {
+        this.rl.resume();
+      }
+    }
+
+    return this.typed(choices);
+  }
+
+  /**
+   * The typed prompt, for anything without a terminal.
+   *
+   * Not a lesser version kept around for tests: a piped or scripted run has no arrow
+   * keys, and a menu that answered itself would answer a security question wrong.
+   */
+  private async typed(choices: readonly ApprovalChoice[]): Promise<ApprovalOutcome> {
     for (;;) {
+      // Again on every pass: an unrecognised answer loops, and anything that
+      // arrived in the meantime may have started the spinner up again.
+      this.quiet();
       const answer = (
         await this.rl.question(
           `  ${this.p.boldBlue('[y]')} once  ${this.p.boldBlue('[s]')} this session  ` +
@@ -79,24 +140,62 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
         .trim()
         .toLowerCase();
 
-      switch (answer) {
-        case 'y':
-        case 'yes':
-          return { decision: 'allow', scope: 'once' };
-        case 's':
-        case 'session':
-          return { decision: 'allow', scope: 'session' };
-        case 'n':
-        case 'no':
-        case '':
-          return { decision: 'deny', scope: 'once' };
-        case 'd':
-          return { decision: 'deny', scope: 'session', reason: 'denied for the rest of this session' };
-        default:
-          this.write('  Please answer y, s, n or d.\n');
+      const key = ANSWER_KEYS[answer];
+      if (key !== undefined) {
+        const found = choices.find((c) => c.key === key);
+        if (found) return found.outcome;
       }
+      this.write('  Please answer y, s, n or d.\n');
     }
   }
+}
+
+/** The letters the typed prompt has always accepted, mapped onto the same choices. */
+const ANSWER_KEYS: Readonly<Record<string, string>> = {
+  y: 'y',
+  yes: 'y',
+  s: 's',
+  session: 's',
+  n: 'n',
+  no: 'n',
+  '': 'n',
+  d: 'd',
+};
+
+export interface ApprovalChoice {
+  key: string;
+  label: string;
+  outcome: ApprovalOutcome;
+}
+
+/**
+ * The four answers, in the words of what they do.
+ *
+ * `[y]` and `[s]` are indistinguishable to somebody who has not read the code, and
+ * the difference between them is how long the grant lasts — which is the whole of the
+ * decision. Spelling the subject into the two lasting answers means the screen says
+ * what is being remembered, rather than the reader having to hold it from the box
+ * above.
+ *
+ * Denial keeps its lasting form too. Dropping it would have made the menu tidier and
+ * quietly removed an answer somebody may be relying on.
+ */
+export function approvalChoices(request: ApprovalRequest): ApprovalChoice[] {
+  const what = request.subject.title;
+  return [
+    { key: 'y', label: 'Yes', outcome: { decision: 'allow', scope: 'once' } },
+    {
+      key: 's',
+      label: `Yes, and don't ask again for: ${what}`,
+      outcome: { decision: 'allow', scope: 'session' },
+    },
+    { key: 'n', label: 'No', outcome: { decision: 'deny', scope: 'once' } },
+    {
+      key: 'd',
+      label: `No, and don't ask again for: ${what}`,
+      outcome: { decision: 'deny', scope: 'session', reason: 'denied for the rest of this session' },
+    },
+  ];
 }
 
 /** Rendered separately so tests can assert on the text without a terminal. */

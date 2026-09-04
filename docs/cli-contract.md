@@ -58,6 +58,7 @@ Every object carries a schema tag:
 { "schema": "mycoder.v1", "type": "doctor", "ok": false, "exit": 3, "findings": [ … ] }
 { "schema": "mycoder.v1", "type": "sandbox-status", "ok": false, "problem": "stale", … }
 { "schema": "mycoder.v1", "type": "version", "version": "0.1.0" }
+{ "schema": "mycoder.v1", "type": "sessions", "workspace": "/repo", "sessions": [ … ], "elsewhere": 2 }
 ```
 
 Within `mycoder.v1`:
@@ -83,17 +84,29 @@ cases you most need to tell apart.
 Semantics will not change within `0.1.x`. Removing or repurposing one needs an ADR.
 
 ```text
-[prompt]              -c/--continue     -r/--resume <id>    -m/--model <alias>
+[prompt]              -c/--continue     -r/--resume [id]    -m/--model <alias>
 --profile <name>      --cwd <path>      --remote <name>     --read-only
 --no-telemetry        --json            --non-interactive   --print-config
+--verbose
 --log-level <level>   --backend         -h/--help           -v/--version    --
 ```
 
 `--backend local` and `--backend container` are contract values.
 
 `--read-only` is a hard narrowing and wins over `--profile`. The conflict is
-_reported_, not silently resolved, because either guess would run the session
-under permissions you did not ask for.
+_reported_ and the run stops with `2` — nothing is started — because either guess
+would run the session under permissions you did not ask for.
+
+`-r` is the one flag whose value is optional (ADR-0029). With an id it resumes that
+session; with none it lists this workspace's sessions — newest first, titled by what
+each was asked — and resumes the one you pick. Under `--json` or a pipe the list is
+printed and nothing is resumed: a picker needs a person. `-c` and the picker are
+both scoped to the current workspace, because a session recorded elsewhere cannot be
+resumed into this one.
+
+`--profile` and `--log-level` accept only the values listed above. A value that is
+neither is a usage error, not a preference the run may drop: `--profile read-onl`
+used to start a `workspace-dev` session, which is wider than the one asked for.
 
 ### Experimental
 
@@ -107,6 +120,26 @@ May change or disappear in any release.
 --sandbox-status         output shape not yet frozen
 --force                  a modifier of `setup-credential`
 ```
+
+## `@path` references
+
+A message containing `@src/app.ts` is sent with that file's contents attached after
+it. The same rules apply wherever the message came from — the interactive prompt, a
+piped line, or the one-shot argument — because `@src/app.ts` means the same thing in
+all three, and a feature that works in one of them is a feature nobody trusts.
+
+```text
+resolves      a path inside the workspace that names a readable file
+stays literal anything else: a path outside the workspace, a missing file, or an
+              `@` in ordinary prose. Never an error — an `@` in a sentence is common
+reported      what was attached, and what was left alone and why, on stderr
+bounded       32 kB and 800 lines per file, through the same truncation the model
+              context uses; a truncated attachment says so
+```
+
+The workspace boundary is checked on the **resolved** path, so `@a/../../b` is
+refused even though it has no leading `..`. Under `--json` the notices are still
+stderr, so stdout stays one object per line.
 
 ## Subcommands
 

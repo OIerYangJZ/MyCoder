@@ -46,6 +46,7 @@ export type {
   ToolSchema,
 } from './model/ir.ts';
 export { collectModelEvents } from './model/ir.ts';
+export { clampEffort, isReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from './model/ir.ts';
 export { ModelRegistry, type ModelProfile, type ResolvedModelProfile } from './model/profiles.ts';
 export { HttpModelRuntime, RoutingModelRuntime, type ProtocolAdapter } from './model/runtime.ts';
 export { FakeModel, type FakeStep, toolStep, finalStep, errorStep } from './model/adapters/fake.ts';
@@ -115,6 +116,19 @@ export {
   type PolicyAction,
   type PolicyRule,
 } from './policy/profiles.ts';
+export {
+  APPROVAL_MODES,
+  ApprovalModeState,
+  cycleApprovalMode,
+  DEFAULT_APPROVAL_MODE,
+  describeApprovalMode,
+  isApprovalMode,
+  ModeGatedPrompter,
+  autoAnswered,
+  weakensApproval,
+  type ApprovalMode,
+  type ModeGateEvent,
+} from './policy/approval-mode.ts';
 export { ProtectedPaths } from './policy/protected-paths.ts';
 
 // --- security ---

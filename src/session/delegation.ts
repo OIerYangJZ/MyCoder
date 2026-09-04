@@ -48,6 +48,7 @@ import type { CanonicalPath } from '../util/paths.ts';
 import type { ModelRuntime } from '../model/ir.ts';
 import type { ModelRegistry } from '../model/profiles.ts';
 import type { PolicyEngine } from '../policy/policy-engine.ts';
+import type { ApprovalModeState } from '../policy/approval-mode.ts';
 import type { ProfileContext } from '../policy/profiles.ts';
 import type { ExecutionBackend } from '../execution/backend.ts';
 import type { SecretBroker } from '../security/secret-broker.ts';
@@ -243,6 +244,20 @@ export interface DelegationServiceOptions {
   secrets: SecretBroker;
   redactor: Redactor;
   prompter: ApprovalPrompter;
+  /**
+   * The parent's approval mode, shared rather than copied.
+   *
+   * The gate the child asks through is already the parent's — the wrapper below
+   * adds attribution and delegates — so the mode governs a child either way.
+   * Passing the state as well is so the child *session* reports the same mode it
+   * is actually running under: a `/status` inside a child that read `manual`
+   * while the parent's gate was answering for it would be the one place this
+   * feature could lie.
+   *
+   * Plan mode needs nothing here. The child derives from `parentPolicy`, which
+   * is the parent's effective engine and already carries the read-only layer.
+   */
+  approvalModeState?: ApprovalModeState;
   hooks?: HookRunner;
   store: SessionStore;
   modelRuntime: ModelRuntime;
@@ -990,10 +1005,21 @@ export class DelegationService {
           delegationId,
         });
       },
-      onApproval: (subjectKey, granted, approvalScope, summary) => {
+      // Attribution matters more here than anywhere (§40): in `auto` mode a
+      // child's deletion is answered by the mode, and `agent` plus
+      // `answeredByMode` are the two fields that say whose action nobody
+      // reviewed. Neither is inferable from the rest of the payload.
+      onApproval: (event) => {
         void opts.store.append(opts.sessionId, {
           type: 'approval.decided',
-          payload: { subject: subjectKey, granted, scope: approvalScope, summary, agent: agent.name },
+          payload: {
+            subject: event.subjectKey,
+            granted: event.granted,
+            scope: event.scope,
+            summary: event.summary,
+            answeredByMode: event.answeredByMode,
+            agent: agent.name,
+          },
           delegationId,
         });
       },
@@ -1016,6 +1042,7 @@ export class DelegationService {
       kernelVersion: opts.kernelVersion,
       modelAlias: scope.modelAlias,
       permissionProfile: scope.policy.describeLayers().at(-1)?.profile ?? 'inherited',
+      ...(opts.approvalModeState ? { approvalModeState: opts.approvalModeState } : {}),
       loopBudgetCeiling: scope.budget,
       allowedTools: scope.allowedTools,
       // The same hook definitions, judged by the child's narrower engine (§27).

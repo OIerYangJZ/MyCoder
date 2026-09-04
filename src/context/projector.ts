@@ -46,6 +46,22 @@ export interface ProjectorOptions {
    */
   networkEnforcement: 'enforced' | 'best-effort' | 'unenforced';
   permissionProfile: string;
+  /**
+   * The approval mode in force, read on every projection.
+   *
+   * A callback and not a string, because Shift-Tab changes it between steps and
+   * a value captured at construction would describe the mode the session
+   * *started* in. That is the bug this exists to close from the other side: the
+   * control command projects the *change* into the conversation, which tells a
+   * model that was already running, and says nothing to a session that started
+   * in plan mode from `[security] approval_mode`. Such a session would spend its
+   * whole budget proposing edits that a read-only layer denies, having never
+   * been told why.
+   *
+   * Absent means say nothing — which is what a child gets, since its mode is its
+   * parent's and its brief already describes its narrower scope.
+   */
+  approvalMode?: () => { label: string; summary: string };
   backendDescription: string;
   editJournal?: EditJournal;
   /**
@@ -135,10 +151,15 @@ export class ContextProjector {
       ].join('\n'),
     );
 
+    // Resolved once. The callback reads live state, so calling it twice in one
+    // projection could describe two different modes in one prompt.
+    const approvalMode = this.options.approvalMode?.();
+
     sections.push(
       [
         'Boundaries enforced by the kernel:',
         `- Permission profile: ${this.options.permissionProfile}. Some actions will require the user's approval; that is expected, not an error.`,
+        ...(approvalMode ? [`- Approval mode: ${approvalMode.label}. ${approvalMode.summary}`] : []),
         `- Execution backend: ${this.options.backendDescription}.`,
         `- Isolation: ${this.options.sandboxDescription}`,
         `- Network from Shell is off unless you declare it, and that default is ${this.options.networkEnforcement} on this backend.`,

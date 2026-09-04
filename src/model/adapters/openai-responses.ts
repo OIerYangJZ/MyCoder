@@ -14,7 +14,7 @@
 import type { SseMessage } from '../../util/sse.ts';
 import { kernelError, type KernelError } from '../../util/errors.ts';
 import type { ToolCallId } from '../../util/ids.ts';
-import type { FinishReason, ModelEvent, ModelRequest } from '../ir.ts';
+import { clampEffort, type FinishReason, type ModelEvent, type ModelRequest } from '../ir.ts';
 import type { ResolvedModelProfile } from '../profiles.ts';
 import { mapToolCallId, type AdapterState, type ProtocolAdapter, type WireRequest } from '../runtime.ts';
 
@@ -45,6 +45,14 @@ export class OpenAiResponsesAdapter implements ProtocolAdapter {
       // the kernel ever needing to interpret it.
       body.include = ['reasoning.encrypted_content'];
       body.store = false;
+      // This protocol's vocabulary stops at `high` — it has no `xhigh` and no
+      // `max` — so the two strongest levels arrive here as `high` rather than as
+      // a 400. Clamped in the adapter and not in the resolver because it is a
+      // property of the wire format, not of the model: the same profile pointed
+      // at an Anthropic endpoint should still get the level it asked for.
+      if (request.effort !== undefined) {
+        body.reasoning = { effort: clampEffort(request.effort, 'high') };
+      }
     }
     Object.assign(body, request.providerOptions ?? {});
 

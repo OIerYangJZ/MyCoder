@@ -106,10 +106,25 @@ is the only step that verifies types. Run it before opening a PR — CI does.
   anything from before the journal starts.
 - An append-only session event log that carries every mutation, and resume that
   rebuilds the edit journal from it — so an undo survives a crash — and
-  synthesises results for interrupted tool calls.
+  synthesises results for interrupted tool calls. `mycoder -c` continues this
+  workspace's last session; `mycoder -r` lists them by what each was asked to do,
+  because a session id is not something anybody remembers.
 - Control commands (`/model`, `/goal`, `/loop`, `/permissions`, `/status`,
-  `/compact`, `/remote`, `/undo`) that change kernel state directly, never via
-  the model.
+  `/compact`, `/remote`, `/undo` and more — `/help` lists them all) that change
+  kernel state directly, never via the model.
+- **Approval modes**, cycled with Shift-Tab or set with `/mode`. `manual` asks
+  about everything and is the default; `accept-edits` applies workspace edits
+  without asking; `auto` also applies deletions and commands; `plan` intersects a
+  read-only layer so mutation is _denied_ rather than merely declined. A mode
+  only ever answers a question the policy engine already decided to raise, so no
+  mode can permit what a layer denied — credentials, network, git history and
+  MCP tools ask in every one of them, and privilege escalation stays refused.
+  `[security] approval_mode` sets the starting mode, from your config only: a
+  repository does not get to decide whether you are asked before its code runs.
+- **Thinking effort** as a level rather than a token budget — `low` through
+  `max`, per model profile, overridable with `[model] effort` or `/effort`. Each
+  profile caps what it will send, so a global `max` cannot hand a small model a
+  level it rejects, and a profile that does not think sends no parameter at all.
 - Local, SSH and container execution backends behind one interface.
 - Skill / agent / hook discovery, where a definition can only narrow.
 

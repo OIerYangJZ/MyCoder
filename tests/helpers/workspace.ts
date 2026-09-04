@@ -82,6 +82,10 @@ export interface TestWorkspaceOptions {
    * both are part of the fixture rather than something the test fixes up after.
    */
   outsideFiles?: Array<[string, string, number?]>;
+  /** Attach a bounded, redacted preview of tool output to each record (ADR-0031). */
+  verbose?: boolean;
+  /** Collects events as the host sees them — before anything is stripped for the log. */
+  captureEvents?: Array<{ type: string; payload: unknown }>;
   logLevel?: 'silent' | 'trace';
   /** Collects the debug log instead of dropping it. */
   captureLog?: string[];
@@ -177,6 +181,10 @@ export async function createTestWorkspace(opts: TestWorkspaceOptions = {}): Prom
   const kernel = await createKernel({
     workspaceDir: root,
     dirsRoot,
+    verbose: opts.verbose === true,
+    ...(opts.captureEvents
+      ? { onEvent: (type: string, payload: unknown) => opts.captureEvents!.push({ type, payload }) }
+      : {}),
     ...(opts.profile ? { profileOverride: opts.profile } : {}),
     fakeModel,
     egressTransport: transport,

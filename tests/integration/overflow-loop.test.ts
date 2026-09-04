@@ -40,7 +40,7 @@ function alwaysOverflows(): { model: FakeModel; calls: () => number } {
 
 async function runUntilItStops(
   maxModelRequests: number,
-): Promise<{ state: string; requests: number; code?: string }> {
+): Promise<{ state: string; requests: number; code?: string; message?: string }> {
   const ws = await createTestWorkspace({ files: { 'src/a.ts': 'export const a = 1;\n' } });
   try {
     const { model, calls } = alwaysOverflows();
@@ -57,7 +57,7 @@ async function runUntilItStops(
     return {
       state: turn.state,
       requests: calls(),
-      ...(turn.error ? { code: turn.error.code } : {}),
+      ...(turn.error ? { code: turn.error.code, message: turn.error.message } : {}),
     };
   } finally {
     await ws.cleanup();
@@ -95,6 +95,19 @@ describe('a provider that always reports overflow cannot spin forever', () => {
     // big — the latter reads as "try again", which would repeat the cost.
     const outcome = await runUntilItStops(4);
     assert.equal(outcome.code, 'LOOP_BUDGET_EXCEEDED', `turn failed with ${outcome.code}`);
+  });
+
+  test('the failure says what the limit was and how to carry on', async () => {
+    // `Turn stopped: model request limit reached.` was the whole message. It
+    // does not say what the limit was, that it is per turn, that the work is
+    // kept, or that another turn resets it — so the one thing everybody meets
+    // read as the tool breaking.
+    const outcome = await runUntilItStops(4);
+    assert.match(outcome.message ?? '', /4 model requests per turn/);
+    assert.match(outcome.message ?? '', /Everything done so far is kept/);
+    assert.match(outcome.message ?? '', /continue/);
+    assert.match(outcome.message ?? '', /\/loop start/);
+    assert.match(outcome.message ?? '', /max_model_requests/);
   });
 });
 

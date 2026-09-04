@@ -20,6 +20,13 @@
  * security-relevant ones are marked `strict`.
  */
 
+import { isReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from '../model/ir.ts';
+import {
+  APPROVAL_MODES,
+  DEFAULT_APPROVAL_MODE,
+  isApprovalMode,
+  type ApprovalMode,
+} from '../policy/approval-mode.ts';
 import type { TomlTable, TomlValue } from '../util/toml.ts';
 
 export interface ProjectConfig {
@@ -64,6 +71,10 @@ export interface ModelProfileConfig {
   autonomy?: 'short' | 'normal' | 'long';
   toolReliability?: 'low' | 'medium' | 'high';
   family?: string;
+  /** Default thinking level for this profile. Only used when reasoning is on. */
+  effort?: ReasoningEffort;
+  /** The strongest level this class of model accepts; bounds `[model] effort`. */
+  effortCeiling?: ReasoningEffort;
   inputPerMTok?: number;
   outputPerMTok?: number;
   cachedInputPerMTok?: number;
@@ -71,6 +82,16 @@ export interface ModelProfileConfig {
 
 export interface ModelConfig {
   default?: string;
+  /**
+   * How hard the model should think, for every alias in the session.
+   *
+   * One knob rather than a per-alias table, because the question people actually
+   * have is "think harder / spend less" and it applies to whatever model is
+   * answering. Each profile keeps its own default for when this is unset, and
+   * each profile's `effortCeiling` still applies — so this raises and lowers a
+   * session's thinking without being able to send a model a level it rejects.
+   */
+  effort?: ReasoningEffort;
   /** alias → { provider, modelId, profile } */
   aliases?: Record<string, { provider: string; model: string; profile?: string }>;
   /** provider id → endpoint. User config only; see ProviderEndpointConfig. */
@@ -81,6 +102,18 @@ export interface ModelConfig {
 
 export interface SecurityConfig {
   permissionProfile?: string;
+  /**
+   * Which mode the session *starts* in. Shift-Tab changes it from there.
+   *
+   * User layer only, and merged so that the stricter side wins: unlike
+   * `permissionProfile` — where a broader name cannot actually widen anything,
+   * because the engine intersects the rule sets — this one really does move a
+   * boundary. It decides whether a human is asked at all, and the policy engine
+   * has no say in that. So it is the one security key in this file that a
+   * repository must not be able to set, and §12's four requirements apply in
+   * full: see `WEAKENING_KEYS`.
+   */
+  approvalMode?: ApprovalMode;
   secretRedaction?: boolean;
   telemetryContent?: boolean;
   traceUpload?: boolean;
@@ -242,17 +275,31 @@ export function defaultConfig(): KernelConfig {
     model: { default: 'fake' },
     security: {
       permissionProfile: 'workspace-dev',
+      // Deliberately absent, not `manual`.
+      //
+      // `mergeSecurity` keeps the stricter of two modes, and a default written
+      // here is one of the two sides — so a literal `manual` would beat the
+      // user's own `auto` and the setting would silently never work. Left
+      // undefined, the merge has nothing to compare against and the user's
+      // choice survives, while a *second* layer still cannot weaken the first.
+      // `DEFAULT_APPROVAL_MODE` is applied where it is read, in `createKernel`.
+      //
+      // This is the same shape as `[egress] allow_benchmark_range`, which is
+      // absent here for the same reason and would be unsettable if it were not.
       secretRedaction: true,
       telemetryContent: false,
       traceUpload: false,
       extraSecretPaths: [],
     },
+    // The same four numbers as `DEFAULT_LOOP_BUDGET`, which is what a session
+    // without `[loop]` config actually runs under (ADR-0030).
+    // `tests/unit/config-weakening.test.ts` fails if the two copies drift.
     loop: {
-      maxSteps: 16,
-      maxToolCalls: 64,
-      maxModelRequests: 16,
+      maxSteps: 40,
+      maxToolCalls: 160,
+      maxModelRequests: 40,
       maxRepeatedFailures: 3,
-      maxWallTimeMs: 10 * 60_000,
+      maxWallTimeMs: 20 * 60_000,
       maxDelegationDepth: 1,
       delegationGuidance: true,
     },
@@ -394,10 +441,20 @@ function mergeContainer(
 }
 
 function mergeSecurity(lower: SecurityConfig, higher: SecurityConfig): SecurityConfig {
+  // The mode is the opposite case to the profile name below, and so is merged
+  // the opposite way: the stricter of the two wins, which makes `manual` sticky
+  // in the same sense `strictBoolean` makes `false` sticky. `loadConfig` has
+  // already dropped a project-declared mode, so in a working install this only
+  // ever sees one side set — but the merge must be safe on its own, because "the
+  // layer that could have set this was filtered upstream" is an argument that
+  // stops being true the moment a third layer is added.
+  const approvalMode = stricterApprovalMode(lower.approvalMode, higher.approvalMode);
+
   return {
     // A profile name is an override, but the policy engine still intersects the
     // resulting rule sets, so a "wider" name cannot actually widen anything.
     permissionProfile: higher.permissionProfile ?? lower.permissionProfile,
+    ...(approvalMode !== undefined ? { approvalMode } : {}),
     secretRedaction: strictBoolean(lower.secretRedaction, higher.secretRedaction, true),
     telemetryContent: strictBoolean(lower.telemetryContent, higher.telemetryContent, false),
     traceUpload: strictBoolean(lower.traceUpload, higher.traceUpload, false),
@@ -426,6 +483,25 @@ function mergeLoop(lower: LoopConfig, higher: LoopConfig): LoopConfig {
  * For a boolean where one value is the safe one, the safe value is sticky: once
  * any layer says "off", no later layer can say "on".
  */
+/**
+ * The mode that asks more.
+ *
+ * `APPROVAL_MODES` is ordered by increasing autonomy, so "stricter" is "earlier"
+ * — and `plan`, which is stricter than the default, wins over everything. Absent
+ * on both sides means the default.
+ */
+function stricterApprovalMode(
+  lower: ApprovalMode | undefined,
+  higher: ApprovalMode | undefined,
+): ApprovalMode | undefined {
+  // Absent stays absent, so that "nobody chose" and "somebody chose manual" are
+  // different states. Collapsing them here is what made the user's own setting
+  // unreachable: `defaultConfig` became a layer that always won.
+  if (lower === undefined) return higher;
+  if (higher === undefined) return lower;
+  return APPROVAL_MODES.indexOf(lower) <= APPROVAL_MODES.indexOf(higher) ? lower : higher;
+}
+
 function strictBoolean(lower: boolean | undefined, higher: boolean | undefined, safeValue: boolean): boolean {
   const values = [lower, higher].filter((v): v is boolean => v !== undefined);
   if (values.length === 0) return safeValue;
@@ -581,8 +657,16 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
         warnings.push(`${source}: model profile "${name}" needs a positive context_window`);
         continue;
       }
+      const profileEffort = parseEffort(entry.effort, `${source}: model profile "${name}" effort`, warnings);
+      const profileCeiling = parseEffort(
+        entry.effort_ceiling,
+        `${source}: model profile "${name}" effort_ceiling`,
+        warnings,
+      );
       profiles[name] = {
         contextWindow,
+        ...(profileEffort ? { effort: profileEffort } : {}),
+        ...(profileCeiling ? { effortCeiling: profileCeiling } : {}),
         ...(num(entry.max_output_tokens) !== undefined
           ? { maxOutputTokens: num(entry.max_output_tokens)! }
           : {}),
@@ -608,8 +692,11 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
       };
     }
 
+    const sessionEffort = parseEffort(model.effort, `${source}: [model] effort`, warnings);
+
     out.model = {
       ...(str(model.default) !== undefined ? { default: str(model.default)! } : {}),
+      ...(sessionEffort ? { effort: sessionEffort } : {}),
       ...(Object.keys(aliases).length > 0 ? { aliases } : {}),
       ...(Object.keys(providers).length > 0 ? { providers } : {}),
       ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
@@ -618,10 +705,27 @@ export function configFromToml(table: TomlTable, source: string): Partial<Kernel
 
   const security = tableAt(table, 'security');
   if (security) {
+    // Validated rather than cast, because the failure mode is the expensive one:
+    // an unrecognised mode name silently falling back to the default is fine, and
+    // an unrecognised name silently falling back to something *weaker* would not
+    // be. Neither happens if the value is checked where it is read.
+    let approvalMode: ApprovalMode | undefined;
+    if (security.approval_mode !== undefined) {
+      if (isApprovalMode(security.approval_mode)) {
+        approvalMode = security.approval_mode;
+      } else {
+        warnings.push(
+          `${source}: [security] approval_mode is "${String(security.approval_mode)}"; ` +
+            `expected one of ${APPROVAL_MODES.join(', ')}. Using ${DEFAULT_APPROVAL_MODE}.`,
+        );
+      }
+    }
+
     out.security = {
       ...(str(security.permission_profile) !== undefined
         ? { permissionProfile: str(security.permission_profile)! }
         : {}),
+      ...(approvalMode ? { approvalMode } : {}),
       ...(bool(security.secret_redaction) !== undefined
         ? { secretRedaction: bool(security.secret_redaction)! }
         : {}),
@@ -823,6 +927,26 @@ function num(v: TomlValue | undefined): number | undefined {
 
 function bool(v: TomlValue | undefined): boolean | undefined {
   return typeof v === 'boolean' ? v : undefined;
+}
+
+/**
+ * An effort level, or a warning naming what was written instead.
+ *
+ * Unlike `autonomy` and `tool_reliability` above — which are cast and take
+ * effect unvalidated — a bad value here reaches the provider and returns a 400
+ * mid-turn, so it is worth catching in the file that produced it. The warning
+ * lists the levels rather than saying "invalid", because the set is short and
+ * the usual mistake is a plausible synonym.
+ */
+function parseEffort(
+  v: TomlValue | undefined,
+  where: string,
+  warnings: string[],
+): ReasoningEffort | undefined {
+  if (v === undefined) return undefined;
+  if (isReasoningEffort(v)) return v;
+  warnings.push(`${where} is "${String(v)}"; expected one of ${REASONING_EFFORTS.join(', ')}`);
+  return undefined;
 }
 
 function headerTable(v: TomlValue | undefined): Record<string, string> | undefined {

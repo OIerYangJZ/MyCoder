@@ -238,6 +238,137 @@ describe('--json is a versioned shape', { timeout: 120_000 }, () => {
   });
 });
 
+describe('a resumed session describes itself, not the record', { timeout: 120_000 }, () => {
+  test('-c keeps the model the previous run selected, and says so once', async () => {
+    const f = await cliRoot();
+    try {
+      await seedConfig(f.root, '[model]\ndefault = "fake"\n');
+
+      const first = await runCli({
+        args: ['--non-interactive'],
+        stdin: '/model use strongest\n',
+        root: f.root,
+      });
+      assert.match(first.stdout, /Model set to strongest/);
+
+      const second = await runCli({ args: ['--non-interactive', '-c'], root: f.root });
+      assert.equal(second.code, EXIT.OK);
+
+      // Both surfaces, because they used to disagree: the resume summary printed
+      // the recorded alias and the banner printed the config default, three lines
+      // apart, and the session ran the one in the banner.
+      assert.match(second.stderr, /Resumed session/);
+      assert.match(second.stderr, /model\s+: strongest/);
+      assert.match(second.stderr, /model\s+strongest/);
+    } finally {
+      await f.cleanup();
+    }
+  });
+});
+
+describe('resuming without remembering an id (ADR-0029)', { timeout: 120_000 }, () => {
+  test("-r with no id lists this workspace's sessions by what they were asked", async () => {
+    const f = await cliRoot();
+    try {
+      await seedConfig(f.root, '[model]\ndefault = "fake"\n');
+      await runCli({ args: ['--non-interactive', 'fix the flaky ssh test'], root: f.root });
+
+      // Not a terminal, so there is nobody to prompt: the list is still the
+      // answer, and nothing is resumed.
+      const listed = await runCli({ args: ['--non-interactive', '-r'], root: f.root });
+      assert.equal(listed.code, EXIT.INCOMPLETE);
+      assert.match(listed.stderr, /fix the flaky ssh test/);
+      assert.match(listed.stderr, /Resume one with: mycoder -r ses_/);
+      assert.equal(/Resumed session/.test(listed.stderr), false);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test('-r --json emits the list as records', async () => {
+    const f = await cliRoot();
+    try {
+      await seedConfig(f.root, '[model]\ndefault = "fake"\n');
+      await runCli({ args: ['--non-interactive', 'write the release notes'], root: f.root });
+
+      const listed = await runCli({ args: ['--non-interactive', '-r', '--json'], root: f.root });
+      assert.equal(listed.code, EXIT.OK);
+      const record = JSON.parse(listed.stdout.trim().split('\n')[0]!) as {
+        schema: string;
+        type: string;
+        sessions: Array<{ sessionId: string; title?: string }>;
+      };
+      assert.equal(record.schema, 'mycoder.v1');
+      assert.equal(record.type, 'sessions');
+      assert.equal(record.sessions[0]?.title, 'write the release notes');
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test('a workspace with nothing to resume says so and starts nothing', async () => {
+    const f = await cliRoot();
+    try {
+      await seedConfig(f.root, '[model]\ndefault = "fake"\n');
+      const listed = await runCli({ args: ['--non-interactive', '-r'], root: f.root });
+      assert.equal(listed.code, EXIT.INCOMPLETE);
+      assert.match(listed.stderr, /No session in .* to resume/);
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test('-c continues this workspace, not the newest session on the machine', async () => {
+    // It used to take the machine's most recent session whatever directory it
+    // belonged to, and die on the identity check with INTERNAL_ERROR (exit 6) —
+    // in a directory that had a perfectly good session of its own.
+    const f = await cliRoot();
+    try {
+      await seedConfig(f.root, '[model]\ndefault = "fake"\n');
+      const other = path.join(f.root, 'other-workspace');
+      await mkdir(other, { recursive: true });
+
+      await runCli({ args: ['--non-interactive', 'work in the first workspace'], root: f.root });
+      await runCli({ args: ['--non-interactive', 'work in the second'], root: f.root, cwd: other });
+
+      const continued = await runCli({ args: ['--non-interactive', '-c'], root: f.root });
+      assert.equal(continued.code, EXIT.OK);
+      assert.match(continued.stderr, /Resumed session/);
+      assert.equal(
+        /INTERNAL_ERROR/.test(continued.stderr),
+        false,
+        'resuming across workspaces was reported as a kernel defect',
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  test('an id from another workspace is a usage error, not a kernel defect', async () => {
+    const f = await cliRoot();
+    try {
+      await seedConfig(f.root, '[model]\ndefault = "fake"\n');
+      const other = path.join(f.root, 'other-workspace');
+      await mkdir(other, { recursive: true });
+
+      const created = await runCli({ args: ['--non-interactive', 'elsewhere'], root: f.root, cwd: other });
+      const id = /session ([a-z0-9_]+)/.exec(created.stderr)?.[1] ?? '';
+      const listed = await runCli({ args: ['--non-interactive', '-r', '--json'], root: f.root, cwd: other });
+      const record = JSON.parse(listed.stdout.trim().split('\n')[0]!) as {
+        sessions: Array<{ sessionId: string }>;
+      };
+      const elsewhereId = record.sessions[0]?.sessionId ?? id;
+
+      const refused = await runCli({ args: ['--non-interactive', '-r', elsewhereId], root: f.root });
+      assert.equal(refused.code, EXIT.USAGE);
+      assert.match(refused.stderr, /SESSION_NOT_RESUMABLE/);
+      assert.match(refused.stderr, /mycoder -r/);
+    } finally {
+      await f.cleanup();
+    }
+  });
+});
+
 describe('flag stability is declared', () => {
   test('every flag the parser accepts is classified as contract or experimental', () => {
     // A flag in neither list is a flag whose stability nobody decided — the

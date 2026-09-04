@@ -18,6 +18,7 @@ import {
   type StepId,
   type TurnId,
 } from '../util/ids.ts';
+import { PROJECT_DIR } from '../app.ts';
 import { kernelError, toKernelError, type KernelError } from '../util/errors.ts';
 import type { Logger } from '../util/logger.ts';
 import type { Clock } from '../util/clock.ts';
@@ -28,6 +29,7 @@ import {
   type ModelRequest,
   type ModelRuntime,
   type ModelTurn,
+  type ReasoningEffort,
 } from '../model/ir.ts';
 import type { ModelRegistry, ResolvedModelProfile } from '../model/profiles.ts';
 import { addUsage, emptyUsage, estimateCost, resolveUsage, type UsageReport } from '../model/usage.ts';
@@ -41,6 +43,7 @@ import { ToolRuntime, syntheticInterruptedResult } from '../tools/runtime.ts';
 import type { ToolResult } from '../tools/contract.ts';
 import type { ExecutionBackend } from '../execution/backend.ts';
 import type { SessionStore, SessionMetadata } from './store.ts';
+import { sessionTitle } from './resume.ts';
 import type {
   BudgetExceededPayload,
   ModelRequestPayload,
@@ -57,10 +60,12 @@ import {
   type SkillActivationSource,
 } from '../extensions/skills.ts';
 import type { PolicyLayer } from '../policy/policy-engine.ts';
+import { ApprovalModeState, weakensApproval, type ApprovalMode } from '../policy/approval-mode.ts';
 import type { DelegationRecord } from './delegation.ts';
 import type { TurnOrigin } from './turn.ts';
 import {
   DEFAULT_LOOP_BUDGET,
+  describeBudgetLimit,
   FailureTracker,
   freezeStepContext,
   LoopBudgetTracker,
@@ -85,7 +90,35 @@ export interface SessionOptions {
   kernelVersion: string;
   /** The alias currently selected. `/model use` changes this between steps. */
   modelAlias: string;
+  /**
+   * `[model] effort`, when configuration set one.
+   *
+   * An override rather than the effective level: the profile's own default and
+   * its ceiling still apply, and `ModelRegistry.effortFor` is the only place
+   * those three meet. Absent means every profile runs at its own default.
+   */
+  effortOverride?: ReasoningEffort;
   permissionProfile: string;
+  /**
+   * The approval mode, shared with the gate that reads it (spec §11.4).
+   *
+   * Passed in rather than constructed here because the approval prompter is built
+   * before this session is, and both have to see the same value. Absent means a
+   * session that is always in `manual` — which is what a delegated child gets:
+   * see the note on `planModeLayer`.
+   */
+  approvalModeState?: ApprovalModeState;
+  /**
+   * The read-only layer to intersect while in plan mode.
+   *
+   * Supplied by the kernel because building a permission profile needs the
+   * workspace root, the agent tmp directory and the declared generated paths —
+   * all of which the kernel already resolved and the session has no business
+   * re-deriving. Absent means plan mode has no layer to push, so it narrows
+   * nothing: correct for a delegated child, whose capabilities were already
+   * intersected by `DelegationService` before it existed.
+   */
+  planModeLayer?: PolicyLayer;
   /** Session-level ceiling; `/loop` may narrow but never widen it. */
   loopBudgetCeiling?: LoopBudget;
   /** Tool names the active agent/skill permits. */
@@ -171,10 +204,22 @@ export class Session {
 
   private modelAlias: string;
   private pendingModelAlias: string | undefined;
+  private effortOverride: ReasoningEffort | undefined;
+  private readonly approvalModeState: ApprovalModeState;
   private loopCeiling: LoopBudget;
   private turnBudgetOverride: Partial<LoopBudget> | undefined;
   private currentTurn: Turn | undefined;
   private abortController: AbortController | undefined;
+  /**
+   * The first thing the user asked, kept as this session's title (ADR-0029).
+   *
+   * What `-r` with no id shows, because an id identifies nothing to a human. The
+   * first user turn rather than the latest: it is what the session *is about*,
+   * and a title that changed under you every turn would be no easier to
+   * recognise than the id. Redacted on the way to disk like everything else the
+   * store writes.
+   */
+  private firstUserInput: string | undefined;
   /** One entry per finished turn; the live half of the replay gate (§4.2). */
   private readonly turnOutcomes: TurnOutcomeRecord[] = [];
   /**
@@ -229,6 +274,8 @@ export class Session {
     this.clock = opts.clock;
     this.logger = opts.logger;
     this.modelAlias = opts.modelAlias;
+    this.effortOverride = opts.effortOverride;
+    this.approvalModeState = opts.approvalModeState ?? new ApprovalModeState();
     this.loopCeiling = opts.loopBudgetCeiling ?? DEFAULT_LOOP_BUDGET;
     this.effectiveTools = opts.allowedTools;
 
@@ -268,6 +315,77 @@ export class Session {
 
   get activeModelAlias(): string {
     return this.pendingModelAlias ?? this.modelAlias;
+  }
+
+  get approvalMode(): ApprovalMode {
+    return this.approvalModeState.mode;
+  }
+
+  /**
+   * Change the approval mode, and re-derive what the policy engine enforces.
+   *
+   * Applied immediately rather than staged like `selectModel`, and the asymmetry
+   * is deliberate. A model change mid-step would mean a turn whose steps ran on
+   * different models, which makes the transcript a lie. A mode change is about
+   * the *next* question anybody is asked, so applying it at once is the only
+   * reading that matches what the user just pressed — a Shift-Tab into plan mode
+   * that let one more write through would be the surprising version.
+   *
+   * Returns the disclosure when the new mode is weaker than the default, so the
+   * caller can print it. §12 requires the disclosure at startup; a mode that can
+   * be switched at runtime owes it on every switch as well, because "it was in
+   * the banner an hour ago" is not disclosure.
+   */
+  setApprovalMode(mode: ApprovalMode): { changed: boolean; previous: ApprovalMode; disclosure?: string } {
+    const result = this.approvalModeState.set(mode);
+    if (result.changed) this.recomputeNarrowing();
+    return {
+      ...result,
+      // Only what the summary does not already say. The first version restated
+      // the summary and then listed `stillAsks` again, which the caller had
+      // already printed — three copies of the same sentence, because both sides
+      // were composing the same two pieces. The summary carries the capability
+      // list (it is generated from the table); this carries the ceiling.
+      ...(weakensApproval(mode)
+        ? {
+            disclosure:
+              'Nothing a policy layer denied becomes permitted by this: privilege escalation, ' +
+              'protected paths and host-environment reads stay refused.',
+          }
+        : {}),
+    };
+  }
+
+  /**
+   * The effort override, and the level each registered alias resolves to.
+   *
+   * Both, because the override alone does not answer the question `/effort` is
+   * asked: an override of `max` still reaches Haiku as `high`, and a screen that
+   * printed only the override would be telling the user something that is not
+   * true of the model actually answering.
+   */
+  effortState(): {
+    override: ReasoningEffort | undefined;
+    resolved: Array<{ alias: string; effort: ReasoningEffort | 'provider default' }>;
+  } {
+    const resolved = this.opts.modelRegistry.listAliases().map((entry) => {
+      const model = this.opts.modelRegistry.resolve(entry.alias);
+      const level = model ? Registry.effortFor(model.profile, this.effortOverride) : undefined;
+      return { alias: entry.alias, effort: level ?? ('provider default' as const) };
+    });
+    return { override: this.effortOverride, resolved };
+  }
+
+  /**
+   * Change how hard the model thinks.
+   *
+   * Applies from the next request, not to the one in flight — the same rule as
+   * `selectModel`, for the same reason: a request already on the wire has its
+   * effort baked into the body, and pretending otherwise would make `/effort`
+   * report a level the current answer was not produced at.
+   */
+  setEffortOverride(effort: ReasoningEffort | undefined): void {
+    this.effortOverride = effort;
   }
 
   /**
@@ -314,6 +432,35 @@ export class Session {
 
   get budgetCeiling(): LoopBudget {
     return this.loopCeiling;
+  }
+
+  /**
+   * The budget the *next* turn will actually run under.
+   *
+   * The ceiling narrowed by `/loop` and by any active skill — computed through
+   * the same `applyCeiling` the loop uses, so the two cannot disagree. `/status`
+   * read `budgetCeiling` and reported 16 steps to a session that `/loop start
+   * --max-steps 2` had narrowed to 2, which is the number the turn then stopped
+   * at. A budget nobody can see is a budget that looks like a bug when it fires.
+   */
+  get effectiveBudget(): LoopBudget {
+    const override = this.budgetOverride();
+    if (!override) return this.loopCeiling;
+    const tracker = new LoopBudgetTracker(this.loopCeiling, () => this.clock.now());
+    tracker.applyCeiling(override, this.loopCeiling);
+    return tracker.current;
+  }
+
+  /** What narrowed `effectiveBudget` below the ceiling, for the surfaces that say so. */
+  get budgetNarrowedBy(): string | undefined {
+    const skills = [...this.skillEntries, ...this.pendingSkillEntries].filter(
+      (e) => typeof e.activated.maxSteps === 'number',
+    );
+    const sources = [
+      ...(this.turnBudgetOverride ? ['/loop start'] : []),
+      ...skills.map((e) => `skill "${e.activated.skill.name}"`),
+    ];
+    return sources.length === 0 ? undefined : sources.join(' and ');
   }
 
   get usageSnapshot(): typeof this.usage {
@@ -510,6 +657,8 @@ export class Session {
   // --- the agent loop -----------------------------------------------------
 
   async runTurn(input: string, origin: TurnOrigin = 'user'): Promise<TurnOutcome> {
+    if (origin === 'user') this.firstUserInput ??= sessionTitle(input);
+
     const turn = new Turn({
       turnId: newTurnId(this.clock.now()),
       input,
@@ -627,11 +776,26 @@ export class Session {
           } satisfies BudgetExceededPayload,
           turn.turnId,
         );
+        // Named, bounded and recoverable, in that order. `Turn stopped: step
+        // limit reached.` was all of it: it did not say what the limit was, that
+        // it is per *turn*, that every edit already made is still there, or that
+        // saying "continue" buys a fresh budget. Three of those four are the
+        // difference between "the tool broke" and "the tool stopped where I told
+        // it to". The delegation refusal has named its remedy since alpha.4; this
+        // one, which far more people meet, named nothing.
+        const limit = describeBudgetLimit(violation.budget, violation.limit);
         turn.fail(
-          kernelError('LOOP_BUDGET_EXCEEDED', `Turn stopped: ${violation.message}.`, {
-            blame: 'kernel',
-            safeDetails: { budget: violation.budget, limit: violation.limit },
-          }),
+          kernelError(
+            'LOOP_BUDGET_EXCEEDED',
+            `Turn stopped: ${violation.message} — ${limit.value} per turn. ` +
+              'Everything done so far is kept. Say "continue" to carry on with a fresh budget, ' +
+              `raise it for this session with /loop start, or set [loop] ${limit.configKey} in ` +
+              `${PROJECT_DIR}/config.toml.`,
+            {
+              blame: 'kernel',
+              safeDetails: { budget: violation.budget, limit: violation.limit },
+            },
+          ),
           this.clock.now(),
         );
         return;
@@ -653,6 +817,25 @@ export class Session {
         const narrowed = this.budgetOverride();
         if (narrowed) budget.applyCeiling(narrowed, this.loopCeiling);
       }
+
+      // What the model is spending, before it spends the next one.
+      //
+      // The budget was enforced against a model that had never been told it
+      // existed: it could not pace itself, could not decide to summarise instead
+      // of reading one more file, and met the ceiling as a cut-off mid-sentence.
+      // The user then saw a turn that stopped for no reason it had given. Steps
+      // and tool calls only — the wall clock would put a moving number in the
+      // prompt and make an identical turn non-deterministic (§31).
+      const inForce = budget.current;
+      this.context.addFact({
+        id: 'turn-budget',
+        priority: 'normal',
+        text:
+          `Turn budget: this is step ${budget.steps + 1} of ${inForce.maxSteps}, and ` +
+          `${budget.toolCalls} of ${inForce.maxToolCalls} tool calls are spent. When either runs out ` +
+          'the turn stops where it stands. Before that happens, say what you found and what is left — ' +
+          'a stopped turn with no report is the one outcome the user cannot use.',
+      });
 
       const model = this.resolveModel();
       await this.maybeCompact(turn, model);
@@ -796,6 +979,10 @@ export class Session {
             toolCallId: result.toolCallId,
             isError: result.isError,
             contentBytes: Buffer.byteLength(result.content, 'utf8'),
+            // Absent unless the host asked for it (ADR-0031).
+            ...(outcome.previews.get(result.toolCallId) === undefined
+              ? {}
+              : { preview: outcome.previews.get(result.toolCallId) }),
           },
           turn.turnId,
           step.stepId,
@@ -887,6 +1074,12 @@ export class Session {
     if (step.model.profile.maxOutputTokens !== undefined) {
       request.maxOutputTokens = step.model.profile.maxOutputTokens;
     }
+    // Resolved per request rather than cached on the session, because the profile
+    // is part of the answer and `/model use` can change the profile between
+    // steps. Caching it is how a session ends up sending Haiku the level it
+    // resolved for Opus.
+    const effort = Registry.effortFor(step.model.profile, this.effortOverride);
+    if (effort !== undefined) request.effort = effort;
     return request;
   }
 
@@ -1130,10 +1323,25 @@ export class Session {
       this.skillEntries = [...this.skillEntries, ...this.pendingSkillEntries];
       this.pendingSkillEntries = [];
     }
-    this.recomputeSkillScope();
+    this.recomputeNarrowing();
   }
 
-  private recomputeSkillScope(): void {
+  /**
+   * Recompute the narrowing layers from the baseline: skills, plus plan mode.
+   *
+   * Plan mode belongs here and not in the approval gate, and the distinction is
+   * the point. The gate answers questions; plan mode has to stop them being
+   * asked. A read-only layer intersected into the engine makes mutation `deny`
+   * rather than `ask`, so nothing reaches an approval and there is nothing for
+   * any mode to answer — which is what "the model cannot" means in this kernel,
+   * as opposed to "the model was told no".
+   *
+   * Folded in on the same from-scratch recompute as the skills for the same
+   * reason: an incremental version would have to get every interleaving right —
+   * leaving plan mode while a turn-scoped skill is active, activating a skill
+   * while in plan mode — and those are exactly the paths nobody exercises.
+   */
+  private recomputeNarrowing(): void {
     const baseline = this.opts.allowedTools ?? this.opts.toolRegistry.names();
     let tools = [...baseline];
     const layers: PolicyLayer[] = [];
@@ -1142,6 +1350,10 @@ export class Session {
       const permitted = new Set(entry.activated.allowedTools);
       tools = tools.filter((t) => permitted.has(t));
       if (entry.activated.layer) layers.push(entry.activated.layer);
+    }
+
+    if (this.approvalModeState.mode === 'plan' && this.opts.planModeLayer) {
+      layers.push(this.opts.planModeLayer);
     }
 
     this.effectiveTools = tools;
@@ -1176,7 +1388,7 @@ export class Session {
     const expiring = this.skillEntries.filter((e) => e.scope === 'turn');
     if (expiring.length === 0) return;
     this.skillEntries = this.skillEntries.filter((e) => e.scope !== 'turn');
-    this.recomputeSkillScope();
+    this.recomputeNarrowing();
     for (const entry of expiring) {
       await this.append('skill.deactivated', {
         skill: entry.activated.skill.name,
@@ -1256,11 +1468,35 @@ export class Session {
     void model;
   }
 
+  /**
+   * Fields that go to the host and never to disk.
+   *
+   * `preview` is a bounded look at tool output (ADR-0031). It exists so a person
+   * watching can see what a tool returned; nothing downstream of the log needs it,
+   * and a persisted copy is a copy of tool output sitting on disk forever. Emitting
+   * it in-process and stripping it before `store.append` gives the terminal the
+   * bytes and leaves the record exactly as it was before the feature existed.
+   */
+  private static readonly EPHEMERAL_FIELDS = ['preview'] as const;
+
+  private static forTheRecord(payload: unknown): unknown {
+    if (payload === null || typeof payload !== 'object') return payload;
+    const copy = { ...(payload as Record<string, unknown>) };
+    let stripped = false;
+    for (const field of Session.EPHEMERAL_FIELDS) {
+      if (field in copy) {
+        delete copy[field];
+        stripped = true;
+      }
+    }
+    return stripped ? copy : payload;
+  }
+
   private async append(type: string, payload: unknown, turnId?: TurnId, stepId?: StepId): Promise<void> {
     this.opts.onEvent?.(type, payload);
     await this.opts.store.append(this.sessionId, {
       type: type as Parameters<SessionStore['append']>[1]['type'],
-      payload,
+      payload: Session.forTheRecord(payload),
       ...(turnId ? { turnId } : {}),
       ...(stepId ? { stepId } : {}),
       // Every event a child session writes is tagged, which is what lets replay
@@ -1273,9 +1509,15 @@ export class Session {
   async persistMetadata(): Promise<void> {
     const existing = await this.opts.store.loadMetadata(this.sessionId);
     if (!existing) return;
+    const title = existing.title ?? this.firstUserInput;
     const next: SessionMetadata = {
       ...existing,
+      ...(title !== undefined ? { title } : {}),
       model: this.modelAlias,
+      // The profile in force, not the one the session was created under: a
+      // resume can run under a different one (permissions are never restored
+      // from a log), and the record should say which one actually applied.
+      permissionProfile: this.opts.permissionProfile,
       // The delegated share travels with the total, so a resume can rebuild the
       // breakdown rather than guessing at it (D-003).
       usage: { ...this.usage, delegatedCostUsd: this.delegatedCostUsd },
