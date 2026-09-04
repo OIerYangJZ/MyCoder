@@ -106,6 +106,19 @@ export interface EditResult {
   plan: EditPlan;
   rollback: RollbackMetadata;
   bytesWritten: number;
+  /**
+   * The receipt for the file *as it now is*, so the next edit needs no re-read.
+   *
+   * `recordWrite` has always returned this and this engine always discarded it.
+   * The cost was one wasted step per consecutive edit to the same file, and it
+   * showed up the first time a real model was given real work: it edited, was
+   * refused with `STALE_FILE`, re-read, edited, was refused, re-read — the
+   * ledger was doing exactly what it should, and the model could not know the
+   * new receipt because nothing told it.
+   *
+   * Absent for a delete, which leaves no file to hold a receipt.
+   */
+  receiptId?: string;
 }
 
 export type EditPlanOutcome = { ok: true; plan: EditPlan } | { ok: false; error: KernelError };
@@ -436,6 +449,9 @@ export class ExactEditEngine implements EditEngine {
         }
       }
 
+      /** The post-write receipt, reported so the next edit needs no re-read. */
+      let receiptId: string | undefined;
+
       if (plan.kind === 'delete') {
         await executor.fs.remove(plan.path);
         // Every receipt for this path describes a file that no longer exists.
@@ -448,13 +464,15 @@ export class ExactEditEngine implements EditEngine {
         });
 
         const stat = await executor.fs.stat(plan.path);
-        ctx.freshness.recordWrite(
+        // Kept, not discarded. This is the receipt the next edit to this file
+        // needs, and it is already computed here.
+        receiptId = ctx.freshness.recordWrite(
           plan.path,
           plan.newContent,
           stat?.mtimeMs ?? ctx.now(),
           ctx.stepId,
           ctx.now(),
-        );
+        ).receiptId;
       }
 
       const rollback: RollbackMetadata = {
@@ -479,7 +497,7 @@ export class ExactEditEngine implements EditEngine {
       if (ctx.undoOf) rollback.undoOf = ctx.undoOf;
       if (ctx.delegationId) rollback.delegationId = ctx.delegationId;
 
-      return { plan, rollback, bytesWritten: buffer.length };
+      return { plan, rollback, bytesWritten: buffer.length, ...(receiptId ? { receiptId } : {}) };
     } finally {
       ctx.freshness.endWrite(plan.path, ctx.toolCallId);
     }

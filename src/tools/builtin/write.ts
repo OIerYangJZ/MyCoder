@@ -73,7 +73,9 @@ export function createWriteTool(opts: WriteToolOptions): ToolDefinition<WriteArg
       'Create a file, or replace an existing one with new contents in full. ' +
       'To overwrite, you must first Read the whole file and pass that receiptId: a partial read is not ' +
       'enough, because an overwrite also destroys the part you did not see. ' +
-      'Prefer Edit for changing part of a file — it is cheaper and its failures are safer.',
+      'Prefer Edit for changing part of a file — it is cheaper and its failures are safer. ' +
+      'A successful write returns a fresh receiptId for the file as it now is — pass that to your next ' +
+      'edit or overwrite of the same file instead of reading it again.',
     inputSchema: SCHEMA,
     disclosure: 'eager',
     readOnly: false,
@@ -170,7 +172,13 @@ export function createWriteTool(opts: WriteToolOptions): ToolDefinition<WriteArg
 
             return okResult(
               `${plan.kind === 'create' ? 'Created' : 'Rewrote'} ${plan.displayPath} — ` +
-                `${summarizeDiff(plan.stats)}.\n\n${diffPreview.text}`,
+                `${summarizeDiff(plan.stats)}.\n` +
+                // Same reason as `Edit`: this is the receipt a following edit or
+                // overwrite of this file needs, and the ledger has already
+                // issued it. Reporting it is the difference between one step and
+                // two.
+                (result.receiptId === undefined ? '' : `receiptId: ${result.receiptId}\n`) +
+                `\n${diffPreview.text}`,
               {
                 structured: {
                   path: plan.displayPath,

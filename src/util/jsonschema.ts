@@ -137,7 +137,19 @@ function walk(schema: JsonSchema, value: unknown, at: string, issues: Validation
       if (schema.additionalProperties === false) {
         for (const key of Object.keys(obj)) {
           if (!(key in schema.properties)) {
-            issues.push({ path: `${at}.${key}`, message: 'is not an allowed property' });
+            // The valid names, not just a refusal.
+            //
+            // "is not an allowed property" tells a model that it guessed wrong
+            // and nothing about what to guess next. Watching a real run, that
+            // cost a step every time: `Read({limit: 20})` was refused, the model
+            // reasoned "the parameter is limitLines" from the tool description it
+            // had been given earlier, and retried. The schema knows the answer at
+            // the moment it says no, so it may as well say it.
+            const allowed = Object.keys(schema.properties);
+            issues.push({
+              path: `${at}.${key}`,
+              message: `is not an allowed property (expected one of: ${allowed.join(', ')})`,
+            });
           }
         }
       }

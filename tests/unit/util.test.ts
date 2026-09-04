@@ -21,7 +21,7 @@ import {
   normalizeErrorMessage,
 } from '../../src/util/text.ts';
 import { parseToml } from '../../src/util/toml.ts';
-import { validate } from '../../src/util/jsonschema.ts';
+import { formatIssues, validate } from '../../src/util/jsonschema.ts';
 import { parseFrontmatter } from '../../src/util/frontmatter.ts';
 import { decodeSse, stringStream } from '../../src/util/sse.ts';
 import { unifiedDiff } from '../../src/edit/diff.ts';
@@ -328,5 +328,43 @@ describe('ssh ControlPath length (alpha.3 defect 2)', () => {
     // on Linux is not a surprise failure on a Mac.
     assert.equal(controlPathFits('x'.repeat(103)), true);
     assert.equal(controlPathFits('x'.repeat(104)), false);
+  });
+});
+
+describe('a rejected argument names the ones that would work (alpha.12)', () => {
+  /**
+   * "is not an allowed property" told a model it had guessed wrong and nothing
+   * about what to guess next. On a real run that cost a step each time:
+   * `Read({limit: 20})` was refused, the model reasoned its way to `limitLines`
+   * from the tool description, and retried. The schema knows the answer at the
+   * moment it says no.
+   */
+  const schema = {
+    type: 'object' as const,
+    properties: {
+      path: { type: 'string' as const },
+      offsetLine: { type: 'number' as const },
+      limitLines: { type: 'number' as const },
+    },
+    required: ['path'] as const,
+    additionalProperties: false as const,
+  };
+
+  test('the valid property names are in the message', () => {
+    const result = validate(schema, { path: 'a.ts', limit: 20 });
+    assert.equal(result.ok, false);
+    const text = formatIssues(result.issues);
+    assert.match(text, /limit is not an allowed property/);
+    assert.match(text, /expected one of: path, offsetLine, limitLines/);
+  });
+
+  test('a valid call is still accepted, so this did not tighten anything', () => {
+    assert.equal(validate(schema, { path: 'a.ts', limitLines: 20 }).ok, true);
+  });
+
+  test('a missing required property still says so on its own terms', () => {
+    const result = validate(schema, { limitLines: 20 });
+    assert.equal(result.ok, false);
+    assert.match(formatIssues(result.issues), /path is required/);
   });
 });

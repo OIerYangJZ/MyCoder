@@ -103,7 +103,12 @@ export function createEditTool(opts: EditToolOptions): ToolDefinition<EditArgs> 
       'For mode "replace" you must first Read the file and pass the receiptId from that result: ' +
       'edits against stale or unread content are rejected. oldString must match the file byte for ' +
       'byte (excluding the line-number prefixes Read adds) and must be unique unless replaceAll is set. ' +
-      "The file's existing line endings are preserved.",
+      "The file's existing line endings are preserved. " +
+      // Said here as well as in the result, because a model plans its next call
+      // from the description: knowing the receipt will come back is what stops
+      // it from budgeting a Read between every pair of edits.
+      'A successful edit returns a fresh receiptId for the file as it now is — pass that to your next ' +
+      'edit of the same file instead of reading it again.',
     inputSchema: SCHEMA,
     disclosure: 'eager',
     readOnly: false,
@@ -284,7 +289,14 @@ export function createEditTool(opts: EditToolOptions): ToolDefinition<EditArgs> 
 
             return okResult(
               `${plan.kind === 'create' ? 'Created' : 'Updated'} ${plan.displayPath} — ` +
-                `${summarizeDiff(plan.stats)}.\n\n${diffPreview.text}`,
+                `${summarizeDiff(plan.stats)}.\n` +
+                // The receipt for the file as it now is. Without this line the
+                // ledger's own refresh was invisible: a second edit to the same
+                // file was refused with `STALE_FILE`, and the only way to learn
+                // the new receipt was to Read the file again. A real model on
+                // real work spent a step on that after almost every edit.
+                (result.receiptId === undefined ? '' : `receiptId: ${result.receiptId}\n`) +
+                `\n${diffPreview.text}`,
               {
                 structured: {
                   path: plan.displayPath,
