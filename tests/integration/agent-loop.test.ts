@@ -33,7 +33,11 @@ const BUGGY = `export function add(a: number, b: number): number {
 }
 `;
 
-const TEST_CMD = ['sh', '-c', 'grep -q "return a + b;" src/math.ts'];
+const TEST_CMD = [
+  'node',
+  '-e',
+  'process.exit(require("fs").readFileSync("src/math.ts", "utf8").includes("return a + b;") ? 0 : 1)',
+];
 
 /**
  * The scripted trajectory.
@@ -648,7 +652,7 @@ describe('§28 loop control', () => {
       files: { 'a.ts': 'x\n' },
       script: Array.from({ length: 10 }, () => ({
         kind: 'tools' as const,
-        calls: [{ name: 'Shell', arguments: { argv: ['sh', '-c', 'sleep 0.2'] } }],
+        calls: [{ name: 'Shell', arguments: { argv: ['node', '-e', 'setTimeout(() => {}, 200)'] } }],
       })),
     });
     try {

@@ -138,7 +138,12 @@ command = ["node", "-e", "console.log(1)"]
 
       assert.equal(outcomes.length, 1);
       assert.equal(outcomes[0]!.ran, false);
-      assert.match(outcomes[0]!.blocked ?? '', /requires approval|not permitted/);
+      assert.match(outcomes[0]!.blocked ?? '', /needs an approval|not permitted/);
+      // And it names a remedy that exists. It used to say "enable it with
+      // /permissions", which is a read-only command — show, explain,
+      // reset-session — so the advice sent people to a screen that cannot
+      // enable anything. An allow rule in `permissions.toml` is the real answer.
+      assert.match(outcomes[0]!.blocked ?? '', /permissions\.toml/);
     } finally {
       await h.cleanup();
     }
@@ -167,7 +172,7 @@ command = ["sudo", "whoami"]
       const runner = h.runner(`
 [[hooks]]
 event = "SessionStart"
-command = ["sh", "-c", "echo \\"token=$GITHUB_TOKEN\\"; env | grep -c GITHUB_TOKEN || true"]
+command = ["node", "-e", "console.log('token=' + (process.env.GITHUB_TOKEN ?? '')); console.log(Object.keys(process.env).filter((k) => k === 'GITHUB_TOKEN').length)"]
 inject_output = true
 `);
 
@@ -190,7 +195,7 @@ inject_output = true
       const runner = h.runner(`
 [[hooks]]
 event = "TurnEnd"
-command = ["sh", "-c", "exit 3"]
+command = ["node", "-e", "process.exit(3)"]
 `);
 
       const outcomes = await runner.run({ event: 'TurnEnd', sessionId: 's' });

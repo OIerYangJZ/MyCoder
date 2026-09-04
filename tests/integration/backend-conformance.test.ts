@@ -255,7 +255,7 @@ const CASES: ConformanceCase[] = [
   {
     name: 'Shell non-zero exit is a result, not an infrastructure error',
     script: [
-      { kind: 'tools', calls: [{ name: 'Shell', arguments: { argv: ['sh', '-c', 'exit 7'] } }] },
+      { kind: 'tools', calls: [{ name: 'Shell', arguments: { argv: ['node', '-e', 'process.exit(7)'] } }] },
       { kind: 'final', text: 'done' },
     ],
     expect: (results) => {
@@ -306,7 +306,9 @@ const CASES: ConformanceCase[] = [
     script: [
       {
         kind: 'tools',
-        calls: [{ name: 'Shell', arguments: { argv: ['sh', '-c', 'echo out; echo err 1>&2'] } }],
+        calls: [
+          { name: 'Shell', arguments: { argv: ['node', '-e', 'console.log("out"); console.error("err")'] } },
+        ],
       },
       { kind: 'final', text: 'done' },
     ],
@@ -321,7 +323,12 @@ const CASES: ConformanceCase[] = [
     script: [
       {
         kind: 'tools',
-        calls: [{ name: 'Shell', arguments: { argv: ['sh', '-c', 'sleep 30'], timeoutMs: 3_000 } }],
+        calls: [
+          {
+            name: 'Shell',
+            arguments: { argv: ['node', '-e', 'setTimeout(() => {}, 30000)'], timeoutMs: 3_000 },
+          },
+        ],
       },
       { kind: 'final', text: 'done' },
     ],
@@ -346,7 +353,14 @@ const CASES: ConformanceCase[] = [
     script: [
       {
         kind: 'tools',
-        calls: [{ name: 'Shell', arguments: { argv: ['sh', '-c', 'echo "// touched" >> src/app.ts'] } }],
+        calls: [
+          {
+            name: 'Shell',
+            arguments: {
+              argv: ['node', '-e', 'require("fs").appendFileSync("src/app.ts", "// touched\\n")'],
+            },
+          },
+        ],
       },
       { kind: 'final', text: 'done' },
     ],

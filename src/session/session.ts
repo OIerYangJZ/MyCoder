@@ -978,6 +978,16 @@ export class Session {
           {
             toolCallId: result.toolCallId,
             isError: result.isError,
+            // *Why* it failed, not just that it did.
+            //
+            // The renderer has always read `errorCode` off this payload and the
+            // payload has never carried one, so both halves were dead: the
+            // result line could not mark a refusal, and the turn footer counted
+            // a refused call as one that ran. A short code, never content — the
+            // same thing `policy.decision` already records.
+            ...(outcome.errorCodes.get(result.toolCallId) === undefined
+              ? {}
+              : { errorCode: outcome.errorCodes.get(result.toolCallId) }),
             contentBytes: Buffer.byteLength(result.content, 'utf8'),
             // Absent unless the host asked for it (ADR-0031).
             ...(outcome.previews.get(result.toolCallId) === undefined

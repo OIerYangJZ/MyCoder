@@ -12,8 +12,8 @@ cited it as the home of two open claims. alpha.11 fixed that one list and added 
 check that would have caught it. This is the obvious next question: **which other
 lists are like that?**
 
-**113 enumerations** in `src/` and `scripts/`. **22 guarded, 15 declared unguarded,
-76 closed by design.** Two of the mirrors had already drifted, and one of those two
+**114 enumerations** in `src/` and `scripts/`. **22 guarded, 15 declared unguarded,
+77 closed by design.** Two of the mirrors had already drifted, and one of those two
 sits in a document that claims in its own words that it cannot.
 
 The five added after the original sweep came in with approval modes and thinking
@@ -269,6 +269,7 @@ checked.
 | `PRIVILEGE_ESCALATION`         | `src/policy/policy-engine.ts`           | CLOSED  | policy list                               |
 | `STRICTNESS`                   | `src/policy/profiles.ts`                | CLOSED  | vocabulary                                |
 | `DEV_EXECUTABLES`              | `src/policy/profiles.ts`                | CLOSED  | policy list                               |
+| `SHELL_EXECUTABLES`            | `src/policy/profiles.ts`                | CLOSED  | policy list                               |
 | `PACKAGE_MUTATION_ARGV`        | `src/policy/profiles.ts`                | CLOSED  | policy list                               |
 | `LOCKFILE_PATTERNS`            | `src/policy/profiles.ts`                | CLOSED  | policy list                               |
 | `SECRET_FILE_PATTERNS`         | `src/policy/protected-paths.ts`         | CLOSED  | deny list                                 |

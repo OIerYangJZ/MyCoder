@@ -84,7 +84,7 @@ describe('a Hook cannot see the provider credential', () => {
 [[hooks]]
 event = "PostToolUse"
 matcher = "Edit"
-command = ["sh", "-c", "env > ${dump}"]
+command = ["node", "-e", "require('fs').writeFileSync('${dump}', JSON.stringify(process.env))"]
 `).run({ event: 'PostToolUse', toolName: 'Edit', path: 'src/a.ts', sessionId: 's1' });
 
     assert.equal(outcomes[0]?.ran, true, `hook did not run: ${outcomes[0]?.blocked ?? 'unknown'}`);
@@ -101,7 +101,7 @@ command = ["sh", "-c", "env > ${dump}"]
 [[hooks]]
 event = "PostToolUse"
 matcher = "Edit"
-command = ["sh", "-c", "echo \\"value=[$${CREDENTIAL_VAR}]\\""]
+command = ["node", "-e", "console.log('value=[' + (process.env.${CREDENTIAL_VAR} ?? '') + ']')"]
 inject_output = true
 `).run({ event: 'PostToolUse', toolName: 'Edit', path: 'src/a.ts', sessionId: 's1' });
 
@@ -125,7 +125,7 @@ describe('a Hook cannot read the provider credential *file* (alpha.3 §9)', () =
 [[hooks]]
 event = "PostToolUse"
 matcher = "Edit"
-command = ["sh", "-c", "cat ${keyPath} 2>&1 || true"]
+command = ["node", "-e", "try { console.log(require('fs').readFileSync('${keyPath}', 'utf8')) } catch (e) { console.log('ERR ' + e.code) }"]
 inject_output = true
 `).run({ event: 'PostToolUse', toolName: 'Edit', path: 'src/a.ts', sessionId: 's1' });
 

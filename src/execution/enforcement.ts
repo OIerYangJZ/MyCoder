@@ -421,7 +421,20 @@ export function describeEnforcement(d: EnforcementDescriptor): EnforcementSummar
       'Network is available to commands in this session; only the declared hosts are policy-checked.',
     );
   } else {
-    parts.push('Network denial for subprocesses is best-effort: policy declines to help, the OS does not.');
+    // "policy declines to help" was the whole sentence until alpha.12, and it
+    // claims slightly more than is true: it implies policy at least declines.
+    // It does not. Nothing inspects a command for network use, so a command that
+    // reaches the network raises no approval and produces no denial — the
+    // `network` argument is a declaration the model may simply omit, and on this
+    // backend omitting it removes nothing. Verified by running
+    // `curl https://example.com` through `Shell` on a real host: no approval, no
+    // error, a response.
+    parts.push(
+      'Network denial for subprocesses is best-effort, and weaker than it sounds: nothing inspects a ' +
+        'command for network use, so a command that reaches the network is neither approved nor ' +
+        'refused — it simply works. The `network` argument declares intent; on this backend it does ' +
+        'not create a boundary.',
+    );
   }
   if (atLeast(d.networkAllowlist, 'container-enforced')) {
     // The sentence alpha.5 could not write. It is emitted only when the

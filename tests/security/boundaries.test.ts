@@ -452,3 +452,87 @@ async function walk(dir: string): Promise<string[]> {
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 }
+
+/**
+ * A shell is not a development command (alpha.12).
+ *
+ * `bash`, `sh` and `zsh` were in `DEV_EXECUTABLES` until alpha.12, which made
+ * them `allow` under `workspace-dev` — and that turned every `ask` rule for
+ * `process.exec` into a suggestion. It was found by running the product on a
+ * real machine, not here: `Write` to a path outside the workspace raised an
+ * approval and was refused, while `bash -lc 'echo probe > /tmp/probe'` was
+ * granted silently and created the file.
+ *
+ * These are the two halves of that, asserted so it cannot come back: the same
+ * effect must not have two different dispositions, and a shell must not be
+ * reachable without an approval under any profile.
+ */
+describe('a shell is not a development command (alpha.12)', () => {
+  const workspaceRoot = '/repo' as CanonicalPath;
+  const profileContext = { workspaceRoot };
+
+  const engineFor = (profile: 'workspace-dev' | 'read-only') =>
+    new PolicyEngine({
+      workspaceRoot,
+      protectedPaths: new ProtectedPaths({ home: '/home/u' }),
+      layers: [
+        {
+          name: 'session',
+          source: 'session',
+          profile:
+            profile === 'read-only' ? readOnlyProfile(profileContext) : workspaceDevProfile(profileContext),
+        },
+      ],
+    });
+
+  const exec = (executable: string, rest: readonly string[] = []) => ({
+    kind: 'process.exec' as const,
+    executable,
+    argv: [executable, ...rest],
+    cwd: workspaceRoot,
+    display: [executable, ...rest].join(' '),
+  });
+
+  test('every shell asks under workspace-dev, and says why in its own terms', () => {
+    for (const shell of ['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'csh', 'tcsh']) {
+      const decision = engineFor('workspace-dev').decide(exec(shell, ['-c', 'echo hi']));
+      assert.equal(decision.action, 'ask', `${shell} does not require approval`);
+      // The wording matters: "run an unrecognised executable" is true and tells
+      // somebody nothing about why a shell in particular is being asked about.
+      assert.match(decision.reason, /opaque string|unrecognised executable/);
+    }
+  });
+
+  test('the shell rule beats the DEV_EXECUTABLES rule deterministically, not by order', () => {
+    // `specificity` counts alternatives against a pattern, so the eight-entry
+    // shell brace outranks the thirty-entry dev brace. If that ever inverts, a
+    // shell silently becomes `allow` again — which is the original defect.
+    const decision = engineFor('workspace-dev').decide(exec('bash', ['-lc', 'echo hi']));
+    assert.equal(decision.action, 'ask');
+    assert.match(decision.reason, /opaque string/, 'the generic dev-command rule won the match');
+  });
+
+  test('a shell is denied outright under read-only, where a dev command is only asked', () => {
+    // The asymmetry is the point: `npm test` stays reachable by approving it,
+    // because the engine recognised the program. `bash -lc 'npm test'` does not,
+    // because it did not.
+    assert.equal(engineFor('read-only').decide(exec('npm', ['test'])).action, 'ask');
+    assert.equal(engineFor('read-only').decide(exec('bash', ['-lc', 'npm test'])).action, 'deny');
+  });
+
+  test('a real dev command is still allowed outright, so this did not just deny everything', () => {
+    for (const ok of ['node', 'npm', 'git', 'rg', 'python3']) {
+      assert.equal(
+        engineFor('workspace-dev').decide(exec(ok, ['--version'])).action,
+        'allow',
+        `${ok} lost its grant`,
+      );
+    }
+  });
+
+  test('sudo through a shell is still a hard deny, which no approval can lift', () => {
+    const decision = engineFor('workspace-dev').decide(exec('bash', ['-lc', 'echo hi && sudo rm -rf /']));
+    assert.equal(decision.action, 'hard_deny');
+    assert.equal(decision.final, true);
+  });
+});

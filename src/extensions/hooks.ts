@@ -16,7 +16,7 @@
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
-import { projectDirCandidates } from '../app.ts';
+import { projectDirCandidates, PROJECT_DIR } from '../app.ts';
 import { globMatch } from '../util/glob.ts';
 import { parseToml, TomlParseError, type TomlTable, type TomlValue } from '../util/toml.ts';
 import { truncateForModel } from '../util/text.ts';
@@ -256,8 +256,15 @@ export class HookRunner {
         // `ask` is treated as "not now": a hook must never interrupt the user
         // with a prompt they did not initiate.
         const reason =
+          // Naming the file, not `/permissions`. That command is read-only —
+          // `show`, `explain`, `reset-session` — so "enable it with
+          // /permissions" sent people to a screen that cannot enable anything.
+          // Reachable enough to matter since alpha.12 made shells `ask`: a
+          // project hook spelled `sh -c ...` lands here every time.
           action === 'ask'
-            ? `hook "${hook.event}" requires approval and was not run; enable it with /permissions`
+            ? `hook "${hook.event}" needs an approval and a hook is never allowed to raise one, ` +
+              `so it did not run. Its command is ${JSON.stringify(argv[0] ?? '')}; to permit it, add an ` +
+              `allow rule for that executable to ${PROJECT_DIR}/permissions.toml.`
             : decisionToError(decisions.find((d) => d.action === action)!).message;
         outcomes.push({ hook, ran: false, blocked: reason });
         this.opts.logger.debug('hook blocked', { event: hook.event, action });

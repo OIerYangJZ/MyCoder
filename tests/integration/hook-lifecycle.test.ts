@@ -210,7 +210,7 @@ describe('a hook cannot damage the session', () => {
       hooksToml: `
 [[hooks]]
 event = "BeforeStep"
-command = ["sh", "-c", "exit 7"]
+command = ["node", "-e", "process.exit(7)"]
 `,
       script: [{ kind: 'final', text: 'still fine' }],
     });
@@ -338,7 +338,10 @@ command = ["node", "-e", "console.log(1)"]
       const turnEnd = (await ws.hookEvents()).filter((h) => h.event === 'TurnEnd');
       assert.ok(turnEnd.length > 0, 'the attempt must be audited even though it was refused');
       assert.equal(turnEnd[0]!.ran, false);
-      assert.match(turnEnd[0]!.blocked ?? '', /requires approval|not permitted/);
+      assert.match(turnEnd[0]!.blocked ?? '', /needs an approval|not permitted/);
+      // The remedy has to be one that exists: `/permissions` is read-only, so
+      // the old "enable it with /permissions" pointed at a screen that cannot.
+      assert.match(turnEnd[0]!.blocked ?? '', /permissions\.toml/);
     } finally {
       await ws.cleanup();
     }
@@ -369,7 +372,7 @@ command = ["sudo", "whoami"]
       hooksToml: `
 [[hooks]]
 event = "TurnEnd"
-command = ["sh", "-c", "echo \\"tok=[$GITHUB_TOKEN]\\""]
+command = ["node", "-e", "console.log('tok=[' + (process.env.GITHUB_TOKEN ?? '') + ']')"]
 inject_output = true
 `,
       script: [{ kind: 'final', text: 'ok' }],

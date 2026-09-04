@@ -592,11 +592,25 @@ export function banner(
  * account of itself: "ran 27 shell commands" is a fact about the session, and a
  * summary written from the final message would be a fact about the prose.
  */
+/**
+ * What the turn did, and — since alpha.12 — what it was refused.
+ *
+ * `counts` is incremented when a call *starts*, because that is when the
+ * renderer learns the tool's name. So a refused call was counted as a completed
+ * one, and the footer said "ran 1 shell command" for a command policy declined.
+ * Seen on a real run: the model's own prose said "shell approval was declined in
+ * this non-interactive session" three lines above a footer claiming it ran.
+ *
+ * `refused` is subtracted from the totals and reported separately. The rule is
+ * alpha.10 §12's: a count that includes what did not happen is the dishonest
+ * half of the summary, and the honest version has to name both.
+ */
 export function turnFooter(
   elapsedMs: number,
   counts: ReadonlyMap<string, number>,
   p: Palette,
   g: Glyphs,
+  refused: ReadonlyMap<string, number> = new Map(),
 ): string {
   const phrases: Array<[string, (n: number) => string]> = [
     ['Read', (n) => `read ${n} file${n === 1 ? '' : 's'}`],
@@ -613,15 +627,27 @@ export function turnFooter(
     ['Undo', (n) => `undid ${n} change${n === 1 ? '' : 's'}`],
   ];
 
+  /** What actually ran: the attempts, less the ones that were refused. */
+  const ran = (name: string): number => Math.max(0, (counts.get(name) ?? 0) - (refused.get(name) ?? 0));
+
   const named = new Set(phrases.map(([name]) => name));
-  const parts = phrases
-    .filter(([name]) => (counts.get(name) ?? 0) > 0)
-    .map(([name, phrase]) => phrase(counts.get(name) ?? 0));
+  const parts = phrases.filter(([name]) => ran(name) > 0).map(([name, phrase]) => phrase(ran(name)));
 
   // Anything this list has never heard of is still counted, by its own name: a tool
   // added later must not silently vanish from the summary.
-  for (const [name, n] of counts) {
-    if (!named.has(name) && n > 0) parts.push(`called ${name} ${n} time${n === 1 ? '' : 's'}`);
+  for (const [name] of counts) {
+    if (!named.has(name) && ran(name) > 0) {
+      const n = ran(name);
+      parts.push(`called ${name} ${n} time${n === 1 ? '' : 's'}`);
+    }
+  }
+
+  const declined = [...refused].filter(([, n]) => n > 0);
+  if (declined.length > 0) {
+    const total = declined.reduce((sum, [, n]) => sum + n, 0);
+    parts.push(
+      `${total} refused (${declined.map(([name, n]) => (n === 1 ? name : `${name} ×${n}`)).join(', ')})`,
+    );
   }
 
   const worked = `${p.blue(g.finished)} ${p.dim(`Worked for ${formatDuration(elapsedMs)}`)}`;
@@ -953,6 +979,15 @@ export class SessionRenderer {
   private readonly inFlight = new Map<string, string>();
   /** Tool calls this turn, by name — what the footer's summary is counted from. */
   private readonly calls = new Map<string, number>();
+  /**
+   * Calls policy refused, by tool name.
+   *
+   * Kept apart from `calls` rather than by decrementing it, because the two are
+   * different facts and the footer reports both. `calls` counts what was
+   * attempted — it has to, since the name arrives with the call and the outcome
+   * arrives later — so the summary needs this to say what actually happened.
+   */
+  private readonly refused = new Map<string, number>();
   private turnStarted = 0;
   /** Running totals for the spinner line, reset with the turn. */
   private tokens = 0;
@@ -992,6 +1027,7 @@ export class SessionRenderer {
     switch (type) {
       case 'turn.started':
         this.calls.clear();
+        this.refused.clear();
         this.turnStarted = Date.now();
         this.tokens = 0;
         this.costUsd = 0;
@@ -1079,6 +1115,19 @@ export class SessionRenderer {
       case 'tool.error':
       case 'tool.denied': {
         const id = typeof data.toolCallId === 'string' ? data.toolCallId : '';
+        // Recorded before the id is dropped, and keyed by the name the call
+        // started with — the payload does not carry the tool's name.
+        //
+        // Keyed on `errorCode`, not on the event type. `tool.denied` exists in
+        // the event union and nothing emits it: a refusal arrives as an ordinary
+        // `tool.result` with `isError` and `TOOL_DENIED`. Checking only the type
+        // is what made the first version of this fix do nothing, which the VM
+        // showed immediately — the footer still said "ran 1 shell command" under
+        // the model's own note that the command had been declined.
+        if (type === 'tool.denied' || data.errorCode === 'TOOL_DENIED') {
+          const name = this.inFlight.get(id);
+          if (name !== undefined) this.refused.set(name, (this.refused.get(name) ?? 0) + 1);
+        }
         this.inFlight.delete(id);
         this.spinner.stop();
         write(
@@ -1139,6 +1188,6 @@ export class SessionRenderer {
     if (this.turnStarted === 0) return undefined;
     const elapsed = now() - this.turnStarted;
     if (this.calls.size === 0 && elapsed < 2000) return undefined;
-    return turnFooter(elapsed, this.calls, this.opts.palette, this.opts.glyphs);
+    return turnFooter(elapsed, this.calls, this.opts.palette, this.opts.glyphs, this.refused);
   }
 }

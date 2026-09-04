@@ -263,7 +263,9 @@ describe('§4.6 shell mutations are audited, never silent', () => {
           calls: [
             {
               name: 'Shell',
-              arguments: { argv: ['sh', '-c', 'printf "export const i = 2;\\n" > src/i.ts'] },
+              arguments: {
+                argv: ['node', '-e', 'require("fs").writeFileSync("src/i.ts", "export const i = 2;\\n")'],
+              },
             },
           ],
         },

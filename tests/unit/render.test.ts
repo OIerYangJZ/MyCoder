@@ -932,3 +932,67 @@ describe('the session picker (ADR-0029)', () => {
     assert.match(text, /1 tool call · ses_b/);
   });
 });
+
+describe('the footer counts what ran, not what was attempted (alpha.12)', () => {
+  const p = palette(false);
+  const gl = glyphs(false);
+
+  /**
+   * `calls` is incremented when a call *starts*, because that is when the
+   * renderer learns the tool's name — so a refused call was counted as a
+   * completed one. Seen on a real run: the model's own prose said "shell
+   * approval was declined in this non-interactive session" three lines above a
+   * footer claiming it ran one.
+   */
+  test('a refused call is not reported as one that ran', () => {
+    const out = turnFooter(1000, new Map([['Shell', 1]]), p, gl, new Map([['Shell', 1]]));
+    assert.ok(!/ran 1 shell command/.test(out), `still claims it ran: ${out}`);
+    assert.match(out, /1 refused \(Shell\)/);
+  });
+
+  test('the ones that did run are still counted, alongside the ones that did not', () => {
+    const out = turnFooter(
+      1000,
+      new Map([
+        ['Shell', 3],
+        ['Write', 2],
+      ]),
+      p,
+      gl,
+      new Map([['Shell', 2]]),
+    );
+    assert.match(out, /ran 1 shell command/);
+    assert.match(out, /wrote 2 files/);
+    assert.match(out, /2 refused \(Shell ×2\)/);
+  });
+
+  test('with nothing refused the footer is exactly what it always was', () => {
+    const before = turnFooter(
+      1000,
+      new Map([
+        ['Shell', 1],
+        ['Read', 2],
+      ]),
+      p,
+      gl,
+    );
+    const after = turnFooter(
+      1000,
+      new Map([
+        ['Shell', 1],
+        ['Read', 2],
+      ]),
+      p,
+      gl,
+      new Map(),
+    );
+    assert.equal(before, after);
+    assert.match(after, /read 2 files, ran 1 shell command/);
+  });
+
+  test('a tool refused every time it was tried disappears from the ran list', () => {
+    const out = turnFooter(1000, new Map([['Delete', 2]]), p, gl, new Map([['Delete', 2]]));
+    assert.ok(!/deleted/.test(out), `claims a deletion happened: ${out}`);
+    assert.match(out, /2 refused \(Delete ×2\)/);
+  });
+});

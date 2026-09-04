@@ -16,7 +16,7 @@
  *    worth more than a few hundred milliseconds at this stage.
  */
 
-import { renderErrorForModel, toKernelError, type KernelError } from '../util/errors.ts';
+import { renderErrorForModel, toKernelError, type ErrorCode, type KernelError } from '../util/errors.ts';
 import { truncateForModel, type TruncationBudget } from '../util/text.ts';
 import { formatIssues, validate } from '../util/jsonschema.ts';
 import type { Logger } from '../util/logger.ts';
@@ -199,6 +199,16 @@ export interface BatchOutcome {
    * `previewOutput` says otherwise.
    */
   previews: ReadonlyMap<string, string>;
+  /**
+   * Why a call failed, by tool call id. Absent for calls that succeeded.
+   *
+   * Alongside the results rather than on `ToolResultPart` for the same reason
+   * `previews` is: that part is the IR the model is shown, and an `ErrorCode` is
+   * a kernel concept. The session puts these on the `tool.result` event, which is
+   * what lets a reader — and the turn footer — tell a refusal from a failure.
+   * Without it the footer counted a refused call as one that ran.
+   */
+  errorCodes: ReadonlyMap<string, ErrorCode>;
 }
 
 export class ToolRuntime {
@@ -265,6 +275,7 @@ export class ToolRuntime {
   ): Promise<BatchOutcome> {
     const results: ToolResultPart[] = [];
     const previews = new Map<string, string>();
+    const errorCodes = new Map<string, ErrorCode>();
     let terminalFailure: KernelError | undefined;
 
     for (const call of calls) {
@@ -348,7 +359,10 @@ export class ToolRuntime {
         truncated: Boolean(result.fullOutput),
         decisions,
       };
-      if (result.errorCode) record.errorCode = result.errorCode;
+      if (result.errorCode) {
+        record.errorCode = result.errorCode;
+        errorCodes.set(call.id, result.errorCode);
+      }
       if (artifactRef) record.artifactRef = artifactRef;
       if (result.metadata) record.metadata = result.metadata;
       const preview = this.previewOf(result.content);
@@ -383,7 +397,9 @@ export class ToolRuntime {
       });
     }
 
-    return terminalFailure ? { results, previews, terminalFailure } : { results, previews };
+    return terminalFailure
+      ? { results, previews, errorCodes, terminalFailure }
+      : { results, previews, errorCodes };
   }
 
   /**

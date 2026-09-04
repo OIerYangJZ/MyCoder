@@ -91,9 +91,8 @@ const DEV_EXECUTABLES: readonly string[] = [
   'make',
   'cmake',
   'just',
-  'bash',
-  'sh',
-  'zsh',
+  // `bash`, `sh` and `zsh` were here until alpha.12, and their removal is the
+  // point of `SHELL_EXECUTABLES` below.
   'git',
   'rg',
   'grep',
@@ -116,6 +115,34 @@ const DEV_EXECUTABLES: readonly string[] = [
   'which',
   'pwd',
 ];
+
+/**
+ * Shells. Never granted by a profile, and asked for in their own words.
+ *
+ * These sat in `DEV_EXECUTABLES` until alpha.12, which made them `allow` under
+ * `workspace-dev` — and that turned every `ask` rule for `process.exec` into a
+ * suggestion. Found by running the thing on a real machine: writing outside the
+ * workspace with the `Write` tool raises an approval and was refused, while
+ * `bash -lc 'echo probe > /tmp/probe'` was granted silently and created the
+ * file. Same effect, two routes, one approval between them.
+ *
+ * The reason a shell cannot be treated as a development command is structural,
+ * not a matter of which binaries are risky. `Shell`'s protocol is argv
+ * precisely so the kernel knows the program and its arguments before it runs
+ * (spec §9.2), and it declares path-like argv tokens as `file.read` accesses so
+ * that `cat .env` is a hard deny rather than a redaction problem. A shell
+ * defeats both: `["bash","-lc","<anything>"]` is one opaque string, so there
+ * are no path tokens to declare and no program to recognise. The tool's own
+ * schema advertises this as the way to use shell features — which is fine as an
+ * escape hatch and was not fine as an unapproved one.
+ *
+ * Listed explicitly rather than merely deleted from the allow list, because an
+ * unlisted executable falls to `run an unrecognised executable` — true, but a
+ * poor thing to show somebody being asked about `bash`. A shell that is not on
+ * this list still lands on that catch-all, so the list is the wording, not the
+ * boundary.
+ */
+const SHELL_EXECUTABLES: readonly string[] = ['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'csh', 'tcsh'];
 
 /** Subcommands that mutate dependencies and therefore always require approval. */
 const PACKAGE_MUTATION_ARGV: readonly string[] = [
@@ -282,6 +309,17 @@ export function readOnlyProfile(ctx: ProfileContext): PermissionProfile {
         pattern: `{${DEV_EXECUTABLES.join(',')}}`,
         note: 'run a development command',
       },
+      // Denied, not asked. This profile's promise is that the session changes
+      // nothing, and it cannot keep that promise while running a program it
+      // cannot see — which is what a shell command is. `npm test` is still
+      // reachable by asking; `bash -lc 'npm test'` is not, and the difference is
+      // that one of them is a program the engine recognised.
+      {
+        action: 'deny',
+        capability: 'process.exec',
+        pattern: `{${SHELL_EXECUTABLES.join(',')}}`,
+        note: 'read-only profile: a shell is a program this profile cannot inspect',
+      },
       { action: 'ask', capability: 'remote.connect' },
     ],
   };
@@ -319,6 +357,15 @@ export function reviewProfile(ctx: ProfileContext): PermissionProfile {
         argvPattern,
         note: 'dependency mutation is not allowed while reviewing',
       })),
+      // Same reasoning as `read-only`, and it matters more here: this profile
+      // *allows* development commands outright, so a granted shell would be an
+      // unreviewed route to anything at all.
+      {
+        action: 'deny',
+        capability: 'process.exec',
+        pattern: `{${SHELL_EXECUTABLES.join(',')}}`,
+        note: 'review profile: a shell is a program this profile cannot inspect',
+      },
       // Writing to the scratch directory keeps review tooling usable.
       ...(ctx.agentTmpDir
         ? [
@@ -403,6 +450,16 @@ export function workspaceDevProfile(ctx: ProfileContext): PermissionProfile {
         argvPattern,
         note: 'installs or updates dependencies',
       })),
+      // Asked, and said so in the shell's own terms. More specific than the
+      // `DEV_EXECUTABLES` brace above — `specificity` counts alternatives
+      // against a pattern, and eight beats thirty — so this wins deterministically
+      // rather than by rule order.
+      {
+        action: 'ask',
+        capability: 'process.exec',
+        pattern: `{${SHELL_EXECUTABLES.join(',')}}`,
+        note: 'a shell interprets its own command line, so policy sees one opaque string rather than a program and its arguments',
+      },
       { action: 'ask', capability: 'process.exec', note: 'run an unrecognised executable' },
 
       // --- everything else ----------------------------------------------

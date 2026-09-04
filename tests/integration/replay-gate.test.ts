@@ -167,7 +167,7 @@ describe('replay gate', () => {
       files: { 'a.ts': 'x\n' },
       script: Array.from({ length: 10 }, () => ({
         kind: 'tools' as const,
-        calls: [{ name: 'Shell', arguments: { argv: ['sh', '-c', 'sleep 0.2'] } }],
+        calls: [{ name: 'Shell', arguments: { argv: ['node', '-e', 'setTimeout(() => {}, 200)'] } }],
       })),
     });
     try {
