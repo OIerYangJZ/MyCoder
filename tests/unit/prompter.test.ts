@@ -19,8 +19,8 @@ import assert from 'node:assert/strict';
 
 import { EventEmitter } from 'node:events';
 
-import { TerminalApprovalPrompter, approvalChoices } from '../../src/cli/prompter.ts';
-import { glyphs, palette } from '../../src/cli/render.ts';
+import { TerminalApprovalPrompter, approvalChoices, renderApproval } from '../../src/cli/prompter.ts';
+import { box, glyphs, palette, visibleWidth } from '../../src/cli/render.ts';
 import type { ApprovalRequest } from '../../src/tools/runtime.ts';
 
 const REQUEST: ApprovalRequest = {
@@ -224,5 +224,137 @@ describe('the approval prompt and the terminal', () => {
     assert.equal((await run('d')).scope, 'session');
     // The default is denial, deliberately.
     assert.deepEqual(await run(''), { decision: 'deny', scope: 'once' });
+  });
+});
+
+describe('the label column, all the way down the box', () => {
+  const shellRequest = {
+    toolName: 'Shell',
+    toolCallId: 'call_1' as never,
+    subject: {
+      key: 'process.exec:npm:test',
+      title: 'Run npm test',
+      // A tool writes its own details, and they are `key: value` by convention.
+      details: ['command: npm test', 'directory: .', 'network: none requested'],
+      risk: 'low' as const,
+    },
+    pending: [],
+  };
+
+  test("a tool's own details line up with the labels this function owns", () => {
+    // They did not, and it showed on the one screen a user is *required* to read:
+    //
+    //     tool     : Shell
+    //     action   : Run npm test
+    //     command: npm test        <- the tool wrote this one
+    //     directory: .
+    //     scope    : this call only, …
+    //
+    // Half the box padded by this function, half passed through as the tool wrote
+    // it. Both halves were right on their own terms, which is how it survived.
+    const text = renderApproval(shellRequest as never);
+    const colons = [...text.matchAll(/^ {2}\S.*?\s:(?= |$)/gm)].map((m) => m[0].length);
+    assert.ok(colons.length >= 5, `too few labelled rows to be a column: ${colons.length}`);
+    assert.equal(new Set(colons).size, 1, `the label column is ragged: ${colons.join(', ')}`);
+  });
+
+  test('a detail that is not a label is left exactly as the tool wrote it', () => {
+    // Conservative on purpose: the text of an approval is a security surface and
+    // this is presentation only. Anything that is not plainly `key: value` is
+    // passed through rather than guessed at.
+    const prose = 'This command was seen to reach the network on a previous run.';
+    const text = renderApproval({
+      ...shellRequest,
+      subject: { ...shellRequest.subject, details: [prose, 'command: npm test'] },
+    } as never);
+    assert.ok(text.includes(`  ${prose}`), `the prose detail was reformatted: ${text}`);
+  });
+
+  test('a wrapped row keeps its padding, so the column survives the frame', () => {
+    // `box` used to re-flow with `wrapText`, which splits on `/\s+/` and rejoins
+    // with one space — so any row long enough to wrap lost the padding this
+    // function had just given it.
+    const long = 'x'.repeat(90);
+    const framed = box(
+      renderApproval({
+        ...shellRequest,
+        subject: { ...shellRequest.subject, title: `Run ${long}` },
+      } as never).split('\n'),
+      palette(false),
+      glyphs(true),
+      70,
+    );
+    // The colons still line up *inside* the frame, which is the thing the wrap
+    // used to destroy: `wrapText` rejoins on one space, so `action    : …` came
+    // back as `action : …` on exactly the rows long enough to need wrapping.
+    const rows = framed
+      .split('\n')
+      .map((line) => line.slice(2, -2))
+      .filter((line) => /^ {2}\S.*?\s:(?= |$)/.test(line));
+    const colons = rows.map((line) => (/^ {2}\S.*?\s:(?= |$)/.exec(line) ?? [''])[0].length);
+    assert.ok(colons.length >= 4, `too few labelled rows survived the frame: ${colons.length}`);
+    assert.equal(new Set(colons).size, 1, `the column went ragged in the frame: ${colons.join(', ')}`);
+
+    const widths = new Set(framed.split('\n').map(visibleWidth));
+    assert.equal(widths.size, 1, `the frame went ragged: ${[...widths].join(', ')}`);
+  });
+});
+
+describe('who is holding stdin', () => {
+  test('the arrow-key path never opens a readline interface', async () => {
+    // Found by redirecting stdout on a real run and reading the file: the first
+    // line of it was the *task the user had typed*. A `terminal: true` readline
+    // attaches its own listener to stdin and echoes every printable character to
+    // its output — and one was being created up front for a typed fallback that,
+    // on an interactive terminal, is unreachable. The editor sets raw mode and
+    // resumes the same stream, so readline saw every key and wrote it to stdout,
+    // which `docs/cli-contract.md` reserves for the payload. It also printed its
+    // own `> ` each time the menu handed the terminal back.
+    let opened = 0;
+    const source = new EventEmitter() as EventEmitter & {
+      setRawMode: () => void;
+      resume: () => void;
+      pause: () => void;
+    };
+    source.setRawMode = (): void => {};
+    source.resume = (): void => {};
+    source.pause = (): void => {};
+
+    const prompter = new TerminalApprovalPrompter({
+      openRl: () => {
+        opened += 1;
+        return fakeRl(['y']) as never;
+      },
+      write: () => {},
+      keys: source as never,
+    });
+
+    const answer = prompter.request(REQUEST);
+    // Enter, on the answer the menu starts on.
+    source.emit('data', '\r');
+    await answer;
+    assert.equal(opened, 0, 'the menu path opened a readline interface it never used');
+  });
+
+  test('with no arrows and no way to open one, the answer is denial', async () => {
+    // The same rule `select` follows: a prompt that cannot ask must not answer.
+    const prompter = new TerminalApprovalPrompter({ write: () => {} });
+    const outcome = await prompter.request(REQUEST);
+    assert.equal(outcome.decision, 'deny');
+  });
+
+  test('the typed path opens one, once, and asks on it', async () => {
+    let opened = 0;
+    const rl = fakeRl(['y']);
+    const prompter = new TerminalApprovalPrompter({
+      openRl: () => {
+        opened += 1;
+        return rl as never;
+      },
+      write: () => {},
+    });
+    assert.equal((await prompter.request(REQUEST)).decision, 'allow');
+    assert.equal((await prompter.request(REQUEST)).decision, 'deny', 'the script is exhausted');
+    assert.equal(opened, 1, 'a second interface was opened for the second question');
   });
 });

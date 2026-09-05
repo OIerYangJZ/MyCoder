@@ -26,7 +26,20 @@ import {
 } from './render.ts';
 
 export interface TerminalPrompterOptions {
-  rl: ReadlineInterface;
+  /**
+   * How to get a readline interface, if the typed prompt is ever needed.
+   *
+   * A thunk rather than an interface, because on the interactive path it is never
+   * needed at all: `keys` is present, the arrow-key menu answers every approval,
+   * and the typed fallback is unreachable. An interface created up front and never
+   * asked a question was not free — a `terminal: true` readline attaches its own
+   * listener to stdin and echoes every keystroke to its output, so it wrote what
+   * the user typed at the *editor's* prompt into the caller's stdout, and printed
+   * its own `> ` each time the menu handed the terminal back.
+   */
+  openRl?: () => ReadlineInterface;
+  /** An interface that already exists. Tests supply one; `main.ts` does not. */
+  rl?: ReadlineInterface;
   write?: (text: string) => void;
   /** Default when the user just presses enter. Denial, deliberately. */
   defaultDeny?: boolean;
@@ -55,7 +68,8 @@ export interface TerminalPrompterOptions {
 }
 
 export class TerminalApprovalPrompter implements ApprovalPrompter {
-  private readonly rl: ReadlineInterface;
+  private rl: ReadlineInterface | undefined;
+  private readonly openRl: (() => ReadlineInterface) | undefined;
   private readonly write: (text: string) => void;
   private readonly p: Palette;
   private readonly g: Glyphs;
@@ -65,6 +79,7 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
 
   constructor(opts: TerminalPrompterOptions) {
     this.rl = opts.rl;
+    this.openRl = opts.openRl;
     this.write = opts.write ?? ((t) => process.stderr.write(t));
     this.p = opts.palette ?? makePalette(false);
     this.g = opts.glyphs ?? glyphSet(false);
@@ -101,8 +116,11 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
 
     const choices = approvalChoices(request);
     if (this.keys) {
-      // Arrow keys need the terminal to themselves, and readline is holding it.
-      this.rl.pause();
+      // Arrow keys need the terminal to themselves. `main.ts` no longer creates a
+      // readline interface at all on this path, so there is usually nothing
+      // holding it — but a caller that supplied one is still paused for the
+      // duration, because two readers of one stdin is the defect this avoids.
+      this.rl?.pause();
       try {
         const picked = await select({
           items: choices.map((c) => c.label),
@@ -119,7 +137,7 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
         // here it means no — the one reading it is a security question.
         return choices[picked ?? -1]?.outcome ?? { decision: 'deny', scope: 'once' };
       } finally {
-        this.rl.resume();
+        this.rl?.resume();
       }
     }
 
@@ -133,12 +151,20 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
    * keys, and a menu that answered itself would answer a security question wrong.
    */
   private async typed(choices: readonly ApprovalChoice[]): Promise<ApprovalOutcome> {
+    // Opened on first use, which on the interactive path is never.
+    this.rl ??= this.openRl?.();
+    const rl = this.rl;
+    if (!rl) {
+      // No way to ask and no arrows to press. Denial, for the same reason `select`
+      // refuses rather than inventing an answer: this is a security question.
+      return { decision: 'deny', scope: 'once', reason: 'no way to ask for approval' };
+    }
     for (;;) {
       // Again on every pass: an unrecognised answer loops, and anything that
       // arrived in the meantime may have started the spinner up again.
       this.quiet();
       const answer = (
-        await this.rl.question(
+        await rl.question(
           `  ${this.p.accentBold('[y]')} once  ${this.p.accentBold('[s]')} this session  ` +
             `${this.p.accentBold('[n]')} no  ${this.p.accentBold('[d]')} deny for session ${this.p.grey('>')} `,
         )
@@ -236,20 +262,34 @@ export function renderApproval(request: ApprovalRequest): string {
         ['action', request.subject.title],
       ];
 
-  // Every label that will be printed, the ones below included, so the colons line
-  // up down the whole box rather than down the first half of it.
+  // A tool's own details are `key: value` by convention — `command: …`,
+  // `directory: .`, `network: none requested` — and they were printed exactly as
+  // the tool wrote them, next to a column this function had padded. So half the
+  // box lined up and half did not, on the one screen a user is *required* to read.
+  //
+  // Conservative on purpose: only a leading lowercase word followed by a colon is
+  // treated as a label. A detail that is a sentence, or that starts with anything
+  // else, is passed through untouched rather than guessed at — the text of an
+  // approval is a security surface and this is presentation only.
+  const DETAIL = /^([a-z][a-z0-9 _-]*):[ ]?(.*)$/;
+  const details = request.subject.details.map((detail) => DETAIL.exec(detail));
+
+  // Every label that will be printed, so the colons line up down the whole box
+  // rather than down the half of it this function happens to own.
   const labels = [...rows.map(([k]) => k), 'scope'];
+  for (const detail of details) if (detail?.[1]) labels.push(detail[1]);
   if (request.pending.length > 0) labels.push('requires');
   if (request.diff) labels.push('diff');
   const width = Math.max(...labels.map((label) => label.length));
   const row = (label: string, value?: string): string =>
-    `  ${label.padEnd(width)} :${value === undefined ? '' : ` ${value}`}`;
+    `  ${label.padEnd(width)} :${value === undefined || value === '' ? '' : ` ${value}`}`;
 
   for (const [label, value] of rows) lines.push(row(label, value));
 
-  for (const detail of request.subject.details) {
-    lines.push(`  ${detail}`);
-  }
+  request.subject.details.forEach((detail, index) => {
+    const parsed = details[index];
+    lines.push(parsed ? row(parsed[1] ?? '', parsed[2] ?? '') : `  ${detail}`);
+  });
 
   // Spell out every capability that is actually being asked for, not just the
   // headline one: an approval that hides a second access is not informed.

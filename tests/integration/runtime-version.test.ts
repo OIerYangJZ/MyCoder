@@ -21,7 +21,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 
-import { checkRuntime, runtimeUnsupportedMessage } from '../../bin/runtime-check.mjs';
+import { checkRuntime, checkTypeStripping, runtimeUnsupportedMessage } from '../../bin/runtime-check.mjs';
 
 const FLOOR = [22, 18, 0] as const;
 
@@ -122,5 +122,56 @@ describe('the runtime version check', () => {
     const whyAt = message.indexOf('Why:');
     const fixAt = message.indexOf('To fix');
     assert.ok(problemAt >= 0 && whyAt > problemAt && fixAt > whyAt);
+  });
+});
+
+describe('a Node that is new enough and still cannot run a checkout', () => {
+  // Found by installing it. Ubuntu 26.04's `/usr/bin/node` is v22.22.1 —
+  // comfortably above the 22.18.0 floor — with `process.features.typescript`
+  // false, because Debian builds Node without Amaro, the type stripper. So the
+  // version check passed, the shim handed Node `src/cli/main.ts`, and the user
+  // met:
+  //
+  //     mycoder: failed to start: Unknown file extension ".ts" for …/main.ts
+  //
+  // and exit 6, INTERNAL. Which is `bin/mycoder.mjs`'s own opening complaint, word
+  // for word: an error that "names neither the problem nor the remedy, points at a
+  // line of our source rather than at their runtime, and reads like a bug in the
+  // kernel". The version floor was the right fix for the case it was written for
+  // and simply does not cover this one — a version is not a capability.
+
+  test('a build with type stripping is accepted', () => {
+    assert.equal(checkTypeStripping(true, 'strip', '22.20.0').ok, true);
+    assert.equal(checkTypeStripping(true, 'transform', '23.6.0').ok, true);
+  });
+
+  test('a build without it is refused, and says which of the two things is wrong', () => {
+    const verdict = checkTypeStripping(true, false, '22.22.1');
+    assert.equal(verdict.ok, false);
+    assert.match(verdict.message ?? '', /RUNTIME_UNSUPPORTED/);
+    assert.match(verdict.message ?? '', /22\.22\.1/, 'the message must name the runtime it found');
+    assert.match(verdict.message ?? '', /new enough/, 'and say that the version is not the problem');
+    assert.match(verdict.message ?? '', /process\.features\.typescript/, 'and name the actual signal');
+    // §8's three parts, in order: what is wrong, what is required, what to do.
+    const remedy = (verdict.message ?? '').indexOf('To fix');
+    const problem = (verdict.message ?? '').indexOf('built without');
+    assert.ok(problem > 0 && remedy > problem, 'the remedy must come after the problem');
+    // Both ways out, because one of them needs no new software at all.
+    assert.match(verdict.message ?? '', /npm run build/);
+    assert.match(verdict.message ?? '', /nodejs\.org/);
+  });
+
+  test('an old Node that cannot report the field at all is refused too', () => {
+    // Below the versions that expose `process.features.typescript`. Those cannot
+    // strip types either, so "did not say" and "said no" are the same answer.
+    assert.equal(checkTypeStripping(true, undefined, '20.11.1').ok, false);
+  });
+
+  test('a packaged install is not asked the question, because it loads JavaScript', () => {
+    // The shim prefers `dist/cli/main.js` when it exists, and that needs no
+    // stripping on any runtime. Refusing there would turn a working install into
+    // an outage over a capability it does not use.
+    assert.equal(checkTypeStripping(false, false, '22.22.1').ok, true);
+    assert.equal(checkTypeStripping(false, undefined, '20.11.1').ok, true);
   });
 });

@@ -28,3 +28,21 @@ export function runtimeUnsupportedMessage(found: string, required: string): stri
  * cosmetic problem into an outage.
  */
 export function checkRuntime(foundText: string, floor: NodeVersion | null): RuntimeVerdict;
+
+export function typeStrippingUnsupportedMessage(found: string): string;
+
+/**
+ * Can this runtime load the entry point the shim is about to hand it?
+ *
+ * A separate question from the version floor, and the two came apart on a real
+ * machine: a distro Node well above the floor, built without Amaro, so
+ * `process.features.typescript` is `false` and a `.ts` entry point dies with
+ * `ERR_UNKNOWN_FILE_EXTENSION`. `feature` is passed in rather than read, so the
+ * decision stays a pure function; `undefined` — a Node too old to report the
+ * field — is treated as "no", which is correct for those versions.
+ */
+export function checkTypeStripping(
+  entryIsTypeScript: boolean,
+  feature: string | boolean | undefined,
+  foundText: string,
+): RuntimeVerdict;

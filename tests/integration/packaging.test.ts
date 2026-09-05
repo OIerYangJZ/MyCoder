@@ -124,11 +124,20 @@ describe('the packaged artifact', { timeout: 180_000 }, () => {
     );
 
     const shim = readFileSync('bin/mycoder.mjs', 'utf8');
-    // The check has to happen before anything with type annotations is loaded.
+    // Both checks have to happen before anything with type annotations is loaded.
+    //
+    // The second one is newer and was added because the first is not sufficient:
+    // a Node can be above the floor and still built without type stripping, which
+    // is what Debian and Ubuntu ship. On such a machine the version check passed
+    // and the import then failed with `ERR_UNKNOWN_FILE_EXTENSION` — the failure
+    // §8 exists to prevent, arriving by a different route.
     const checkAt = shim.indexOf('checkRuntime(process.versions.node');
-    const importAt = shim.indexOf('import(entryUrl().href)');
+    const strippingAt = shim.indexOf('checkTypeStripping(');
+    const importAt = shim.search(/import\(entry(Url\(\))?\.href\)/);
     assert.ok(checkAt > 0 && importAt > 0, 'the shim should check the runtime and then import the kernel');
+    assert.ok(strippingAt > 0, 'the shim should also check that this Node can load the entry point');
     assert.ok(checkAt < importAt, 'the version check must run before the kernel entry point is imported');
+    assert.ok(strippingAt < importAt, 'so must the type-stripping check');
   });
 
   test('the shim has no isMain guard — a global install makes one always false', () => {

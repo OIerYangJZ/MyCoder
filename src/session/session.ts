@@ -1646,10 +1646,68 @@ export class Session {
   }
 }
 
+/** How much of a call's arguments the event log keeps. */
+const ARGS_BUDGET = 400;
+
+/**
+ * Shorten the strings inside a value, leaving its shape alone.
+ *
+ * Depth-limited because this runs on arguments a model chose, and "a model chose
+ * it" is the one input class that can be adversarially deep.
+ */
+function clipStrings(value: unknown, budget: number, depth = 0): unknown {
+  if (depth > 8) return null;
+  if (typeof value === 'string') {
+    return value.length > budget ? `${value.slice(0, budget)}…` : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => clipStrings(item, budget, depth + 1));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        k,
+        clipStrings(v, budget, depth + 1),
+      ]),
+    );
+  }
+  return value;
+}
+
+/**
+ * The arguments, small enough to keep in the log, and **still valid JSON**.
+ *
+ * This used to be `JSON.stringify(args).slice(0, 400)`, which is not JSON — it is
+ * a JSON prefix, and a prefix of an object is an object with the closing brace
+ * missing. Two things read this field back and both were broken by it:
+ *
+ *   `summariseArgs` in `src/cli/render.ts` parses it to pick the one interesting
+ *   argument for the tool line. On a parse failure it falls back to the raw text,
+ *   and for a `Write` that text is the beginning of the file's *content* — so the
+ *   line showed a wall of source and never the path, which is the only thing
+ *   anybody reads it for.
+ *
+ *   `replaySession` parses it to reconstruct the assistant's tool call. On a parse
+ *   failure it produced `{ __summary: '<prefix>' }`, a shape no tool schema
+ *   accepts, so `-c` and `-r` restored a history of malformed calls.
+ *
+ * Measured on one real session against DeepSeek: 29 of 45 calls exceeded the
+ * budget, so this was the common case rather than the edge.
+ *
+ * The budget is spent per *value* now. What is lost is the tail of a long
+ * argument — which was already lost — rather than the syntax around it. The
+ * ladder of value budgets exists because one enormous string and forty small ones
+ * are different shapes; the last rung keeps the keys, which are what identify the
+ * call, and is returned even if it overruns, because a slightly long line in a log
+ * is better than a field that cannot be parsed.
+ */
 function summarizeArgs(args: unknown): string {
   try {
-    const json = JSON.stringify(args ?? {});
-    return json.length > 400 ? `${json.slice(0, 400)}…` : json;
+    let json = JSON.stringify(args ?? {}) ?? '{}';
+    if (json.length <= ARGS_BUDGET) return json;
+    for (const budget of [200, 80, 24, 0]) {
+      json = JSON.stringify(clipStrings(args ?? {}, budget)) ?? '{}';
+      if (json.length <= ARGS_BUDGET) return json;
+    }
+    return json;
   } catch {
     return '(unserialisable)';
   }

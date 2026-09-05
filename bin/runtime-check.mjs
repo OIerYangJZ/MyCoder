@@ -78,3 +78,62 @@ export function checkRuntime(foundText, floor) {
   if (!isOlder(found, floor)) return { ok: true };
   return { ok: false, message: runtimeUnsupportedMessage(found.join('.'), floor.join('.')) };
 }
+
+/**
+ * The message for a Node that is new enough and still cannot run a checkout.
+ *
+ * Same three parts, same order, because it is the same §8 requirement: what is
+ * wrong, what is required, what to do.
+ */
+export function typeStrippingUnsupportedMessage(found) {
+  return [
+    'mycoder: RUNTIME_UNSUPPORTED',
+    '',
+    '  This is Node ' + found + ', which is new enough, but it was built without',
+    '  TypeScript support (`process.features.typescript` is false). Running from a',
+    '  source checkout needs it, because there is no `dist/` here to load instead.',
+    '',
+    '  Why: Debian and Ubuntu ship a Node built without Amaro, the type stripper.',
+    '  The version number does not say so, which is why this check exists.',
+    '',
+    '  To fix, either build the package once:',
+    '',
+    '    npm run build                       # writes dist/, which needs no stripping',
+    '',
+    '  or use a Node that has it:',
+    '',
+    '    nvm install 22 && nvm use 22        # nvm',
+    '    https://nodejs.org/en/download      # official builds',
+    '',
+    '  To verify:  node -p "process.features.typescript"',
+    '',
+  ].join('\n');
+}
+
+/**
+ * Can this runtime load the file we are about to hand it?
+ *
+ * The version floor answers "is this Node new enough". It does **not** answer "can
+ * this Node run TypeScript", and the two came apart on a real machine: Ubuntu
+ * 26.04's `/usr/bin/node` is v22.22.1 — comfortably above the 22.18.0 floor — with
+ * `process.features.typescript === false`, because Debian builds Node without
+ * Amaro. So the check passed, `entryUrl()` handed it `src/cli/main.ts`, and the
+ * user met:
+ *
+ *     mycoder: failed to start: Unknown file extension ".ts" for …/src/cli/main.ts
+ *
+ * and exit 6 (INTERNAL). Which is this file's own opening complaint, word for
+ * word: it "names neither the problem nor the remedy, points at a line of our
+ * source rather than at their runtime, and reads like a bug in the kernel". The
+ * version floor was the right fix for the case it was written for and does not
+ * cover this one.
+ *
+ * `feature` is passed in rather than read here so the decision stays a pure
+ * function. `undefined` — a Node too old to report the field at all — is treated
+ * as "no", which is correct: those versions cannot strip types either.
+ */
+export function checkTypeStripping(entryIsTypeScript, feature, foundText) {
+  if (!entryIsTypeScript) return { ok: true };
+  if (feature === 'strip' || feature === 'transform' || feature === true) return { ok: true };
+  return { ok: false, message: typeStrippingUnsupportedMessage(foundText) };
+}

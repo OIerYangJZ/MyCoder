@@ -39,9 +39,12 @@ import {
   Spinner,
   summariseArgs,
   timeAgo,
+  truncatePath,
   toolCallLine,
   toolResultLine,
   visibleWidth,
+  wrapRuns,
+  wrapText,
 } from '../../src/cli/render.ts';
 
 const ESC = '';
@@ -1137,5 +1140,162 @@ describe('the money line does not claim a cost it could not compute (alpha.12)',
     // into a hedge.
     assert.match(statusLine({ ...base, costUsd: 0.5 }, p), /\$0\.5000/);
     assert.equal(statusLine({ ...base }, p).includes('$'), false);
+  });
+});
+
+describe('a tool line when the arguments were too big to keep whole', () => {
+  test('the path is recovered from a summary that is not valid JSON', () => {
+    // `summarizeArgs` no longer produces one of these, and this is the guard for
+    // everything that still can: an event log written by an older build, or a
+    // caller that assembles the field itself. The old behaviour printed the raw
+    // prefix, which for a `Write` is the beginning of the file's contents — the
+    // one argument nobody wants on a transcript line, in place of the one they do.
+    const truncated = '{"content":"\'use strict\';\\n\\n/**\\n * A long file…';
+    assert.equal(summariseArgs('Write', truncated).includes('use strict'), true, 'the premise');
+
+    const withPath = '{"path":"src/parse.js","content":"\'use strict\';\\n\\n/**\\n * A long…';
+    assert.equal(summariseArgs('Write', withPath), 'src/parse.js');
+  });
+
+  test('an escaped path survives the recovery', () => {
+    assert.equal(summariseArgs('Write', '{"path":"src/a\\"b.js","content":"x'), 'src/a"b.js');
+  });
+
+  test('a summary that parses is unaffected, whatever order the keys came in', () => {
+    assert.equal(summariseArgs('Write', '{"content":"x","path":"src/b.js"}'), 'src/b.js');
+    assert.equal(summariseArgs('Write', '{"path":"src/b.js","content":"x"}'), 'src/b.js');
+  });
+});
+
+describe('results, when several tools ran at once', () => {
+  const events = (renderer: SessionRenderer, out: () => string): string => {
+    renderer.on('turn.started', {});
+    renderer.on('tool.call', { toolCallId: 'a', name: 'Write', argsSummary: '{"path":"src/one.js"}' });
+    renderer.on('tool.call', { toolCallId: 'b', name: 'Write', argsSummary: '{"path":"src/two.js"}' });
+    renderer.on('tool.result', { toolCallId: 'b', contentBytes: 2048 });
+    renderer.on('tool.result', { toolCallId: 'a', contentBytes: 731 });
+    return out();
+  };
+
+  test('each result names the call it belongs to', () => {
+    // A model that calls three tools in one step produces three call lines and
+    // then three result lines, in whatever order they finished. A real session
+    // wrote three files and reported `731 B`, `2.2 kB`, `2.0 kB` underneath, with
+    // nothing saying which size was which file — and the results came back in a
+    // different order from the calls, so reading them positionally was wrong.
+    let written = '';
+    const renderer = new SessionRenderer({
+      write: (s) => (written += s),
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+    });
+    const out = events(renderer, () => written);
+    assert.match(out, /⎿ {2}Write\(src\/two\.js\) · 2\.0 kB/);
+    assert.match(out, /⎿ {2}Write\(src\/one\.js\) · 731 B/);
+  });
+
+  test('a lone call is not labelled, because there is nothing to disambiguate', () => {
+    // The label is worth four words on a line only when it answers a question.
+    // On every line of an ordinary transcript it would be noise.
+    let written = '';
+    const renderer = new SessionRenderer({
+      write: (s) => (written += s),
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+    });
+    renderer.on('turn.started', {});
+    renderer.on('tool.call', { toolCallId: 'a', name: 'Read', argsSummary: '{"path":"a.ts"}' });
+    renderer.on('tool.result', { toolCallId: 'a', contentBytes: 12 });
+    assert.equal(written, '⏺ Read(a.ts)\n  ⎿  12 B\n');
+  });
+
+  test('the batch is forgotten once it has finished, so the next call is bare', () => {
+    let written = '';
+    const renderer = new SessionRenderer({
+      write: (s) => (written += s),
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+    });
+    events(renderer, () => written);
+    written = '';
+    renderer.on('tool.call', { toolCallId: 'c', name: 'Read', argsSummary: '{"path":"a.ts"}' });
+    renderer.on('tool.result', { toolCallId: 'c', contentBytes: 12 });
+    assert.equal(written, '⏺ Read(a.ts)\n  ⎿  12 B\n');
+  });
+});
+
+describe('two model requests in one turn', () => {
+  test('the second does not continue the first mid-sentence', () => {
+    // Seen on a real run: `Let me begin.Empty workspace. I'll scaffold the whole
+    // project.` — two requests one step apart. The first ended without a newline,
+    // its tail sat in the stream's buffer, and the second's first delta was
+    // appended to it. `tool.call` already flushed for this reason; a step that
+    // produces text and no tool call had nothing.
+    let answer = '';
+    const renderer = new SessionRenderer({
+      write: () => {},
+      writeAnswer: (s) => (answer += s),
+      palette: plain,
+      answerPalette: plain,
+      glyphs: glyphs(true),
+      live: false,
+    });
+    renderer.on('turn.started', {});
+    renderer.on('model.stream', { type: 'text_delta', text: 'Let me begin.' });
+    renderer.on('model.request.completed', { usage: {} });
+    renderer.on('model.request.started', {});
+    renderer.on('model.stream', { type: 'text_delta', text: 'Empty workspace.\n' });
+    renderer.on('turn.completed', {});
+    assert.equal(answer, 'Let me begin.\nEmpty workspace.\n');
+  });
+});
+
+describe('wrapping a line that is a table, not a sentence', () => {
+  test('the runs between the words survive, so a padded column stays a column', () => {
+    // `wrapText` splits on `/\s+/` and rejoins with one space, which is right for
+    // prose and wrong for the approval box: any row long enough to wrap came back
+    // with its label padding collapsed, so `action   : …` became `action : …` and
+    // the column was ragged in exactly the rows that needed reading most.
+    const wrapped = wrapRuns('action   : run something quite long indeed', 24);
+    assert.deepEqual(wrapped, ['action   : run something', 'quite long indeed']);
+    assert.ok(
+      wrapped.every((line) => visibleWidth(line) <= 24),
+      'a wrapped line overran',
+    );
+    // The point of the whole thing: `wrapText` gives back `action : run …`.
+    assert.equal(wrapText('action   : run something quite long indeed', 24)[0], 'action : run something');
+  });
+
+  test('a line that fits comes back untouched', () => {
+    assert.deepEqual(wrapRuns('tool     : Shell', 40), ['tool     : Shell']);
+  });
+});
+
+describe('which end of a long path to keep', () => {
+  test('a path keeps its tail, because that is the part that identifies it', () => {
+    // Five parallel reads on a real run were each labelled
+    // `Read(~/Desktop/project…)` — five identical labels on a line
+    // whose whole job was to tell them apart.
+    assert.equal(
+      summariseArgs('Read', '{"path":"/home/me/Desktop/logmap/src/format.js"}', 24),
+      '…op/logmap/src/format.js',
+    );
+    assert.equal(truncatePath('/a/very/long/path/to/thing.js', 12), '…to/thing.js');
+    assert.equal(truncatePath('short.js', 40), 'short.js', 'a short path is untouched');
+  });
+
+  test('anything that is not a path still keeps its head', () => {
+    // A search pattern, a query, a command: the front is the part being read.
+    assert.equal(summariseArgs('Grep', '{"pattern":"an extremely long search pattern"}', 12), 'an extremel…');
+  });
+
+  test('the elision is on a character boundary, so a wide glyph is never halved', () => {
+    const cut = truncatePath('/项目/我的代码/文件.ts', 10);
+    assert.ok(visibleWidth(cut) <= 10, `${visibleWidth(cut)} columns`);
+    assert.equal(cut.includes('�'), false, 'a character was cut in half');
+    assert.ok(cut.endsWith('.ts'), `the tail was not kept: ${cut}`);
   });
 });

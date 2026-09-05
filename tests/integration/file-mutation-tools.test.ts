@@ -365,3 +365,52 @@ describe('Move', () => {
     }
   });
 });
+
+describe('what the event log keeps of a call that is too big for it', () => {
+  test('the summary of a large Write is still JSON, and still names the file', async () => {
+    // `summarizeArgs` used to be `JSON.stringify(args).slice(0, 400)`, which is a
+    // JSON *prefix* — an object with the closing brace missing. Two readers parse
+    // this field and both broke on it:
+    //
+    //   the renderer's `summariseArgs`, which picks the one interesting argument
+    //   for the tool line and on a parse failure printed the raw prefix — for a
+    //   `Write` that is the beginning of the file's contents, so the line showed a
+    //   wall of source and never the path;
+    //
+    //   `replaySession`, which reconstructs the assistant's tool call and on a
+    //   parse failure produced `{ __summary: '<prefix>' }`, a shape no tool schema
+    //   accepts.
+    //
+    // Measured against a real model on a real task: 29 of 45 calls exceeded the
+    // budget, so this was the common case rather than the edge.
+    const ws = await createTestWorkspace({ files: { 'src/a.ts': 'export const a = 1;\n' } });
+    try {
+      const big = `export const big = ${JSON.stringify('x'.repeat(4000))};\n`;
+      setScript(ws.kernel, [
+        { kind: 'tools', calls: [{ name: 'Write', arguments: { path: 'src/big.ts', content: big } }] },
+        { kind: 'final', text: 'written' },
+      ]);
+      await ws.kernel.session.runTurn('write it');
+
+      let summary: string | undefined;
+      for await (const event of ws.kernel.store.readEvents(ws.kernel.sessionId)) {
+        if (event.type !== 'tool.call') continue;
+        const payload = event.payload as { name?: string; argsSummary?: string };
+        if (payload.name === 'Write') summary = payload.argsSummary;
+      }
+
+      assert.ok(summary !== undefined, 'the call was never logged');
+      const parsed = JSON.parse(summary) as { path?: string; content?: string };
+      assert.equal(parsed.path, 'src/big.ts', 'the path is what the tool line is read for');
+      assert.ok(summary.length <= 512, `the summary is unbounded: ${summary.length} characters`);
+      assert.ok(
+        (parsed.content ?? '').length < big.length,
+        'the budget has to come out of the value, or nothing was saved',
+      );
+      // And the file itself is whole: only the *summary* is shortened.
+      assert.equal(await ws.file('src/big.ts'), big);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+});

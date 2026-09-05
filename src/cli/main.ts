@@ -324,13 +324,41 @@ export async function main(argv: readonly string[]): Promise<number> {
   // can still be reported to a terminal.
   let controlCommands: readonly string[] = [];
 
-  // `readline` no longer reads the prompt — the editor does (ADR-0032). What is left
-  // is the approval prompter's typed fallback, which needs an interface to ask on and
-  // to pause while the arrow-key menu has the terminal. No `completer`: it was for the
-  // prompt, and Tab-completing a slash command into a y/n answer completes nothing.
-  const rl = interactive
-    ? readline.createInterface({ input: stdin, output: stdout, terminal: true })
-    : undefined;
+  /**
+   * The approval prompter's typed fallback, opened only if it is ever used.
+   *
+   * `readline` no longer reads the prompt — the editor does (ADR-0032) — and what
+   * was left was an interface created up front and, in an interactive session,
+   * never asked a single question: the arrow-key menu answers every approval, so
+   * the typed path is unreachable there.
+   *
+   * Creating it anyway cost two things, both found by redirecting stdout on a real
+   * run and reading the file:
+   *
+   *   **It echoed the user's keystrokes into stdout.** A `terminal: true`
+   *   interface attaches its own `data` listener to stdin and echoes every
+   *   printable character to its output. The editor sets raw mode and resumes the
+   *   same stream, so readline saw every key the user typed and wrote it to
+   *   stdout — which is a contract (`docs/cli-contract.md`): the whole first line
+   *   of a redirected `answer.md` was the task the user had typed.
+   *
+   *   **It printed a stray `> ` after every approval.** Its own prompt, redrawn
+   *   when the menu handed the terminal back.
+   *
+   * So it is opened lazily and its output is stderr, where chrome belongs. On the
+   * interactive path nothing opens it at all.
+   */
+  let typedPrompt: readline.Interface | undefined;
+  const openTypedPrompt = (): readline.Interface => {
+    // No `completer`: it was for the prompt, and Tab-completing a slash command
+    // into a y/n answer completes nothing.
+    typedPrompt ??= readline.createInterface({ input: stdin, output: stderr, terminal: true });
+    return typedPrompt;
+  };
+  const closeTypedPrompt = (): void => {
+    typedPrompt?.close();
+    typedPrompt = undefined;
+  };
 
   // Before anything is built: is this workspace one an agent should be pointed at?
   // (ADR-0028.) A workspace containing the config directory is a home directory
@@ -342,7 +370,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     (await canonicalize(dirs.config, { cwd: process.cwd() })).path,
   );
   if (!workspaceVerdict.ok) {
-    rl?.close();
+    closeTypedPrompt();
     return fail(
       args.json,
       'WORKSPACE_CONTAINS_CONFIG',
@@ -394,10 +422,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       verbose: args.verbose,
       nonInteractive: args.nonInteractive || !interactive,
       ...(resumeSessionId ? { resumeSessionId } : {}),
-      ...(rl && !args.nonInteractive
+      ...(interactive && !args.nonInteractive
         ? {
             prompter: new TerminalApprovalPrompter({
-              rl,
+              openRl: openTypedPrompt,
               write: (t) => stderr.write(t),
               palette,
               glyphs,
@@ -413,7 +441,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         : {}),
     });
   } catch (e) {
-    rl?.close();
+    closeTypedPrompt();
     // Startup failures are the ones a fresh install actually meets, so they get
     // the documented code and the remedy rather than `Failed to start: <text>`
     // and exit 1. `PROVIDER_NOT_CONFIGURED` reaching here is §10's second
@@ -484,7 +512,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       if (!interactive) return exitCode;
     }
 
-    if (!interactive || !rl) {
+    if (!interactive) {
       // Piped input: each non-empty line is a turn.
       for (const line of (await readAllStdin()).split('\n')) {
         if (line.trim() === '') continue;
@@ -610,7 +638,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   } finally {
     renderer.quiet();
     await kernel.shutdown();
-    rl?.close();
+    closeTypedPrompt();
   }
 
   return exitCode;

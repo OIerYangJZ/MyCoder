@@ -372,6 +372,36 @@ export const truncate = (s: string, max: number): string => {
 };
 
 /**
+ * Cut a path from the front, because the end of one is the part that identifies it.
+ *
+ * `truncate` keeps the head, which is right for a sentence and wrong for a path.
+ * Seen on a real run: five parallel reads of five different files, each labelled
+ * `Read(~/Desktop/project…)` — five identical labels on a line whose whole job
+ * was to tell them apart, because everything they differed in had been cut off.
+ * The last segment is what a person is looking for; the prefix is what they
+ * already know.
+ */
+export const truncatePath = (s: string, max: number): string => {
+  if (visibleWidth(s) <= max) return s;
+  const budget = Math.max(0, max - 1);
+  const chars = [...s];
+  let width = 0;
+  let out = '';
+  for (let i = chars.length - 1; i >= 0; i -= 1) {
+    const ch = chars[i] as string;
+    const w = charWidth(ch.codePointAt(0) ?? 0);
+    if (width + w > budget) break;
+    out = ch + out;
+    width += w;
+  }
+  return `…${out}`;
+};
+
+/** A path keeps its tail; anything else keeps its head. */
+const elide = (value: string, max: number): string =>
+  /[/\\]/.test(value) ? truncatePath(value, max) : truncate(value, max);
+
+/**
  * The one interesting thing about a tool call, in the words the user typed.
  *
  * `tool.call`'s `argsSummary` is JSON, up to 400 characters of it, which is right
@@ -380,14 +410,52 @@ export const truncate = (s: string, max: number): string => {
  * the raw summary rather than nothing — a tool this does not know about still shows
  * something true.
  */
+/**
+ * The keys worth showing, in the order they are looked for.
+ *
+ * `path` first, because for `Write` and `Edit` it is the whole of what the reader
+ * needs and the argument next to it is a file.
+ */
+const INTERESTING = ['path', 'displayPath', 'pattern', 'url', 'name', 'query'] as const;
+
+/**
+ * The last resort, for a summary that is not valid JSON.
+ *
+ * `summarizeArgs` in `src/session/session.ts` used to produce exactly that — a
+ * JSON prefix — and this function's fallback printed it raw, which for a `Write`
+ * meant the tool line showed the beginning of the file's contents and never its
+ * path. That is fixed at the source. This stays because the fallback is still
+ * reachable (an older event log, a caller that builds the field itself), and
+ * because "print the file contents" is a bad answer to have available at all:
+ * anything that looks like the interesting key is dug out of the text first.
+ */
+function recoverKey(text: string): string | undefined {
+  for (const key of INTERESTING) {
+    const found = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(text);
+    const value = found?.[1];
+    if (value !== undefined) {
+      try {
+        return JSON.parse(`"${value}"`) as string;
+      } catch {
+        return value;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function summariseArgs(name: string, argsSummary: string, max = 64): string {
   let args: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(argsSummary);
-    if (parsed === null || typeof parsed !== 'object') return truncate(argsSummary, max);
+    if (parsed === null || typeof parsed !== 'object') {
+      const recovered = recoverKey(argsSummary);
+      return recovered === undefined ? truncate(argsSummary, max) : elide(recovered, max);
+    }
     args = parsed as Record<string, unknown>;
   } catch {
-    return truncate(argsSummary, max);
+    const recovered = recoverKey(argsSummary);
+    return recovered === undefined ? truncate(argsSummary, max) : elide(recovered, max);
   }
 
   const str = (key: string): string | undefined =>
@@ -418,9 +486,9 @@ export function summariseArgs(name: string, argsSummary: string, max = 64): stri
     }
   }
 
-  for (const key of ['path', 'displayPath', 'pattern', 'url', 'name', 'query']) {
+  for (const key of INTERESTING) {
     const value = str(key);
-    if (value !== undefined) return truncate(value, max);
+    if (value !== undefined) return elide(value, max);
   }
   return truncate(argsSummary, max);
 }
@@ -442,6 +510,13 @@ export interface ResultInfo {
   isError?: boolean;
   errorCode?: string;
   contentBytes?: number;
+  /**
+   * Which call this is the result of, when that is not obvious from position.
+   *
+   * Absent for the ordinary case — one call, one result under it, and repeating
+   * the name would be noise on every line of a transcript.
+   */
+  of?: string;
 }
 
 /**
@@ -450,13 +525,21 @@ export interface ResultInfo {
  * Two spaces after the hook, not one: the hook is a wide glyph in some fonts and a
  * narrow one in others, and the extra column is what keeps this line's text from
  * sitting a column left of the preview block underneath it in half of them.
+ *
+ * `of` is how a *parallel* batch stays readable. A model that calls three tools in
+ * one step produces three call lines and then three result lines, in whatever
+ * order they finished, and nothing said which was which — a real session wrote
+ * three files and then reported `731 B`, `2.2 kB`, `2.0 kB` with no way to tell
+ * which size was which file. Naming the call on the result line is the smallest
+ * thing that fixes it, and it stays off when there is nothing to disambiguate.
  */
 export function toolResultLine(info: ResultInfo, p: Palette, g: Glyphs): string {
+  const of = info.of === undefined || info.of === '' ? '' : `${p.grey(`${info.of} · `)}`;
   if (info.isError === true) {
     const what = info.errorCode ?? 'failed';
-    return `  ${p.red(g.result)}  ${p.red(what)}`;
+    return `  ${p.red(g.result)}  ${of}${p.red(what)}`;
   }
-  return `  ${p.grey(g.result)}  ${p.grey(formatBytes(info.contentBytes ?? 0))}`;
+  return `  ${p.grey(g.result)}  ${of}${p.grey(formatBytes(info.contentBytes ?? 0))}`;
 }
 
 /**
@@ -506,6 +589,45 @@ function hardWrap(text: string, width: number): string[] {
   if (line !== '') parts.push(line);
   return parts;
 }
+
+/**
+ * Wrap without touching the spaces between the words.
+ *
+ * `wrapText` splits on `/\s+/` and rejoins with one space, which is right for
+ * prose and wrong for a table. The approval box pads its labels into a column,
+ * and any row long enough to wrap came back out of `wrapText` with that padding
+ * collapsed — so `action   : …` became `action : …` and the column the padding
+ * exists for was ragged in exactly the rows that needed reading most.
+ *
+ * The runs are kept as tokens, so what goes in comes back out. A break falls on a
+ * run of whitespace and that run is dropped, which is what a line break is for.
+ */
+export function wrapRuns(text: string, width: number): string[] {
+  const tokens = text.split(/(\s+)/).filter((t) => t !== '');
+  const out: string[] = [];
+  let line = '';
+  for (const token of tokens) {
+    if (/^\s+$/.test(token)) {
+      // Trailing whitespace never forces a break by itself; it is held until the
+      // next word decides whether the line has room for both.
+      if (line !== '') line += token;
+      continue;
+    }
+    if (line === '') {
+      line = token;
+      continue;
+    }
+    if (visibleWidth(line) + visibleWidth(token) <= width) {
+      line += token;
+      continue;
+    }
+    out.push(line.replace(/\s+$/, ''));
+    line = token;
+  }
+  if (line !== '') out.push(line.replace(/\s+$/, ''));
+  return out;
+}
+
 export function box(lines: readonly string[], p: Palette, g: Glyphs, width = 72): string {
   const widest = Math.max(...lines.map(visibleWidth), 0);
   const w = Math.min(Math.max(widest, 8), width - 4);
@@ -528,7 +650,7 @@ export function box(lines: readonly string[], p: Palette, g: Glyphs, width = 72)
     }
     const indent = /^\s*/.exec(line)?.[0] ?? '';
     const room = Math.max(8, w - indent.length - 2);
-    const wrapped = wrapText(line.slice(indent.length), room).flatMap((part) => hardWrap(part, room));
+    const wrapped = wrapRuns(line.slice(indent.length), room).flatMap((part) => hardWrap(part, room));
     fitted.push(...wrapped.map((part, index) => `${indent}${index === 0 ? '' : '  '}${part}`));
   }
 
@@ -1284,7 +1406,16 @@ export interface RendererOptions {
  */
 export class SessionRenderer {
   private readonly spinner: Spinner;
-  private readonly inFlight = new Map<string, string>();
+  /** The calls awaiting a result, by id: the tool's name and how to name the call. */
+  private readonly inFlight = new Map<string, { name: string; label: string }>();
+  /**
+   * How many calls the current batch announced, at its widest.
+   *
+   * Above one, every result names the call it belongs to. Taken when the calls
+   * arrive rather than when the results do, because `inFlight` has already begun
+   * shrinking by the time the first result is rendered.
+   */
+  private batch = 0;
   /** Tool calls this turn, by name — what the footer's summary is counted from. */
   private readonly calls = new Map<string, number>();
   /**
@@ -1361,7 +1492,21 @@ export class SessionRenderer {
         this.spinner.start(this.thinking);
         return;
 
+      /**
+       * A new request, and the end of whatever the last one was saying.
+       *
+       * The flush is the fix for a line a real session produced:
+       *
+       *     Let me begin.Empty workspace. I'll scaffold the whole project.
+       *
+       * Two requests, one step apart. The first ended without a newline, its tail
+       * sat in the stream's buffer, and the second's first delta was appended to
+       * it — so two separate assistant messages read as one sentence with a full
+       * stop in the middle of it. `tool.call` already flushed for exactly this
+       * reason; a step that produces text and no tool call had nothing.
+       */
       case 'model.request.started':
+        this.flushAnswer();
         this.spinner.start(this.thinking);
         return;
 
@@ -1404,7 +1549,13 @@ export class SessionRenderer {
         // A model that says something and then calls a tool leaves the answer
         // mid-line; the tool line would land inside its last sentence.
         this.flushAnswer();
-        this.inFlight.set(id, name);
+        this.inFlight.set(id, { name, label: `${name}(${summariseArgs(name, args, 32)})` });
+        // The high-water mark of this batch, kept until every result is in. A
+        // model that calls three tools in one step gets three call lines and then
+        // three result lines, and `inFlight.size` has already started shrinking by
+        // the time the first result is rendered — so the count has to be taken
+        // when the calls arrive, not when the results do.
+        this.batch = Math.max(this.batch, this.inFlight.size);
         this.calls.set(name, (this.calls.get(name) ?? 0) + 1);
         this.spinner.stop();
         write(`${toolCallLine(name, args, p, g)}\n`);
@@ -1451,11 +1602,14 @@ export class SessionRenderer {
         // is what made the first version of this fix do nothing, which the VM
         // showed immediately — the footer still said "ran 1 shell command" under
         // the model's own note that the command had been declined.
+        const call = this.inFlight.get(id);
         if (type === 'tool.denied' || data.errorCode === 'TOOL_DENIED') {
-          const name = this.inFlight.get(id);
-          if (name !== undefined) this.refused.set(name, (this.refused.get(name) ?? 0) + 1);
+          if (call !== undefined) this.refused.set(call.name, (this.refused.get(call.name) ?? 0) + 1);
         }
         this.inFlight.delete(id);
+        // The batch is over once the last of it has answered.
+        const many = this.batch > 1;
+        if (this.inFlight.size === 0) this.batch = 0;
         this.spinner.stop();
         write(
           `${toolResultLine(
@@ -1464,6 +1618,7 @@ export class SessionRenderer {
               ...(typeof data.errorCode === 'string' ? { errorCode: data.errorCode } : {}),
               ...(type === 'tool.denied' ? { errorCode: 'denied' } : {}),
               ...(typeof data.contentBytes === 'number' ? { contentBytes: data.contentBytes } : {}),
+              ...(many && call ? { of: call.label } : {}),
             },
             p,
             g,
@@ -1484,6 +1639,7 @@ export class SessionRenderer {
         // `Turn cancelled.` then lands there.
         this.flushAnswer();
         this.inFlight.clear();
+        this.batch = 0;
         return;
 
       default:

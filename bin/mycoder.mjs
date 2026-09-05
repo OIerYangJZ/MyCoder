@@ -34,7 +34,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { checkRuntime, parseVersion, EXIT_UNAVAILABLE } from './runtime-check.mjs';
+import { checkRuntime, checkTypeStripping, parseVersion, EXIT_UNAVAILABLE } from './runtime-check.mjs';
 
 function readFloor() {
   try {
@@ -68,8 +68,28 @@ function run() {
     return;
   }
 
+  // New enough is not the same question as able to run this. A distro Node can be
+  // well above the floor and still built without type stripping, in which case the
+  // `.ts` entry point below dies with `ERR_UNKNOWN_FILE_EXTENSION` — an error that
+  // names neither the problem nor the remedy, which is what this file exists to
+  // stop. Found on a stock Ubuntu; see `checkTypeStripping` for the details.
+  //
+  // Deliberately no version number here: this file names no version anywhere, and
+  // a test asserts that, because two copies of a floor is one copy that goes stale.
+  var entry = entryUrl();
+  var stripping = checkTypeStripping(
+    /\.ts$/.test(entry.href),
+    process.features && process.features.typescript,
+    process.versions.node,
+  );
+  if (!stripping.ok) {
+    process.stderr.write(stripping.message);
+    process.exitCode = EXIT_UNAVAILABLE;
+    return;
+  }
+
   // Only now. Everything below this line may contain type annotations.
-  import(entryUrl().href)
+  import(entry.href)
     .then(function (mod) {
       return mod.main(process.argv.slice(2)).then(function (code) {
         process.exitCode = code;
