@@ -907,18 +907,41 @@ export function clearBlock(state: EditorState, opts: RenderOptions): string {
 /**
  * The buffer and any menu, as the bytes that put them on screen.
  *
- * `previousRows` is how many rows the last render occupied: the cursor is somewhere
- * inside them, so the redraw goes to the top of that block and clears down. Passing
- * zero means "nothing there yet".
+ * `previousCursorRow` is **which row of its own block the cursor was left on** by
+ * the last render — not how tall that block was. The redraw goes up by exactly
+ * that to reach the block's first row, then clears down. `undefined` means nothing
+ * has been drawn yet.
+ *
+ * It used to be the row *count*, and that is a different number:
+ *
+ *     const up = view.total - 1 - view.cursorRow;   // where this render parks it
+ *     …
+ *     out += `${CSI}${previousRows - 1}A`;          // where the next one looks
+ *
+ * The two agree only when `cursorRow` is the last row of the block, which is the
+ * case for a bare prompt with no chrome under it and *no other case*. With a rule
+ * under the input, or a box around it, the redraw went up one row too far and
+ * `CSI J` erased from there — so the block walked up the screen a row per
+ * keystroke, eating the transcript above it. Measured on a real terminal: type
+ * eight characters and the prompt has climbed eight rows and taken the banner's
+ * caveat with it.
+ *
+ * That is why it survived: the only shape it is correct for is the one a pipe and
+ * `--no-colour` get, which is the shape every test rendered. `renderedCursorRow`
+ * exists so the caller cannot supply the wrong quantity by accident.
  */
-export function renderEditor(state: EditorState, opts: RenderOptions, previousRows: number): string {
+export function renderEditor(
+  state: EditorState,
+  opts: RenderOptions,
+  previousCursorRow: number | undefined,
+): string {
   const { columns, palette: p } = opts;
-  let out = '';
+  let out = '\r';
 
-  if (previousRows > 0) {
-    out += `\r${previousRows > 1 ? `${CSI}${previousRows - 1}A` : ''}`;
+  if (previousCursorRow !== undefined && previousCursorRow > 0) {
+    out += `${CSI}${previousCursorRow}A`;
   }
-  out += `\r${CSI}J`;
+  out += `${CSI}J`;
 
   // Reverse search replaces the prompt line while it is open, the way a shell does:
   // what is being searched for, and the entry it currently points at.
@@ -973,11 +996,26 @@ export function renderEditor(state: EditorState, opts: RenderOptions, previousRo
   return out;
 }
 
-/** Rows the last render occupied, for the next one to clear. */
+/** Rows the last render occupied. How tall the block is, and nothing else. */
 export function renderedRows(state: EditorState, opts: RenderOptions): number {
-  // Search is one row and replaces everything else, so the next redraw clears one.
+  // Search is one row and replaces everything else.
   if (state.search) return 1;
   return viewport(state, opts).total;
+}
+
+/**
+ * Which row of its own block `renderEditor` left the cursor on.
+ *
+ * The one number the next redraw may move up by. It is deliberately a function
+ * rather than a count the caller keeps, because the caller cannot see where the
+ * cursor was parked and the render can: `renderEditor` ends with
+ * `up = total - 1 - cursorRow`, so `cursorRow` is where it stops.
+ *
+ * Same quantity `clearBlock` has always used — which is why taking the block down
+ * was correct while redrawing it was not.
+ */
+export function renderedCursorRow(state: EditorState, opts: RenderOptions): number {
+  return cursorRowOf(state, opts);
 }
 
 /**
@@ -1077,7 +1115,8 @@ export class Editor {
   read(): Promise<EditorOutcome> {
     const { input, write } = this.opts;
     let state = newEditorState(this.history);
-    let rows = 0;
+    // Where the last render parked the cursor, or nothing drawn yet.
+    let cursorRow: number | undefined;
     const paste = newPasteState();
 
     const options = (): RenderOptions => ({
@@ -1093,8 +1132,8 @@ export class Editor {
 
     const draw = (): void => {
       const view = options();
-      write(renderEditor(state, view, rows));
-      rows = renderedRows(state, view);
+      write(renderEditor(state, view, cursorRow));
+      cursorRow = renderedCursorRow(state, view);
     };
 
     input.setRawMode?.(true);
@@ -1123,7 +1162,7 @@ export class Editor {
           if (key.kind === 'clear') {
             this.opts.onClear?.();
             write(`${CSI}2J${CSI}H`);
-            rows = 0;
+            cursorRow = undefined;
             draw();
             continue;
           }
@@ -1139,7 +1178,7 @@ export class Editor {
             if (notice !== undefined && notice !== '') {
               write(clearBlock(state, options()));
               write(`${notice}\n`);
-              rows = 0;
+              cursorRow = undefined;
             }
             draw();
             continue;

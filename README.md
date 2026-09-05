@@ -1,7 +1,18 @@
-# Kernel v0.1
+<div align="center">
 
-A coding agent kernel: small, verifiable, and explicit about where its security
-boundaries are.
+# MyCoder
+
+**A coding agent kernel — small, verifiable, and explicit about where its security boundaries are.**
+
+**English** · [简体中文](README.zh-CN.md)
+
+<img src="docs/media/demo.gif" width="820" alt="A MyCoder session: a task is typed into the prompt, two files are read in parallel, and the answer streams back with a summary of what the turn did.">
+
+<sub>A real session, recorded on an Ubuntu VM against DeepSeek. Nothing here is a mock-up.</sub>
+
+</div>
+
+---
 
 The goal is not to reproduce a particular product's feature list. It is a kernel
 that is **small, verifiable, and explicit about where its security boundaries
@@ -31,6 +42,38 @@ Engine        │              │              │
                              ↓
                        Audited Result
 ```
+
+## What a session looks like
+
+Everything below is a screenshot of a terminal, taken with `tmux capture-pane`
+during the runs that also produced this milestone's evidence.
+
+**It says what it is before it asks you for anything.** The model, the context
+window, the profile, the approval mode, and — the row that is not decoration —
+what the isolation actually is, in the words of the backend's own descriptor
+rather than a reassuring literal.
+
+<img src="docs/media/banner.png" width="820" alt="The startup banner: model, context window, profile, approval mode, isolation and working directory, with a column of tips beside it and the input box below.">
+
+**A turn shows its work.** One line per tool call and one per result. When a step
+calls several tools at once, each result names the call it belongs to — because
+they come back in whatever order they finish, and reading them positionally is
+not merely unhelpful, it is wrong.
+
+<img src="docs/media/tools.png" width="820" alt="A turn in progress: parallel Read calls, each result line naming the file it belongs to and its size.">
+
+**An approval is a decision, not a confirmation.** It shows what the tool wants
+to do, to which files, over which network destination, and how long the grant
+lasts. The highlight starts on `No`, and abandoning the prompt means no.
+
+<img src="docs/media/approval.png" width="820" alt="The approval prompt: a framed box listing the tool, action, command, directory, network and scope, with four numbered answers below it and the highlight resting on No.">
+
+**A turn ends by saying what it did**, counted from the events it emitted rather
+than from the model's account of itself — and what it was refused, separately,
+because a count that includes what did not happen is the dishonest half of a
+summary.
+
+<img src="docs/media/turn.png" width="820" alt="The end of a turn: files read, directories listed and files written, then a status line with the model, context window, request count, token count and cost.">
 
 ## Installing it
 
@@ -62,6 +105,12 @@ node bin/mycoder.mjs --print-config
 node bin/mycoder.mjs -m fake "fix the failing test"      # offline, scripted model
 node --test "tests/**/*.test.ts"
 ```
+
+A checkout loads `src/*.ts` directly, which needs a Node built with type
+stripping. Most are; Debian's and Ubuntu's are not, and the version number does
+not say so — `mycoder` checks `process.features.typescript` and tells you which
+of the two things is wrong, rather than dying on `ERR_UNKNOWN_FILE_EXTENSION`.
+`npm run build` writes `dist/`, which any supported Node can load.
 
 Type checking needs a compiler, the only thing this repo installs:
 
@@ -128,6 +177,27 @@ is the only step that verifies types. Run it before opening a PR — CI does.
 - Local, SSH and container execution backends behind one interface.
 - Skill / agent / hook discovery, where a definition can only narrow.
 
+## The terminal it does all that in
+
+A **renderer, not a TUI**. Spec §1.3 keeps a full TUI as a non-goal, and there is
+no alternate screen, no panes and no absolute cursor addressing: every escape
+sequence is relative, nothing survives the process, and deleting the renderer
+would leave the kernel behaving identically.
+
+Three rules shape all of it. **Zero dependencies** — no `chalk`, no `ink`; the
+escape codes are written out in one file with one switch. **Every byte of chrome
+goes to stderr**, because stdout is a contract and `mycoder … | jq` must never
+have to filter human text out of its input. **Plain when it is not a terminal**,
+because styling a pipe writes escape codes into somebody's log file.
+
+Within that: one warm accent, picked at 24-, 8- or 4-bit depending on what the
+terminal says it can render; a box around the input that wraps by display column,
+so a line of Chinese closes it in the same place a line of ASCII does; markdown
+and syntax highlighting over the streamed answer; and live token and cost figures
+on the spinner line rather than in a reserved bottom bar, because a scroll region
+is terminal state that outlives a crash. `docs/terminal-surface-design.md` has
+the reasoning, including the parts that were wrong the first time.
+
 ## What it deliberately does not do
 
 MCP marketplace, agent teams, IDE plugins, a full TUI, browser use, embeddings,
@@ -176,6 +246,7 @@ tests/
 └── integration/  the §31 trajectory, control plane, resume
 docs/
 ├── adr/          architecture decision records
+├── media/        the screenshots and the recording above
 ├── web-access.md how to enable WebFetch, and what it will not do
 └── threat-model.md
 ```
@@ -195,6 +266,10 @@ The second-most-important one is `tests/security/canary.test.ts`: a canary
 credential is attacked eleven ways, and must appear zero times in the model
 payload, the event log, the network capture, or the logs. Per AGENTS.md rule 10,
 if that test fails, everything else stops.
+
+Beyond the tests, the repository checks its own prose: `pnpm mirrors` compares
+every enumeration in the code against the document that claims to list it, and
+`pnpm evidence` refuses any `PASS` whose named evidence does not resolve.
 
 ## Reference repositories
 

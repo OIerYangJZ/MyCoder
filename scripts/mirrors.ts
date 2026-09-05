@@ -590,9 +590,18 @@ const NUMBERS = [
   'twelve',
 ];
 
-/** The tool names README claims are core, and the number it says there are. */
+/**
+ * The tool names README claims are core, and the number it says there are.
+ *
+ * `[A-Za-z]+`, and the capital is the point. It was `[a-z]+`, and README writes
+ * "Nine core tools:" with a capital N at the start of a sentence — so the group
+ * matched `ine`, `NUMBERS.indexOf('ine')` was -1, `count` came back undefined,
+ * and `checkReadmeTools`'s count check quietly did nothing for as long as it has
+ * existed. A guard that cannot fire is not a guard; the test below now proves
+ * this one does.
+ */
 export function parseReadmeTools(markdown: string): { names: string[]; count?: number } {
-  const m = /([a-z]+) core tools:([\s\S]*?)all behind/.exec(markdown);
+  const m = /([A-Za-z]+) core tools:([\s\S]*?)all behind/.exec(markdown);
   if (!m) return { names: [] };
 
   const names = [...(m[2] ?? '').matchAll(/`([A-Z][A-Za-z]+)`/g)].map((x) => x[1]!);

@@ -424,3 +424,29 @@ describe('the audit has to cover every enumeration, both directions', () => {
     );
   });
 });
+
+describe('the README count check, which for a long time checked nothing', () => {
+  test('the number README states is actually read out of it', () => {
+    // It was not. The pattern was `([a-z]+) core tools:` and README writes
+    // "Nine core tools:" — a sentence, so a capital N. The group matched `ine`,
+    // `NUMBERS.indexOf('ine')` was -1, and `count` came back undefined, which
+    // `checkReadmeTools` treats as "README did not say", so the count comparison
+    // was skipped every time it ran. The list check still worked, which is why
+    // nothing looked wrong.
+    const parsed = parseReadmeTools(files.readme);
+    assert.notEqual(parsed.count, undefined, 'the stated count is not being read out of README');
+    assert.equal(parsed.count, parsed.names.length);
+  });
+
+  test('a capitalised number word is read the same as a lowercase one', () => {
+    assert.equal(parseReadmeTools('Nine core tools: `Read`, all behind').count, 9);
+    assert.equal(parseReadmeTools('nine core tools: `Read`, all behind').count, 9);
+  });
+
+  test('NEGATIVE CONTROL: a README whose stated count is wrong is now refused', () => {
+    // The case the live guard could not reach. With the pattern fixed it does.
+    const drifted = 'Ten core tools: `Read`, `Edit`, all behind the two-phase contract';
+    const found = checkReadmeTools(parseReadmeTools(drifted), builtins);
+    assert.match(messages(found), /says there are 10 core tools and lists 2/);
+  });
+});

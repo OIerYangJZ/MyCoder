@@ -2,7 +2,7 @@
   "name": "mycoder",
   "version": "0.1.0",
   "private": true,
-  "description": "MyCoder — a coding agent kernel: small, verifiable, with explicit security boundaries.",
+  "description": "MyCoder \u2014 a coding agent kernel: small, verifiable, with explicit security boundaries.",
   "type": "module",
   "engines": {
     "node": ">=22.18.0"
@@ -59,7 +59,7 @@
     "prettier": "^3.9.6",
     "typescript": "^5.9.3"
   },
-  "comment:dependencies": "v0.1 intentionally ships with zero RUNTIME dependencies; typescript, @types/node and prettier are devDependencies used only by `pnpm typecheck` and `pnpm format:check`. `pnpm lint` is scripts/lint.ts, a zero-dependency architecture linter — see its header for why it is not ESLint. Node >=22.6 strips TypeScript types natively and provides node:test, fetch, crypto and fs/promises. Glob matching, unified diff, TOML parsing and JSON Schema validation are implemented in src/util/ so that the kernel — and in particular its security tests — can run fully offline with no supply chain surface. See docs/adr/ADR-0009-zero-runtime-dependencies.md.",
+  "comment:dependencies": "v0.1 intentionally ships with zero RUNTIME dependencies; typescript, @types/node and prettier are devDependencies used only by `pnpm typecheck` and `pnpm format:check`. `pnpm lint` is scripts/lint.ts, a zero-dependency architecture linter \u2014 see its header for why it is not ESLint. Node >=22.6 strips TypeScript types natively and provides node:test, fetch, crypto and fs/promises. Glob matching, unified diff, TOML parsing and JSON Schema validation are implemented in src/util/ so that the kernel \u2014 and in particular its security tests \u2014 can run fully offline with no supply chain surface. See docs/adr/ADR-0009-zero-runtime-dependencies.md.",
   "files": [
     "bin/",
     "dist/",
@@ -73,6 +73,8 @@
     "docs/installing.md",
     "docs/configuring-a-provider.md",
     "docs/web-access.md",
+    "docs/media/",
+    "README.zh-CN.md",
     "README.md",
     "build-info.json"
   ]

@@ -25,6 +25,7 @@ import {
   newPasteState,
   parseInput,
   renderEditor,
+  renderedCursorRow,
   renderedRows,
   viewport,
   textOf,
@@ -33,7 +34,7 @@ import {
   type Key,
   type RenderOptions,
 } from '../../src/cli/editor.ts';
-import { glyphs, inputFrame, palette, visibleWidth } from '../../src/cli/render.ts';
+import { glyphs, inputFrame, inputRule, palette, visibleWidth } from '../../src/cli/render.ts';
 
 const ESC = String.fromCharCode(27);
 const plain = palette(false);
@@ -64,17 +65,64 @@ describe('criterion 1 — a wrapped line occupies more than one row', () => {
     assert.equal(rowsOf(['a', 'b']), 2);
   });
 
-  test('the redraw moves up by rows, so it never clears a line it did not write', () => {
+  test('the redraw goes up to the top of its own block, and no further', () => {
     const state = type(newEditorState(), 'x'.repeat(100));
-    const rows = renderedRows(state, render);
-    assert.equal(rows, 3, `a 100-column line in a 40-column terminal is 3 rows, not ${rows}`);
-    const out = renderEditor(state, render, rows);
+    assert.equal(renderedRows(state, render), 3, 'a 100-column line in a 40-column terminal is 3 rows');
+    const out = renderEditor(state, render, renderedCursorRow(state, render));
     assert.match(out, new RegExp(`^\\r${ESC}\\[2A`), 'the redraw must go to the top of its own block');
   });
 
   test('nothing is moved when there was nothing on screen yet', () => {
-    const out = renderEditor(newEditorState(), render, 0);
+    const out = renderEditor(newEditorState(), render, undefined);
     assert.equal(new RegExp(`${ESC}\\[\\d+A`).test(out), false, 'it moved up over somebody else output');
+  });
+
+  test('a redraw reaches exactly where the last one parked the cursor', () => {
+    // The invariant the whole redraw rests on, and the one nothing asserted.
+    //
+    // `renderEditor` ends by moving the cursor *up* from the last row it wrote to
+    // the row the cursor belongs on — so the next redraw has to go up by that, not
+    // by the height of the block. The two are the same number only when the cursor
+    // is on the block's last row, which is true for a bare prompt and false for
+    // every shape with chrome under or around it.
+    //
+    // It was the height. So with a rule under the input, or a box around it, every
+    // keystroke went up one row too far and erased from there: the prompt walked up
+    // the screen a row at a time, eating the transcript above it. Confirmed on a
+    // real terminal — eight characters, eight rows, and the banner's caveat gone.
+    // It survived because the only shape it is right for is the one a pipe gets,
+    // which is the shape every other test in this file renders.
+    const shapes: Array<[string, RenderOptions]> = [
+      ['bare', { ...render, rows: 24 }],
+      ['with a rule under it', { ...render, rows: 24, footer: inputRule(plain, g, 40) }],
+      ['inside a box', { ...render, rows: 24, frame: inputFrame(plain, g, 40) }],
+    ];
+
+    /** How far below the top of its block a render leaves the cursor. */
+    const endsOnRow = (out: string): number => {
+      const drawn = out.slice(out.indexOf(`${ESC}[J`) + 3);
+      let row = 0;
+      for (const m of drawn.matchAll(new RegExp(`\\n|${ESC}\\[(\\d+)A`, 'g'))) {
+        row += m[0] === '\n' ? 1 : -Number(m[1]);
+      }
+      return row;
+    };
+    /** How far up a render reaches before it starts erasing. */
+    const movesUp = (out: string): number => Number(new RegExp(`^\\r${ESC}\\[(\\d+)A`).exec(out)?.[1] ?? 0);
+
+    for (const [name, opts] of shapes) {
+      for (const text of ['a', 'x'.repeat(100), 'first\nsecond']) {
+        const state = type(newEditorState(), text);
+        const first = renderEditor(state, opts, undefined);
+        const parked = endsOnRow(first);
+        const second = renderEditor(state, opts, renderedCursorRow(state, opts));
+        assert.equal(
+          movesUp(second),
+          parked,
+          `${name}: the redraw goes up ${movesUp(second)} rows to a cursor ${parked} rows down`,
+        );
+      }
+    }
   });
 });
 
@@ -559,8 +607,8 @@ describe('undo, and reverse history search', () => {
   test('the search prompt is one row, and says what it is searching for', () => {
     let s = applyKey(newEditorState(['fix the width bug']), { kind: 'search' });
     s = type(s, 'wid');
-    assert.equal(renderedRows(s, render), 1, 'the redraw would clear the wrong number of rows');
-    const out = renderEditor(s, render, 1);
+    assert.equal(renderedRows(s, render), 1, 'the search prompt is one row');
+    const out = renderEditor(s, render, renderedCursorRow(s, render));
     assert.match(out, /reverse-i-search\)'wid'/);
     // Cut to the terminal, like every other row: 40 columns less the label leaves 14,
     // so the match shows as a prefix rather than whole. One row is the invariant.
