@@ -12,8 +12,8 @@ cited it as the home of two open claims. alpha.11 fixed that one list and added 
 check that would have caught it. This is the obvious next question: **which other
 lists are like that?**
 
-**114 enumerations** in `src/` and `scripts/`. **22 guarded, 15 declared unguarded,
-77 closed by design.** Two of the mirrors had already drifted, and one of those two
+**116 enumerations** in `src/` and `scripts/`. **22 guarded, 15 declared unguarded,
+79 closed by design.** Two of the mirrors had already drifted, and one of those two
 sits in a document that claims in its own words that it cannot.
 
 The five added after the original sweep came in with approval modes and thinking
@@ -220,85 +220,87 @@ checked.
 
 ### CLOSED
 
-| Enumeration                    | Where                                   | Verdict | Kind                                      |
-| ------------------------------ | --------------------------------------- | ------- | ----------------------------------------- |
-| `LANGUAGES`                    | `src/cli/highlight.ts`                  | CLOSED  | vocabulary                                |
-| `ANSWER_KEYS`                  | `src/cli/prompter.ts`                   | CLOSED  | input vocabulary                          |
-| `PREVIEW_BUDGET`               | `src/tools/runtime.ts`                  | CLOSED  | defaults (ADR-0031)                       |
-| `CONTROL_KEYS`                 | `src/cli/editor.ts`                     | CLOSED  | input vocabulary (ADR-0032)               |
-| `RESTORE_SIGNALS`              | `src/cli/editor.ts`                     | CLOSED  | signal list (ADR-0032)                    |
-| `ACTIONS`                      | `src/cli/keybindings.ts`                | CLOSED  | vocabulary                                |
-| `NO_KEYBINDINGS`               | `src/cli/keybindings.ts`                | CLOSED  | defaults                                  |
-| `SKIP`                         | `src/cli/completions.ts`                | CLOSED  | deny list                                 |
-| `REFERENCE_BUDGET`             | `src/cli/completions.ts`                | CLOSED  | defaults                                  |
-| `CASES`                        | `scripts/audit-diff-reversibility.ts`   | CLOSED  | fixture list                              |
-| `STATUSES`                     | `scripts/evidence.ts`                   | CLOSED  | vocabulary                                |
-| `EVIDENCE_KINDS`               | `scripts/evidence.ts`                   | CLOSED  | vocabulary                                |
-| `VERDICTS`                     | `scripts/mirrors.ts`                    | CLOSED  | vocabulary                                |
-| `NUMBERS`                      | `scripts/mirrors.ts`                    | CLOSED  | lookup table                              |
-| `FORBIDDEN`                    | `scripts/package-check.ts`              | CLOSED  | deny list                                 |
-| `LEGACY_PROJECT_DIRS`          | `src/app.ts`                            | CLOSED  | compatibility list                        |
-| `TIPS`                         | `src/cli/render.ts`                     | CLOSED  | prose this file owns — the startup tips   |
-| `OPERATORS`                    | `src/cli/shell-parse.ts`                | CLOSED  | parser table                              |
-| `VALID_ACTIONS`                | `src/config/config.ts`                  | CLOSED  | vocabulary                                |
-| `SYSTEM_CEILING`               | `src/config/schema.ts`                  | CLOSED  | a ceiling this code owns                  |
-| `INSTRUCTION_FILES`            | `src/context/repository-plane.ts`       | CLOSED  | discovery list                            |
-| `KINDS`                        | `src/edit/journal-log.ts`               | CLOSED  | vocabulary                                |
-| `FORBIDDEN_MOUNT_SOURCES`      | `src/execution/container-plan.ts`       | CLOSED  | deny list                                 |
-| `FORBIDDEN_MOUNT_DESTINATIONS` | `src/execution/container-plan.ts`       | CLOSED  | deny list                                 |
-| `DEFAULT_CONTAINER_LIMITS`     | `src/execution/container.ts`            | CLOSED  | default this code owns                    |
-| `BY_ERROR_CODE`                | `src/execution/diagnosis.ts`            | CLOSED  | mapping                                   |
-| `MESSAGES`                     | `src/execution/diagnosis.ts`            | CLOSED  | presentation                              |
-| `ORDER`                        | `src/execution/enforcement.ts`          | CLOSED  | vocabulary                                |
-| `DIMENSION_LABELS`             | `src/execution/enforcement.ts`          | CLOSED  | presentation                              |
-| `LAUNCHER_EXIT`                | `src/execution/linux-native/backend.ts` | CLOSED  | vocabulary                                |
-| `CFLAGS`                       | `src/execution/linux-native/build.ts`   | CLOSED  | build flags                               |
-| `RUNTIME_BASE`                 | `src/execution/linux-native/plan.ts`    | CLOSED  | sandbox plan                              |
-| `TEST_PATTERNS`                | `src/execution/mutation-detector.ts`    | CLOSED  | classification                            |
-| `DOC_PATTERNS`                 | `src/execution/mutation-detector.ts`    | CLOSED  | classification                            |
-| `CONFIG_PATTERNS`              | `src/execution/mutation-detector.ts`    | CLOSED  | classification                            |
-| `ACCEPTED_PROTOCOL_VERSIONS`   | `src/mcp/protocol.ts`                   | CLOSED  | vocabulary                                |
-| `REASONING_EFFORTS`            | `src/model/ir.ts`                       | CLOSED  | vocabulary; the help text interpolates it |
-| `DEFAULT_PROFILES`             | `src/model/profiles.ts`                 | CLOSED  | defaults this code owns                   |
-| `DEFAULT_ENDPOINTS`            | `src/model/profiles.ts`                 | CLOSED  | defaults this code owns                   |
-| `DEFAULT_RETRY`                | `src/model/runtime.ts`                  | CLOSED  | default this code owns                    |
-| `APPROVAL_MODES`               | `src/policy/approval-mode.ts`           | CLOSED  | vocabulary; the help text interpolates it |
-| `AUTO_ANSWERED`                | `src/policy/approval-mode.ts`           | CLOSED  | policy table; the prose derives from it   |
-| `MODE_LABELS`                  | `src/policy/approval-mode.ts`           | CLOSED  | labels this code owns                     |
-| `NO_GRANT_PROSE`               | `src/policy/approval-mode.ts`           | CLOSED  | prose for the two modes that grant none   |
-| `PRIVILEGE_ESCALATION`         | `src/policy/policy-engine.ts`           | CLOSED  | policy list                               |
-| `STRICTNESS`                   | `src/policy/profiles.ts`                | CLOSED  | vocabulary                                |
-| `DEV_EXECUTABLES`              | `src/policy/profiles.ts`                | CLOSED  | policy list                               |
-| `SHELL_EXECUTABLES`            | `src/policy/profiles.ts`                | CLOSED  | policy list                               |
-| `PACKAGE_MUTATION_ARGV`        | `src/policy/profiles.ts`                | CLOSED  | policy list                               |
-| `LOCKFILE_PATTERNS`            | `src/policy/profiles.ts`                | CLOSED  | policy list                               |
-| `SECRET_FILE_PATTERNS`         | `src/policy/protected-paths.ts`         | CLOSED  | deny list                                 |
-| `SECRET_FILE_EXCEPTIONS`       | `src/policy/protected-paths.ts`         | CLOSED  | deny list                                 |
-| `SYSTEM_WRITE_DENY`            | `src/policy/protected-paths.ts`         | CLOSED  | deny list                                 |
-| `SYSTEM_READ_DENY`             | `src/policy/protected-paths.ts`         | CLOSED  | deny list                                 |
-| `EGRESS_KINDS`                 | `src/security/egress-gate.ts`           | CLOSED  | vocabulary                                |
-| `NO_HOSTS`                     | `src/security/egress-gate.ts`           | CLOSED  | the empty default                         |
-| `TELEMETRY_FIELD_ALLOWLIST`    | `src/security/egress-gate.ts`           | CLOSED  | allowlist                                 |
-| `HOP_BY_HOP`                   | `src/security/egress-proxy/http.ts`     | CLOSED  | protocol constant                         |
-| `DEFAULT_PROXY_LIMITS`         | `src/security/egress-proxy/proxy.ts`    | CLOSED  | default this code owns                    |
-| `DEFAULT_ENV_ALLOWLIST`        | `src/security/env-scrub.ts`             | CLOSED  | allowlist                                 |
-| `CREDENTIAL_ENV_PATTERNS`      | `src/security/env-scrub.ts`             | CLOSED  | detection rules                           |
-| `SECRET_RULES`                 | `src/security/secret-scanner.ts`        | CLOSED  | detection rules                           |
-| `PLACEHOLDERS`                 | `src/security/secret-scanner.ts`        | CLOSED  | detection rules                           |
-| `ROOT_SCOPE`                   | `src/session/delegation.ts`             | CLOSED  | scope constant                            |
-| `DEFAULT_CHILD_BUDGET`         | `src/session/delegation.ts`             | CLOSED  | default this code owns                    |
-| `REPLAY_EVENT_TYPES`           | `src/session/events.ts`                 | CLOSED  | vocabulary                                |
-| `DEFAULT_LOOP_BUDGET`          | `src/session/step.ts`                   | CLOSED  | default this code owns                    |
-| `TERMINAL_STATES`              | `src/session/turn.ts`                   | CLOSED  | state machine                             |
-| `TRANSITIONS`                  | `src/session/turn.ts`                   | CLOSED  | state machine                             |
-| `TEXTUAL_TYPES`                | `src/tools/builtin/web-fetch.ts`        | CLOSED  | content types                             |
-| `ERROR_CODES`                  | `src/util/errors.ts`                    | CLOSED  | vocabulary                                |
-| `RETRYABLE`                    | `src/util/errors.ts`                    | CLOSED  | judgement about codes this file owns      |
-| `DROPPED_ELEMENTS`             | `src/util/html.ts`                      | CLOSED  | sanitiser list                            |
-| `NAMED_ENTITIES`               | `src/util/html.ts`                      | CLOSED  | lookup table                              |
-| `ORDER`                        | `src/util/logger.ts`                    | CLOSED  | vocabulary                                |
-| `DEFAULT_TOOL_OUTPUT_BUDGET`   | `src/util/text.ts`                      | CLOSED  | default this code owns                    |
-| `DEFAULT_IGNORES`              | `src/util/walk.ts`                      | CLOSED  | walk exclusions                           |
+| Enumeration                    | Where                                   | Verdict | Kind                                                             |
+| ------------------------------ | --------------------------------------- | ------- | ---------------------------------------------------------------- |
+| `LANGUAGES`                    | `src/cli/highlight.ts`                  | CLOSED  | vocabulary                                                       |
+| `ANSWER_KEYS`                  | `src/cli/prompter.ts`                   | CLOSED  | input vocabulary                                                 |
+| `PREVIEW_BUDGET`               | `src/tools/runtime.ts`                  | CLOSED  | defaults (ADR-0031)                                              |
+| `CONTROL_KEYS`                 | `src/cli/editor.ts`                     | CLOSED  | input vocabulary (ADR-0032)                                      |
+| `RESTORE_SIGNALS`              | `src/cli/editor.ts`                     | CLOSED  | signal list (ADR-0032)                                           |
+| `ACTIONS`                      | `src/cli/keybindings.ts`                | CLOSED  | vocabulary                                                       |
+| `NO_KEYBINDINGS`               | `src/cli/keybindings.ts`                | CLOSED  | defaults                                                         |
+| `SKIP`                         | `src/cli/completions.ts`                | CLOSED  | deny list                                                        |
+| `REFERENCE_BUDGET`             | `src/cli/completions.ts`                | CLOSED  | defaults                                                         |
+| `CASES`                        | `scripts/audit-diff-reversibility.ts`   | CLOSED  | fixture list                                                     |
+| `STATUSES`                     | `scripts/evidence.ts`                   | CLOSED  | vocabulary                                                       |
+| `EVIDENCE_KINDS`               | `scripts/evidence.ts`                   | CLOSED  | vocabulary                                                       |
+| `VERDICTS`                     | `scripts/mirrors.ts`                    | CLOSED  | vocabulary                                                       |
+| `NUMBERS`                      | `scripts/mirrors.ts`                    | CLOSED  | lookup table                                                     |
+| `FORBIDDEN`                    | `scripts/package-check.ts`              | CLOSED  | deny list                                                        |
+| `LEGACY_PROJECT_DIRS`          | `src/app.ts`                            | CLOSED  | compatibility list                                               |
+| `TIPS`                         | `src/cli/render.ts`                     | CLOSED  | prose this file owns — the startup tips                          |
+| `THINKING`                     | `src/cli/render.ts`                     | CLOSED  | prose this file owns — the spinner's verbs                       |
+| `INK`                          | `src/cli/render.ts`                     | CLOSED  | the palette this file owns, one row per ink at each colour depth |
+| `OPERATORS`                    | `src/cli/shell-parse.ts`                | CLOSED  | parser table                                                     |
+| `VALID_ACTIONS`                | `src/config/config.ts`                  | CLOSED  | vocabulary                                                       |
+| `SYSTEM_CEILING`               | `src/config/schema.ts`                  | CLOSED  | a ceiling this code owns                                         |
+| `INSTRUCTION_FILES`            | `src/context/repository-plane.ts`       | CLOSED  | discovery list                                                   |
+| `KINDS`                        | `src/edit/journal-log.ts`               | CLOSED  | vocabulary                                                       |
+| `FORBIDDEN_MOUNT_SOURCES`      | `src/execution/container-plan.ts`       | CLOSED  | deny list                                                        |
+| `FORBIDDEN_MOUNT_DESTINATIONS` | `src/execution/container-plan.ts`       | CLOSED  | deny list                                                        |
+| `DEFAULT_CONTAINER_LIMITS`     | `src/execution/container.ts`            | CLOSED  | default this code owns                                           |
+| `BY_ERROR_CODE`                | `src/execution/diagnosis.ts`            | CLOSED  | mapping                                                          |
+| `MESSAGES`                     | `src/execution/diagnosis.ts`            | CLOSED  | presentation                                                     |
+| `ORDER`                        | `src/execution/enforcement.ts`          | CLOSED  | vocabulary                                                       |
+| `DIMENSION_LABELS`             | `src/execution/enforcement.ts`          | CLOSED  | presentation                                                     |
+| `LAUNCHER_EXIT`                | `src/execution/linux-native/backend.ts` | CLOSED  | vocabulary                                                       |
+| `CFLAGS`                       | `src/execution/linux-native/build.ts`   | CLOSED  | build flags                                                      |
+| `RUNTIME_BASE`                 | `src/execution/linux-native/plan.ts`    | CLOSED  | sandbox plan                                                     |
+| `TEST_PATTERNS`                | `src/execution/mutation-detector.ts`    | CLOSED  | classification                                                   |
+| `DOC_PATTERNS`                 | `src/execution/mutation-detector.ts`    | CLOSED  | classification                                                   |
+| `CONFIG_PATTERNS`              | `src/execution/mutation-detector.ts`    | CLOSED  | classification                                                   |
+| `ACCEPTED_PROTOCOL_VERSIONS`   | `src/mcp/protocol.ts`                   | CLOSED  | vocabulary                                                       |
+| `REASONING_EFFORTS`            | `src/model/ir.ts`                       | CLOSED  | vocabulary; the help text interpolates it                        |
+| `DEFAULT_PROFILES`             | `src/model/profiles.ts`                 | CLOSED  | defaults this code owns                                          |
+| `DEFAULT_ENDPOINTS`            | `src/model/profiles.ts`                 | CLOSED  | defaults this code owns                                          |
+| `DEFAULT_RETRY`                | `src/model/runtime.ts`                  | CLOSED  | default this code owns                                           |
+| `APPROVAL_MODES`               | `src/policy/approval-mode.ts`           | CLOSED  | vocabulary; the help text interpolates it                        |
+| `AUTO_ANSWERED`                | `src/policy/approval-mode.ts`           | CLOSED  | policy table; the prose derives from it                          |
+| `MODE_LABELS`                  | `src/policy/approval-mode.ts`           | CLOSED  | labels this code owns                                            |
+| `NO_GRANT_PROSE`               | `src/policy/approval-mode.ts`           | CLOSED  | prose for the two modes that grant none                          |
+| `PRIVILEGE_ESCALATION`         | `src/policy/policy-engine.ts`           | CLOSED  | policy list                                                      |
+| `STRICTNESS`                   | `src/policy/profiles.ts`                | CLOSED  | vocabulary                                                       |
+| `DEV_EXECUTABLES`              | `src/policy/profiles.ts`                | CLOSED  | policy list                                                      |
+| `SHELL_EXECUTABLES`            | `src/policy/profiles.ts`                | CLOSED  | policy list                                                      |
+| `PACKAGE_MUTATION_ARGV`        | `src/policy/profiles.ts`                | CLOSED  | policy list                                                      |
+| `LOCKFILE_PATTERNS`            | `src/policy/profiles.ts`                | CLOSED  | policy list                                                      |
+| `SECRET_FILE_PATTERNS`         | `src/policy/protected-paths.ts`         | CLOSED  | deny list                                                        |
+| `SECRET_FILE_EXCEPTIONS`       | `src/policy/protected-paths.ts`         | CLOSED  | deny list                                                        |
+| `SYSTEM_WRITE_DENY`            | `src/policy/protected-paths.ts`         | CLOSED  | deny list                                                        |
+| `SYSTEM_READ_DENY`             | `src/policy/protected-paths.ts`         | CLOSED  | deny list                                                        |
+| `EGRESS_KINDS`                 | `src/security/egress-gate.ts`           | CLOSED  | vocabulary                                                       |
+| `NO_HOSTS`                     | `src/security/egress-gate.ts`           | CLOSED  | the empty default                                                |
+| `TELEMETRY_FIELD_ALLOWLIST`    | `src/security/egress-gate.ts`           | CLOSED  | allowlist                                                        |
+| `HOP_BY_HOP`                   | `src/security/egress-proxy/http.ts`     | CLOSED  | protocol constant                                                |
+| `DEFAULT_PROXY_LIMITS`         | `src/security/egress-proxy/proxy.ts`    | CLOSED  | default this code owns                                           |
+| `DEFAULT_ENV_ALLOWLIST`        | `src/security/env-scrub.ts`             | CLOSED  | allowlist                                                        |
+| `CREDENTIAL_ENV_PATTERNS`      | `src/security/env-scrub.ts`             | CLOSED  | detection rules                                                  |
+| `SECRET_RULES`                 | `src/security/secret-scanner.ts`        | CLOSED  | detection rules                                                  |
+| `PLACEHOLDERS`                 | `src/security/secret-scanner.ts`        | CLOSED  | detection rules                                                  |
+| `ROOT_SCOPE`                   | `src/session/delegation.ts`             | CLOSED  | scope constant                                                   |
+| `DEFAULT_CHILD_BUDGET`         | `src/session/delegation.ts`             | CLOSED  | default this code owns                                           |
+| `REPLAY_EVENT_TYPES`           | `src/session/events.ts`                 | CLOSED  | vocabulary                                                       |
+| `DEFAULT_LOOP_BUDGET`          | `src/session/step.ts`                   | CLOSED  | default this code owns                                           |
+| `TERMINAL_STATES`              | `src/session/turn.ts`                   | CLOSED  | state machine                                                    |
+| `TRANSITIONS`                  | `src/session/turn.ts`                   | CLOSED  | state machine                                                    |
+| `TEXTUAL_TYPES`                | `src/tools/builtin/web-fetch.ts`        | CLOSED  | content types                                                    |
+| `ERROR_CODES`                  | `src/util/errors.ts`                    | CLOSED  | vocabulary                                                       |
+| `RETRYABLE`                    | `src/util/errors.ts`                    | CLOSED  | judgement about codes this file owns                             |
+| `DROPPED_ELEMENTS`             | `src/util/html.ts`                      | CLOSED  | sanitiser list                                                   |
+| `NAMED_ENTITIES`               | `src/util/html.ts`                      | CLOSED  | lookup table                                                     |
+| `ORDER`                        | `src/util/logger.ts`                    | CLOSED  | vocabulary                                                       |
+| `DEFAULT_TOOL_OUTPUT_BUDGET`   | `src/util/text.ts`                      | CLOSED  | default this code owns                                           |
+| `DEFAULT_IGNORES`              | `src/util/walk.ts`                      | CLOSED  | walk exclusions                                                  |
 
 ## Model provenance
 

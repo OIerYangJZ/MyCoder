@@ -44,32 +44,94 @@ export interface Palette {
   green(s: string): string;
   yellow(s: string): string;
   cyan(s: string): string;
-  /** The accent. One colour carries the frame, the title and the prompt. */
   blue(s: string): string;
-  /** Dark text on a light background: what *you* said, once it has been sent. */
+  /**
+   * Secondary text that is still text.
+   *
+   * Distinct from `dim`, which is SGR 2 and therefore whatever the terminal's own
+   * faint rendering happens to be — on some of them barely a change at all. `grey`
+   * names a colour where there is one to name, and is SGR 2 where there is not.
+   */
+  grey(s: string): string;
+  /** Swap foreground and background, in whatever the user's theme happens to be. */
   inverse(s: string): string;
-  boldBlue(s: string): string;
-  dimBlue(s: string): string;
+  /** The accent. One colour carries the frame, the title and the prompt. */
+  accent(s: string): string;
+  accentBold(s: string): string;
+  accentDim(s: string): string;
+  /** How many colours the sink was judged able to show. `0` when styling is off. */
+  depth: ColourDepth;
 }
+
+/**
+ * How many colours the sink can be asked for.
+ *
+ * `4` is the sixteen ANSI codes every terminal has understood since the 1980s, and
+ * the only safe floor. `8` and `24` are worth detecting because the accent this
+ * program wants — a warm terracotta — has no ANSI code at all: at four bits the
+ * nearest thing is yellow, which is a different colour doing the same job.
+ */
+export type ColourDepth = 0 | 4 | 8 | 24;
+
+/**
+ * Every ink, at every depth it can be written at.
+ *
+ * The 24-bit column is the design, the 8-bit column is the nearest xterm cube
+ * entry to it, and the 4-bit column is the ANSI code that is merely in the same
+ * family. One table rather than three palettes, so an ink added at one depth
+ * cannot be forgotten at another.
+ */
+const INK: Readonly<Record<string, Readonly<Record<4 | 8 | 24, string>>>> = {
+  // #d97757. Warm, where this used to be blue: one warm colour on the frame, the
+  // title and the prompt is the whole of the house style, and it leaves the cool
+  // colours below free to mean *status* rather than decoration.
+  accent: { 4: '33', 8: '38;5;209', 24: '38;2;217;119;87' },
+  accentDim: { 4: '2;33', 8: '38;5;130', 24: '38;2;150;84;61' },
+  red: { 4: '31', 8: '38;5;203', 24: '38;2;224;108;117' },
+  green: { 4: '32', 8: '38;5;114', 24: '38;2;134;190;135' },
+  yellow: { 4: '33', 8: '38;5;179', 24: '38;2;214;178;114' },
+  cyan: { 4: '36', 8: '38;5;110', 24: '38;2;122;178;196' },
+  blue: { 4: '34', 8: '38;5;111', 24: '38;2;122;162;217' },
+  // Mid-grey deliberately, rather than near-black or near-white: it has to stay
+  // legible on a light terminal and on a dark one, and there is no second palette.
+  grey: { 4: '2', 8: '38;5;245', 24: '38;2;138;138;138' },
+};
 
 /** The one escape byte in this file. */
 const ESC = '\u001b[';
 
-const wrap = (on: boolean, code: string) => (s: string) => (on ? `[${code}m${s}[0m` : s);
+const wrap = (on: boolean, code: string) => (s: string) => (on ? `${ESC}${code}m${s}${ESC}0m` : s);
 
-export function palette(on: boolean): Palette {
+/** The code for an ink at a depth. Empty at depth 0, where nothing is written. */
+const ink = (depth: ColourDepth, name: keyof typeof INK): string =>
+  depth === 0 ? '' : ((INK[name] as Record<number, string>)[depth] ?? '');
+
+/**
+ * `true`/`false` is still accepted, and still means "four-bit, or nothing".
+ *
+ * Every caller that has not measured its terminal passes a boolean, and the codes
+ * that produces are the ones it always produced. A caller that has measured the
+ * terminal passes the depth instead.
+ */
+export function palette(depth: boolean | ColourDepth): Palette {
+  const d: ColourDepth = depth === true ? 4 : depth === false ? 0 : depth;
+  const on = d !== 0;
+  const at = (name: keyof typeof INK): ((s: string) => string) => wrap(on, ink(d, name));
   return {
     on,
+    depth: d,
     dim: wrap(on, '2'),
     bold: wrap(on, '1'),
-    red: wrap(on, '31'),
-    green: wrap(on, '32'),
-    yellow: wrap(on, '33'),
-    cyan: wrap(on, '36'),
-    blue: wrap(on, '34'),
-    inverse: wrap(on, '47;30'),
-    boldBlue: wrap(on, '1;34'),
-    dimBlue: wrap(on, '2;34'),
+    red: at('red'),
+    green: at('green'),
+    yellow: at('yellow'),
+    cyan: at('cyan'),
+    blue: at('blue'),
+    grey: at('grey'),
+    inverse: wrap(on, '7'),
+    accent: at('accent'),
+    accentBold: wrap(on, `1;${ink(d, 'accent')}`),
+    accentDim: at('accentDim'),
   };
 }
 
@@ -86,10 +148,49 @@ export function colourEnabled(env: Record<string, string | undefined>, isTty: bo
   return isTty;
 }
 
+/**
+ * How much colour the sink will actually render.
+ *
+ * Detection, not negotiation: there is no way to ask a terminal what it supports,
+ * so this reads the conventions terminals publish about themselves, and errs
+ * downward where they publish nothing. The two mistakes are not symmetric —
+ * guessing too high writes a truecolor sequence into something that prints it as
+ * garbage, and guessing too low costs a slightly duller accent.
+ *
+ * `colourEnabled` still decides the yes/no, so `NO_COLOR` keeps winning.
+ */
+export function colourDepth(env: Record<string, string | undefined>, isTty: boolean): ColourDepth {
+  if (!colourEnabled(env, isTty)) return 0;
+
+  // Read before the detection, because `FORCE_COLOR` is how a user overrules it.
+  // The numbers are the ones the convention already assigns.
+  if (env.FORCE_COLOR === '3') return 24;
+  if (env.FORCE_COLOR === '2') return 8;
+  if (env.FORCE_COLOR === '1') return 4;
+
+  const colorterm = (env.COLORTERM ?? '').toLowerCase();
+  if (colorterm === 'truecolor' || colorterm === '24bit') return 24;
+
+  const term = env.TERM ?? '';
+  if (/-truecolor$|-direct/.test(term)) return 24;
+
+  // Terminals that are truecolor and do not always say so. Apple's Terminal.app is
+  // deliberately not on this list: it is a 256-colour terminal that renders a
+  // 24-bit sequence as the nearest of them, which is the fallback happening in the
+  // wrong place — by approximation, rather than by the table above.
+  const program = env.TERM_PROGRAM ?? '';
+  if (program === 'iTerm.app' || program === 'vscode' || program === 'ghostty' || program === 'WezTerm') {
+    return 24;
+  }
+
+  if (term.includes('256color') || program === 'Apple_Terminal') return 8;
+  return 4;
+}
+
 export interface Glyphs {
   call: string;
-  /** The title mark. `reference/clio` uses the same one. */
-  diamond: string;
+  /** The title mark, and the mark on anything the user is required to read. */
+  mark: string;
   /** Printed with the "worked for" line when a turn finishes. */
   finished: string;
   result: string;
@@ -102,15 +203,18 @@ export interface Glyphs {
   bottomRight: string;
   horizontal: string;
   vertical: string;
+  /** Where a rule meets a side, so a frame can be divided without being reopened. */
+  teeLeft: string;
+  teeRight: string;
   spinner: readonly string[];
 }
 
-/** Box drawing and Braille when the terminal can take it; ASCII when it cannot. */
+/** Box drawing when the terminal can take it; ASCII when it cannot. */
 export function glyphs(fancy: boolean): Glyphs {
   return fancy
     ? {
         call: '⏺',
-        diamond: '◆',
+        mark: '✻',
         finished: '✻',
         result: '⎿',
         ok: '✓',
@@ -122,11 +226,25 @@ export function glyphs(fancy: boolean): Glyphs {
         bottomRight: '╯',
         horizontal: '─',
         vertical: '│',
-        spinner: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+        teeLeft: '├',
+        teeRight: '┤',
+        // A star that swells and settles, rather than the Braille wheel this used
+        // to spin. Two reasons, and the second is the real one:
+        //
+        //   It is the same mark as `finished`, at eight sizes. A turn then reads as
+        //   one glyph breathing while it works and coming to rest when it is done,
+        //   instead of two unrelated shapes taking turns.
+        //
+        //   Braille is a font gamble. `⠋` is U+280B, and a terminal without a
+        //   Braille face draws a replacement box — which is a *wider* cell on some
+        //   of them, so the line the spinner erases is not the line it drew. These
+        //   eight are dingbats, which is the block a monospace font is far likelier
+        //   to have. Neither is guaranteed; this one is much better odds.
+        spinner: ['·', '✢', '✳', '✻', '✽', '✻', '✳', '✢'],
       }
     : {
         call: '*',
-        diamond: '*',
+        mark: '*',
         finished: '*',
         result: '`-',
         ok: 'ok',
@@ -138,11 +256,13 @@ export function glyphs(fancy: boolean): Glyphs {
         bottomRight: '+',
         horizontal: '-',
         vertical: '|',
+        teeLeft: '+',
+        teeRight: '+',
         spinner: ['-', '\\', '|', '/'],
       };
 }
 
-const SGR = /\[[0-9;]*m/g;
+const SGR = /\u001b\[[0-9;]*m/g;
 
 /**
  * Ranges as inclusive pairs, flattened and sorted, scanned linearly.
@@ -305,10 +425,17 @@ export function summariseArgs(name: string, argsSummary: string, max = 64): stri
   return truncate(argsSummary, max);
 }
 
-/** `⏺ Read(src/app.ts)` — the line that says work is happening. */
+/**
+ * `⏺ Read(src/app.ts)` — the line that says work is happening.
+ *
+ * The dot carries the accent and the name carries the bold, so a transcript scans
+ * down one column of marks: `⏺` for a call, `⎿` for what came back, `✻` for the
+ * end of the turn. The arguments stay grey, because the name is what is being
+ * looked for and the argument is what is read once it has been found.
+ */
 export function toolCallLine(name: string, argsSummary: string, p: Palette, g: Glyphs): string {
   const summary = summariseArgs(name, argsSummary);
-  return `${p.cyan(g.call)} ${p.bold(name)}${p.dim(`(${summary})`)}`;
+  return `${p.accent(g.call)} ${p.bold(name)}${p.grey(`(${summary})`)}`;
 }
 
 export interface ResultInfo {
@@ -317,13 +444,19 @@ export interface ResultInfo {
   contentBytes?: number;
 }
 
-/** `  ⎿ 1.2 kB` under the call, or the error code in red. */
+/**
+ * `  ⎿  1.2 kB` under the call, or the error code in red.
+ *
+ * Two spaces after the hook, not one: the hook is a wide glyph in some fonts and a
+ * narrow one in others, and the extra column is what keeps this line's text from
+ * sitting a column left of the preview block underneath it in half of them.
+ */
 export function toolResultLine(info: ResultInfo, p: Palette, g: Glyphs): string {
   if (info.isError === true) {
     const what = info.errorCode ?? 'failed';
-    return `  ${p.red(g.result)} ${p.red(what)}`;
+    return `  ${p.red(g.result)}  ${p.red(what)}`;
   }
-  return `  ${p.dim(g.result)} ${p.dim(formatBytes(info.contentBytes ?? 0))}`;
+  return `  ${p.grey(g.result)}  ${p.grey(formatBytes(info.contentBytes ?? 0))}`;
 }
 
 /**
@@ -336,9 +469,10 @@ export function toolResultLine(info: ResultInfo, p: Palette, g: Glyphs): string 
 export function toolPreviewBlock(preview: string, p: Palette, g: Glyphs): string {
   return preview
     .split('\n')
-    .map((line) => `    ${p.dim(g.vertical)} ${p.dim(line)}`)
+    .map((line) => `     ${p.accentDim(g.vertical)} ${p.grey(line)}`)
     .join('\n');
 }
+
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} kB`;
@@ -399,12 +533,12 @@ export function box(lines: readonly string[], p: Palette, g: Glyphs, width = 72)
   }
 
   const bar = g.horizontal.repeat(w + 2);
-  const out: string[] = [p.dim(`${g.topLeft}${bar}${g.topRight}`)];
+  const out: string[] = [p.accentDim(`${g.topLeft}${bar}${g.topRight}`)];
   for (const line of fitted) {
     const pad = ' '.repeat(Math.max(0, w - visibleWidth(line)));
-    out.push(`${p.dim(g.vertical)} ${line}${pad} ${p.dim(g.vertical)}`);
+    out.push(`${p.accentDim(g.vertical)} ${line}${pad} ${p.accentDim(g.vertical)}`);
   }
-  out.push(p.dim(`${g.bottomLeft}${bar}${g.bottomRight}`));
+  out.push(p.accentDim(`${g.bottomLeft}${bar}${g.bottomRight}`));
   return out.join('\n');
 }
 
@@ -458,6 +592,40 @@ export const TIPS: readonly string[] = [
   '--read-only wins over --profile, and says so',
 ];
 
+/**
+ * What the spinner calls waiting on the model.
+ *
+ * All of them mean the same thing and all of them are true: a request is open and
+ * no bytes have come back yet. Varying the word is the one piece of decoration in
+ * this file that is purely decoration, and it earns its place by being the thing on
+ * screen longest — a fixed `Thinking` for ninety seconds reads as a hang, and the
+ * word changing between turns is what says the program is alive.
+ *
+ * Deliberately not varied *within* a turn: a word that changes under you while you
+ * are reading it looks like a state change, and there is no state change to report.
+ * And deliberately synonyms rather than jokes — this line also carries the elapsed
+ * time and the spend, and a punchline sitting in front of a running bill is the
+ * wrong register.
+ */
+export const THINKING: readonly string[] = [
+  'Thinking',
+  'Pondering',
+  'Considering',
+  'Deliberating',
+  'Reasoning',
+  'Mulling',
+  'Weighing',
+  'Puzzling',
+  'Reflecting',
+  'Working',
+];
+
+/** One of them. Injectable generator, so a test is not a coin toss. */
+export function pickThinking(random: () => number = Math.random): string {
+  const index = Math.min(THINKING.length - 1, Math.floor(random() * THINKING.length));
+  return THINKING[index] ?? 'Thinking';
+}
+
 /** Pick without repeating. The generator is injectable so a test is not a coin toss. */
 export function pickTips(count: number, random: () => number = Math.random): string[] {
   const pool = [...TIPS];
@@ -506,7 +674,7 @@ export function banner(
       : ([['context', `${info.contextWindow.toLocaleString('en-US')} tokens`]] as Array<[string, string]>)),
     ['profile', info.profile],
     ...(info.approvalMode
-      ? ([['approvals', `${info.approvalMode.label}  ${p.dim('(Shift-Tab cycles)')}`]] as Array<
+      ? ([['approvals', `${info.approvalMode.label}  ${p.grey('(Shift-Tab cycles)')}`]] as Array<
           [string, string]
         >)
       : []),
@@ -521,7 +689,7 @@ export function banner(
   const labelWidth = Math.max(...rows.map(([k]) => k.length));
   const gutter = 3;
 
-  const left = rows.map(([k, v]) => `${p.dim(k.padEnd(labelWidth))}  ${v}`);
+  const left = rows.map(([k, v]) => `${p.grey(k.padEnd(labelWidth))}  ${v}`);
   // Measured from the rendered line rather than re-derived from its parts. Deriving
   // it counted the value in characters, so a workspace path in Chinese was budgeted
   // for at half its width and the row it produced was wider than the frame it sat in.
@@ -541,12 +709,25 @@ export function banner(
   const right =
     tipWidth < TIP_MINIMUM
       ? []
-      : [p.dim('Tips'), ...tips.map((tip) => p.dim(`· ${truncate(tip, tipWidth - 2)}`))];
+      : [
+          p.accentDim('Tips'),
+          ...tips.map((tip) => `${p.accentDim('·')} ${p.grey(truncate(tip, tipWidth - 2))}`),
+        ];
 
   const pad = (line: string, width: number): string =>
     `${line}${' '.repeat(Math.max(0, width - visibleWidth(line)))}`;
 
-  const title = `${p.boldBlue(g.diamond)} ${p.boldBlue('MyCoder')} ${p.dim(info.version)}`;
+  // Left, not centred, and the version pushed to the far edge.
+  //
+  // This was centred when the box was narrow. The box is full width now, and a
+  // title floating in the middle of eighty columns over a hard-left column of
+  // labels has nothing to line up with — it reads as a caption for a picture that
+  // is not there. Against the left edge it starts the same vertical the labels,
+  // the tool lines and the prompt all start on, which is the one alignment the
+  // whole screen shares.
+  const name = `${p.accentBold(g.mark)} ${p.accentBold('MyCoder')}`;
+  const titleGap = Math.max(1, inner - visibleWidth(name) - info.version.length);
+  const title = `${name}${' '.repeat(titleGap)}${p.grey(info.version)}`;
 
   // A row too wide for the frame is wrapped, never cut. Tips are decoration and give
   // way first; the left column is claims, and an isolation line truncated into
@@ -572,17 +753,21 @@ export function banner(
   }
 
   const bar = g.horizontal.repeat(inner + 2);
+  const side = p.accentDim(g.vertical);
+  // A rule under the title rather than a blank row. The title says what this is and
+  // the body says what it will do, and one of those is worth reading twice — the
+  // divider is what stops the eye reading straight past it into the labels.
   const framed = [
-    p.blue(`${g.topLeft}${bar}${g.topRight}`),
-    `${p.blue(g.vertical)} ${pad(centre([title], inner)[0] ?? title, inner)} ${p.blue(g.vertical)}`,
-    `${p.blue(g.vertical)} ${pad('', inner)} ${p.blue(g.vertical)}`,
-    ...body.map((line) => `${p.blue(g.vertical)} ${pad(line, inner)} ${p.blue(g.vertical)}`),
-    p.blue(`${g.bottomLeft}${bar}${g.bottomRight}`),
+    p.accentDim(`${g.topLeft}${bar}${g.topRight}`),
+    `${side} ${pad(title, inner)} ${side}`,
+    p.accentDim(`${g.teeLeft}${bar}${g.teeRight}`),
+    ...body.map((line) => `${side} ${pad(line, inner)} ${side}`),
+    p.accentDim(`${g.bottomLeft}${bar}${g.bottomRight}`),
   ];
 
   // The caveat sits under the frame at the frame's own left edge. Left-aligned, not
   // centred: it is several sentences of prose and centred prose is a ransom note.
-  return [...framed, '', ...wrapText(info.caveat, inner).map((line) => `  ${p.dim(line)}`)].join('\n');
+  return [...framed, '', ...wrapText(info.caveat, inner).map((line) => `  ${p.grey(line)}`)].join('\n');
 }
 
 /**
@@ -650,8 +835,8 @@ export function turnFooter(
     );
   }
 
-  const worked = `${p.blue(g.finished)} ${p.dim(`Worked for ${formatDuration(elapsedMs)}`)}`;
-  return parts.length === 0 ? worked : `${worked}\n  ${p.dim(parts.join(', '))}`;
+  const worked = `${p.accent(g.finished)} ${p.grey(`Worked for ${formatDuration(elapsedMs)}`)}`;
+  return parts.length === 0 ? worked : `${worked}\n  ${p.grey(parts.join(', '))}`;
 }
 
 /** `43s`, `1m 4s`, `2h 3m`. Whole units only; nobody reads milliseconds. */
@@ -683,7 +868,48 @@ export function formatDuration(ms: number): string {
  * editor draws one rule as its own footer, so there is one function.
  */
 export function inputRule(p: Palette, g: Glyphs, columns: number): string {
-  return p.dimBlue(g.horizontal.repeat(Math.max(8, columns - 2)));
+  return p.accentDim(g.horizontal.repeat(Math.max(8, columns - 2)));
+}
+
+/**
+ * The box the input sits inside.
+ *
+ * The rule above was half a frame, and a half frame is what a program draws when
+ * the thing under it cannot be redrawn — which was true of readline and stopped
+ * being true with ADR-0032. The editor already rewrites every row of its block on
+ * every keystroke, so closing the sides costs nothing it was not already paying.
+ *
+ * Sides *do* cost something, and it is worth naming: four columns of the terminal,
+ * and the block can no longer be selected with the mouse and pasted as bare text —
+ * the borders come with it. That is the trade every framed prompt makes, and it is
+ * the reason `--no-colour` and a pipe get the bare rule instead: the frame is drawn
+ * only where it is being drawn *live*, and never into a log.
+ *
+ * A renderer still, on the terms of this module's header: no absolute positioning,
+ * nothing that survives the process. The editor moves the cursor relatively over
+ * rows it wrote itself, which it already did for the rule.
+ */
+export interface InputFrame {
+  /** The full top and bottom rows, coloured and ready to print. */
+  top: string;
+  bottom: string;
+  /** One cell each, coloured. The editor pads between them. */
+  left: string;
+  right: string;
+  /** Columns the two sides and their padding take from the content. */
+  gutter: number;
+}
+
+export function inputFrame(p: Palette, g: Glyphs, columns: number): InputFrame {
+  const inner = Math.max(8, columns - 2);
+  const bar = g.horizontal.repeat(inner);
+  return {
+    top: p.accentDim(`${g.topLeft}${bar}${g.topRight}`),
+    bottom: p.accentDim(`${g.bottomLeft}${bar}${g.bottomRight}`),
+    left: p.accentDim(g.vertical),
+    right: p.accentDim(g.vertical),
+    gutter: 4,
+  };
 }
 
 /**
@@ -714,11 +940,20 @@ export function modeIndicator(mode: string, label: string, p: Palette): string {
 }
 
 /**
- * What you typed, redrawn as a block once it has been sent, with the frame closed
- * under it.
+ * What you typed, redrawn once it has been sent.
  *
- * Inverse video — dark text on a light background — because the one thing that is
- * genuinely hard to follow in a long transcript is which lines were *yours*.
+ * A quote marker in the accent and the text left alone, which is what a transcript
+ * needs: the one thing that is genuinely hard to follow in a long session is which
+ * lines were *yours*, and a mark in the margin answers that from the corner of the
+ * eye without repainting the row.
+ *
+ * This was a bar of inverse video, and it was wrong twice. `47;30` is not "inverse",
+ * it is black on white — hardcoded, so on a light terminal it drew grey-on-grey and
+ * on a dark one it was a slab of white across the transcript, brighter than the
+ * model's own answer and drawing the eye to the one line the reader already knows
+ * the contents of. And it extended one column past the text at each end, so the
+ * width of the slab varied with the length of the prompt, which is a ragged left
+ * margin dressed up as emphasis.
  *
  * Every line, however long. There used to be a guard here that dropped the block for
  * anything wider than the terminal, because the old implementation moved the cursor
@@ -726,9 +961,18 @@ export function modeIndicator(mode: string, label: string, p: Palette): string {
  * editor takes its own block down now — and the guard outlived its reason: with the
  * block cleared and the block suppressed, a long line vanished from the transcript
  * entirely, which is the opposite of what this function is for.
+ *
+ * `columns` is gone from the signature with the bar that needed it. Nothing here
+ * wraps: the terminal does that, and a renderer that wraps as well is how a line
+ * acquires a second break three columns before the real one.
  */
-export function submitted(text: string, p: Palette, g: Glyphs, columns: number): string {
-  return `${p.inverse(` > ${text} `)}\n${inputRule(p, g, columns)}\n`;
+export function submitted(text: string, p: Palette, g: Glyphs): string {
+  const marker = p.accent(g.prompt);
+  const body = text
+    .split('\n')
+    .map((line) => `${marker} ${p.grey(line)}`)
+    .join('\n');
+  return `${body}\n\n`;
 }
 
 export interface StatusInfo {
@@ -772,21 +1016,21 @@ function costParts(info: StatusInfo, p: Palette): string[] {
   if (info.costUsd === undefined) return [];
   if (unpriced === 0) return [p.green(`$${info.costUsd.toFixed(4)}`)];
   if (info.costUsd === 0) {
-    return [p.dim(`cost unknown (${unpriced} unpriced request${unpriced === 1 ? '' : 's'})`)];
+    return [p.grey(`cost unknown (${unpriced} unpriced request${unpriced === 1 ? '' : 's'})`)];
   }
-  return [p.green(`≥$${info.costUsd.toFixed(4)}`), p.dim(`${unpriced} unpriced`)];
+  return [p.green(`≥$${info.costUsd.toFixed(4)}`), p.grey(`${unpriced} unpriced`)];
 }
 
 export function statusLine(info: StatusInfo, p: Palette): string {
   const parts = [
-    p.blue(info.model),
-    ...(info.contextWindow === undefined ? [] : [p.dim(`${Math.round(info.contextWindow / 1000)}k ctx`)]),
-    p.dim(`${info.requests} request${info.requests === 1 ? '' : 's'}`),
-    p.dim(`${formatTokens(info.tokens)} tokens`),
+    p.accent(info.model),
+    ...(info.contextWindow === undefined ? [] : [p.grey(`${Math.round(info.contextWindow / 1000)}k ctx`)]),
+    p.grey(`${info.requests} request${info.requests === 1 ? '' : 's'}`),
+    p.grey(`${formatTokens(info.tokens)} tokens`),
     ...costParts(info, p),
-    ...(info.elapsedMs === undefined ? [] : [p.dim(formatDuration(info.elapsedMs))]),
+    ...(info.elapsedMs === undefined ? [] : [p.grey(formatDuration(info.elapsedMs))]),
   ];
-  return `  ${parts.join(p.dim(' · '))}`;
+  return `  ${parts.join(p.accentDim(' · '))}`;
 }
 
 /** `just now`, `14m ago`, `3h ago`, `2d ago`. What a session list is read by. */
@@ -824,13 +1068,13 @@ export function sessionList(
   now: number,
   p: Palette,
 ): string {
-  const lines = [p.dim(`Sessions in ${workspace}:`), ''];
+  const lines = [p.grey(`Sessions in ${workspace}:`), ''];
   choices.forEach((c, index) => {
     const when = timeAgo(c.updatedAt, now).padEnd(9);
     const title = c.title ?? '(nothing was asked in this session)';
     lines.push(
-      `  ${p.blue(`${index + 1}`)}  ${p.dim(when)} ${title}\n` +
-        `     ${p.dim(`${c.model} · ${c.toolCalls} tool call${c.toolCalls === 1 ? '' : 's'} · ${c.sessionId}`)}`,
+      `  ${p.accent(`${index + 1}`)}  ${p.grey(when)} ${title}\n` +
+        `     ${p.grey(`${c.model} · ${c.toolCalls} tool call${c.toolCalls === 1 ? '' : 's'} · ${c.sessionId}`)}`,
     );
   });
   return lines.join('\n');
@@ -868,7 +1112,7 @@ export function diffBlock(diff: string, p: Palette, maxLines = 40): string {
     if (line.startsWith('@@')) return p.cyan(line);
     return line;
   });
-  if (lines.length > maxLines) shown.push(p.dim(`… ${lines.length - maxLines} more line(s)`));
+  if (lines.length > maxLines) shown.push(p.grey(`… ${lines.length - maxLines} more line(s)`));
   return shown.join('\n');
 }
 
@@ -893,6 +1137,18 @@ export class Spinner {
   private readonly g: Glyphs;
   private readonly enabled: boolean;
   private readonly now: () => number;
+  /**
+   * How to stop what is running, printed alongside it.
+   *
+   * The key is not discoverable while a turn is in flight: the banner said it once,
+   * several screens ago, and the prompt that repeats it is not on screen. A spinner
+   * is the only thing showing during the exact window in which somebody wants to
+   * know, so it is the only honest place to put it.
+   *
+   * Empty by default, because the key belongs to whoever installed the handler and
+   * this class does not get to guess at one.
+   */
+  private readonly hint: string;
 
   // Explicit fields rather than parameter properties: `tsconfig.json` sets
   // `erasableSyntaxOnly`, because Node strips types rather than compiling them and
@@ -903,19 +1159,23 @@ export class Spinner {
     g: Glyphs,
     enabled: boolean,
     now: () => number = Date.now,
+    hint = '',
   ) {
     this.write = write;
     this.p = p;
     this.g = g;
     this.enabled = enabled;
     this.now = now;
+    this.hint = hint;
   }
 
   start(text: string): void {
     this.text = text;
     this.started = this.now();
     if (!this.enabled || this.timer) return;
-    this.timer = setInterval(() => this.tick(), 90);
+    // 80ms, from 90. The star has eight frames against the wheel's ten, so this is
+    // the interval that keeps the pulse at roughly the period the wheel span at.
+    this.timer = setInterval(() => this.tick(), 80);
     // Do not hold the process open for a spinner.
     this.timer.unref?.();
     this.tick();
@@ -935,16 +1195,28 @@ export class Spinner {
     this.detail = detail;
   }
 
-  /** Render one frame. Exposed so a test can drive it without a timer. */
+  /**
+   * Render one frame. Exposed so a test can drive it without a timer.
+   *
+   * `✻ Thinking… (12s · 4.8k tokens · ctrl-c to interrupt)`. The figures moved into
+   * a bracket rather than trailing the verb on a `·` of their own: the verb is the
+   * only part that changes meaning, and everything after it is the same three facts
+   * every time. Bracketed, the eye reads the verb and skips the rest until it wants
+   * one of them.
+   */
   tick(): void {
     if (!this.enabled) return;
     const g = this.g.spinner;
     const frame = g[this.frame % g.length] ?? '';
     this.frame += 1;
     const seconds = Math.floor((this.now() - this.started) / 1000);
-    const elapsed = seconds > 0 ? ` ${seconds}s` : '';
-    const detail = this.detail === '' ? '' : ` · ${this.detail}`;
-    this.write(`\r[K${this.p.cyan(frame)} ${this.p.dim(this.text + elapsed + detail)}`);
+    const facts = [
+      ...(seconds > 0 ? [`${seconds}s`] : []),
+      ...(this.detail === '' ? [] : [this.detail]),
+      ...(this.hint === '' ? [] : [this.hint]),
+    ];
+    const tail = facts.length === 0 ? '' : ` ${this.p.grey(`(${facts.join(' · ')})`)}`;
+    this.write(`\r${ESC}K${this.p.accent(frame)} ${this.p.grey(`${this.text}…`)}${tail}`);
   }
 
   /** Clear the line. Safe to call when never started. */
@@ -953,7 +1225,7 @@ export class Spinner {
       clearInterval(this.timer);
       this.timer = undefined;
     }
-    if (this.enabled) this.write('\r[K');
+    if (this.enabled) this.write(`\r${ESC}K`);
   }
 }
 
@@ -993,6 +1265,14 @@ export interface RendererOptions {
    * terminal, and a redirected file is not one whatever the palette says.
    */
   answerIsTerminal?: boolean;
+  /**
+   * How to stop a turn, in the words of the key that does it.
+   *
+   * Supplied by whoever installed the handler rather than assumed here — the
+   * kernel binds this in `main.ts` and a caller embedding the renderer may not
+   * bind it at all, in which case the spinner says nothing about interrupting.
+   */
+  interruptHint?: string;
 }
 
 /**
@@ -1023,11 +1303,27 @@ export class SessionRenderer {
   /** Present only when the answer is to be streamed. */
   private readonly answer: MarkdownStream | undefined;
 
+  /**
+   * The word the spinner is using for this turn.
+   *
+   * Held on the renderer rather than picked per `start()`, because `start()` is
+   * called again after every tool result: picked there, the word would change four
+   * times inside one turn, which reads as four different things happening.
+   */
+  private thinking = pickThinking();
+
   private readonly opts: RendererOptions;
 
   constructor(opts: RendererOptions) {
     this.opts = opts;
-    this.spinner = new Spinner(opts.write, opts.palette, opts.glyphs, opts.live);
+    this.spinner = new Spinner(
+      opts.write,
+      opts.palette,
+      opts.glyphs,
+      opts.live,
+      Date.now,
+      opts.interruptHint ?? '',
+    );
     this.answer = opts.writeAnswer
       ? new MarkdownStream({
           palette: opts.answerPalette ?? palette(false),
@@ -1061,11 +1357,12 @@ export class SessionRenderer {
         this.costUsd = 0;
         this.spinner.setDetail('');
         this.answer?.reset();
-        this.spinner.start('Thinking');
+        this.thinking = pickThinking();
+        this.spinner.start(this.thinking);
         return;
 
       case 'model.request.started':
-        this.spinner.start('Thinking');
+        this.spinner.start(this.thinking);
         return;
 
       // Usage and cost, onto the line that is already live. The figures come from
@@ -1077,8 +1374,10 @@ export class SessionRenderer {
         const output = typeof usage.outputTokens === 'number' ? usage.outputTokens : 0;
         this.tokens += input + output;
         if (typeof data.costUsd === 'number') this.costUsd += data.costUsd;
+        // `$`, which this figure was printing without. It is a dollar amount either
+        // way, and a bare `0.4213` next to a token count reads as another count.
         this.spinner.setDetail(
-          `${formatTokens(this.tokens)} tokens` + (this.costUsd > 0 ? ` · ${this.costUsd.toFixed(4)}` : ''),
+          `${formatTokens(this.tokens)} tokens` + (this.costUsd > 0 ? ` · $${this.costUsd.toFixed(4)}` : ''),
         );
         return;
       }
@@ -1132,10 +1431,10 @@ export class SessionRenderer {
         const mode = typeof data.mode === 'string' ? data.mode : 'mode';
         this.flushAnswer();
         this.spinner.stop();
-        // `diamond` is the glyph the approval frame uses, which is the point:
+        // `mark` is the glyph the approval frame uses, which is the point:
         // this line stands where that frame would have been.
-        write(`${p.dim(`  ${g.diamond} auto-approved (${mode}): ${summary}`)}\n`);
-        this.spinner.start('Thinking');
+        write(`${p.grey(`  ${g.mark} auto-approved (${mode}): ${summary}`)}\n`);
+        this.spinner.start(this.thinking);
         return;
       }
 
@@ -1173,7 +1472,7 @@ export class SessionRenderer {
         if (typeof data.preview === 'string' && data.preview !== '') {
           write(`${toolPreviewBlock(data.preview, p, g)}\n`);
         }
-        this.spinner.start('Thinking');
+        this.spinner.start(this.thinking);
         return;
       }
 

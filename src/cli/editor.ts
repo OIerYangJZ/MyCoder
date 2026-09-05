@@ -37,7 +37,7 @@
  *   on a slow paste and then auto-submits it.
  */
 
-import { truncate, visibleWidth, type Glyphs, type Palette } from './render.ts';
+import { truncate, visibleWidth, type Glyphs, type InputFrame, type Palette } from './render.ts';
 
 const ESC = '\u001b';
 const CSI = `${ESC}[`;
@@ -768,21 +768,48 @@ export interface RenderOptions {
    * `keepFrame`: readline erased everything below its line on every keystroke and
    * the rule had to be put back after each one. Nothing erases it here, because the
    * thing doing the erasing is also the thing drawing it.
+   *
+   * Ignored when `frame` is set, which supplies its own bottom row.
    */
   footer?: string;
+  /**
+   * A box around the whole input, instead of the rule under it.
+   *
+   * The same argument as `footer`, taken one step further: the editor rewrites
+   * every row of its block on every keystroke, so a right-hand border costs it
+   * nothing extra. What it does cost is four columns of content width, which is
+   * why the rows are laid out against `columns - frame.gutter` and not against
+   * `columns` — get that wrong and the text runs under the closing border, which
+   * is the specific corruption the wrapping arithmetic in `layout` exists to stop.
+   */
+  frame?: InputFrame;
 }
 
 export interface Viewport {
   /** The buffer rows to draw, and where the cursor sits among them. */
   bufferRows: readonly string[];
+  /** Counted from the top of the whole block, the frame's own rows included. */
   cursorRow: number;
   cursorCol: number;
   /** The menu slice to draw, and which of those is selected. */
   menuItems: readonly string[];
   menuSelected: number;
+  /** The frame's top row, if there is one. Zero or one. */
+  headerRows: number;
   footerRows: number;
   /** Everything above, added up. What the next redraw must clear. */
   total: number;
+}
+
+/**
+ * The width the buffer is laid out against, which is not the terminal's.
+ *
+ * One function because three callers need the same answer and a second copy of
+ * this subtraction is a block whose rows disagree with the border around them.
+ */
+function contentOptions(opts: RenderOptions): RenderOptions {
+  if (!opts.frame) return opts;
+  return { ...opts, columns: Math.max(8, opts.columns - opts.frame.gutter) };
 }
 
 /**
@@ -797,24 +824,31 @@ export interface Viewport {
  * scrolling up through a long paste shows where you are rather than where you began.
  */
 export function viewport(state: EditorState, opts: RenderOptions): Viewport {
-  const plan = layout(state, opts);
-  const footerRows = opts.footer !== undefined && opts.footer !== '' ? 1 : 0;
+  const inner = contentOptions(opts);
+  const plan = layout(state, inner);
+  // A frame brings its own two rows and its own left border, and the border shifts
+  // every column of the buffer right by half the gutter.
+  const headerRows = opts.frame ? 1 : 0;
+  const footerRows = opts.frame ? 1 : opts.footer !== undefined && opts.footer !== '' ? 1 : 0;
+  const indent = opts.frame ? opts.frame.gutter / 2 : 0;
+  const chrome = headerRows + footerRows;
   const height = opts.rows ?? Number.POSITIVE_INFINITY;
 
   if (!Number.isFinite(height)) {
     return {
       bufferRows: plan.rows,
-      cursorRow: plan.cursorRow,
-      cursorCol: plan.cursorCol,
+      cursorRow: plan.cursorRow + headerRows,
+      cursorCol: plan.cursorCol + indent,
       menuItems: state.menu,
       menuSelected: state.menuAt,
+      headerRows,
       footerRows,
-      total: plan.rows.length + state.menu.length + footerRows,
+      total: plan.rows.length + state.menu.length + chrome,
     };
   }
 
   const available = Math.max(1, Math.floor(height) - 1);
-  const forContent = Math.max(1, available - footerRows);
+  const forContent = Math.max(1, available - chrome);
 
   let menuShare = Math.min(state.menu.length, Math.floor(forContent / 2));
   const bufferShare = Math.max(1, Math.min(plan.rows.length, forContent - menuShare));
@@ -835,12 +869,13 @@ export function viewport(state: EditorState, opts: RenderOptions): Viewport {
 
   return {
     bufferRows,
-    cursorRow: plan.cursorRow - bufferStart,
-    cursorCol: plan.cursorCol,
+    cursorRow: plan.cursorRow - bufferStart + headerRows,
+    cursorCol: plan.cursorCol + indent,
     menuItems,
     menuSelected: state.menuAt - menuStart,
+    headerRows,
     footerRows,
-    total: bufferRows.length + menuItems.length + footerRows,
+    total: bufferRows.length + menuItems.length + chrome,
   };
 }
 
@@ -889,25 +924,46 @@ export function renderEditor(state: EditorState, opts: RenderOptions, previousRo
   // what is being searched for, and the entry it currently points at.
   if (state.search) {
     const found = state.history[state.search.matches[state.search.at] ?? -1] ?? '';
-    const label = p.dim(`(reverse-i-search)'${state.search.query}': `);
+    const label = p.grey(`(reverse-i-search)'${state.search.query}': `);
     out += `${label}${truncate(found, Math.max(8, columns - visibleWidth(label) - 1))}`;
     out += `\r${CSI}${visibleWidth(label) + visibleWidth(state.search.query)}C`;
     return out;
   }
 
   const view = viewport(state, opts);
-  out += view.bufferRows.join('\n');
 
+  // The frame, when there is one: a top row, every buffer row padded out to the
+  // inner width and closed on both sides, then a bottom row. The padding is by
+  // display columns, so a line of Chinese closes the box in the same place a line
+  // of ASCII does.
+  const frame = opts.frame;
+  if (frame) {
+    const inner = Math.max(8, opts.columns - frame.gutter);
+    out += `${frame.top}\n`;
+    out += view.bufferRows
+      .map((row) => {
+        const pad = ' '.repeat(Math.max(0, inner - visibleWidth(row)));
+        return `${frame.left} ${row}${pad} ${frame.right}`;
+      })
+      .join('\n');
+    out += `\n${frame.bottom}`;
+  } else {
+    out += view.bufferRows.join('\n');
+  }
+
+  // Under the box rather than inside it. A suggestion is not part of what is being
+  // typed, and a menu boxed in with the input made a four-line completion look like
+  // four lines of buffer.
   if (view.menuItems.length > 0) {
     out += '\n';
     out += view.menuItems
       .map((item, index) =>
-        index === view.menuSelected ? `  ${p.boldBlue('❯')} ${p.boldBlue(item)}` : `    ${p.dim(item)}`,
+        index === view.menuSelected ? `  ${p.accentBold('❯')} ${p.accentBold(item)}` : `    ${p.grey(item)}`,
       )
       .join('\n');
   }
 
-  if (view.footerRows > 0) out += `\n${opts.footer ?? ''}`;
+  if (!frame && view.footerRows > 0) out += `\n${opts.footer ?? ''}`;
 
   // Back to the cursor: up from the end of what was written, then across.
   const up = view.total - 1 - view.cursorRow;
@@ -953,6 +1009,13 @@ export interface EditorOptions {
   prompt: () => string;
   continuation: string;
   footer?: () => string;
+  /**
+   * The box around the input, re-read per draw so it follows a resize.
+   *
+   * Wins over `footer`, which is the same idea with three fewer sides. A caller
+   * writing into anything but a live terminal should pass neither.
+   */
+  frame?: () => InputFrame;
   complete?: (text: string) => readonly string[];
   /**
    * Subscribe to end-of-input. Returns an unsubscribe.
@@ -1025,6 +1088,7 @@ export class Editor {
       palette: this.opts.palette,
       glyphs: this.opts.glyphs,
       ...(this.opts.footer ? { footer: this.opts.footer() } : {}),
+      ...(this.opts.frame ? { frame: this.opts.frame() } : {}),
     });
 
     const draw = (): void => {

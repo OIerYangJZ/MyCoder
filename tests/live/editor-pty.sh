@@ -70,8 +70,10 @@ const checks = [
   ["completion menu showed both candidates", /\/skills/.test(raw) && /\/status/.test(raw)],
   ["selection marker in the menu", raw.includes("❯")],
   ["a control command ran to completion", /isolation|profile|permission/i.test(raw)],
-  // The editor takes its own block down before the inverse block replaces it.
-  // Without this the prompt line survived and the sent line appeared twice.
+  // The input is inside a box now, not under a rule. Both corners have to be on
+  // screen: a top drawn without a bottom is what a frame looks like when the row
+  // count and the drawing have stopped agreeing.
+  ["the input box is drawn, both corners", raw.includes("╭") && raw.includes("╰")],
   ["@ completion filled in the path", /@src\/thing\.ts/.test(raw)],
   ["the attachment was reported", /attached src\/thing\.ts/.test(raw)],
   ["a paste taller than the window never moves up more rows than the window has",
@@ -82,10 +84,21 @@ const checks = [
    })()],
   ["and the paste is still what was pasted, not submitted line by line",
    /pasted line 40/.test(fs.readFileSync("/tmp/pty-tall.raw", "utf8"))],
+  // The editor takes its own block down before the marked line replaces it.
+  // Without this the prompt line survived and the sent line appeared twice: once
+  // as typed, once as the block. This used to look for the `47;30` slab, which is
+  // gone — the sent line is a `❯` in the margin now.
+  //
+  // The take-down is `\r`, then up by the row the cursor is on, then erase to the
+  // end of the screen. The row is 1 rather than 0 now — the box has a top border
+  // above the prompt — so the move is part of what is matched here.
   ["the sent line replaced its prompt rather than stacking under it",
    (() => {
-     const at = raw.lastIndexOf("47;30m > /status");
-     return at > 0 && raw.slice(Math.max(0, at - 12), at).includes("\r" + E + "[J");
+     const found = [...raw.matchAll(/❯[^\n]{0,40}\/status/g)];
+     const at = found.length > 0 ? found[found.length - 1].index : -1;
+     if (at <= 0) return false;
+     const before = raw.slice(Math.max(0, at - 64), at);
+     return new RegExp("\\r(" + E + "\\[\\d+A)?" + E + "\\[J").test(before);
    })()],
 ];
 let bad = 0;

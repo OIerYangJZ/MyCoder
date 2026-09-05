@@ -85,7 +85,13 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
     const lines = renderApproval(request)
       .split('\n')
       .map((line) => (/^\s{4}[-+@]/.test(line) ? diffBlock(line, this.p) : line));
-    const title = `${this.p.boldBlue(this.g.diamond)} ${this.p.boldBlue('Approval required')}`;
+    // High risk is said on the title row, in red, rather than only in the prose
+    // underneath: it is the one word that changes how carefully the rest is read,
+    // and a reader who skips to the menu should not be able to miss it.
+    const risk = request.subject.risk === 'high' ? `  ${this.p.red('high risk')}` : '';
+    const title = `${this.p.accentBold(this.g.mark)} ${this.p.accentBold('Approval required')}${risk}`;
+    // `renderApproval`'s first line is the same title in plain text, for the tests
+    // and the non-terminal path; the framed version has just drawn its own.
     return box([title, '', ...lines.slice(1)], this.p, this.g, this.columns());
   }
 
@@ -133,8 +139,8 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
       this.quiet();
       const answer = (
         await this.rl.question(
-          `  ${this.p.boldBlue('[y]')} once  ${this.p.boldBlue('[s]')} this session  ` +
-            `${this.p.boldBlue('[n]')} no  ${this.p.boldBlue('[d]')} deny for session ${this.p.dim('>')} `,
+          `  ${this.p.accentBold('[y]')} once  ${this.p.accentBold('[s]')} this session  ` +
+            `${this.p.accentBold('[n]')} no  ${this.p.accentBold('[d]')} deny for session ${this.p.grey('>')} `,
         )
       )
         .trim()
@@ -198,7 +204,16 @@ export function approvalChoices(request: ApprovalRequest): ApprovalChoice[] {
   ];
 }
 
-/** Rendered separately so tests can assert on the text without a terminal. */
+/**
+ * Rendered separately so tests can assert on the text without a terminal.
+ *
+ * The labels used to be padded by hand — `tool     :`, `action   :` — and the hand
+ * was wrong: `delegation:` is ten characters where the others are nine, so the one
+ * screen a user is *required* to read had its colons out of line exactly when a
+ * subagent was asking, which is the case that needs reading most carefully. They
+ * are padded from the widest label present now, so the column is right whatever
+ * set of rows this particular request produces.
+ */
 export function renderApproval(request: ApprovalRequest): string {
   const lines: string[] = [];
   const risk = request.subject.risk;
@@ -209,15 +224,28 @@ export function renderApproval(request: ApprovalRequest): string {
   // delegated `npm install` as though the root agent had asked for it would put
   // the user's trust in the wrong place — and "which agent wants this" is often
   // the whole basis for the decision.
-  if (request.delegation) {
-    lines.push(`  agent    : ${request.delegation.agent}  (subagent, depth ${request.delegation.depth})`);
-    lines.push(`  delegation: ${request.delegation.delegationId}`);
-    lines.push(`  tool     : ${request.toolName}`);
-    lines.push(`  child action: ${request.subject.title}`);
-  } else {
-    lines.push(`  tool     : ${request.toolName}`);
-    lines.push(`  action   : ${request.subject.title}`);
-  }
+  const rows: Array<[string, string]> = request.delegation
+    ? [
+        ['agent', `${request.delegation.agent}  (subagent, depth ${request.delegation.depth})`],
+        ['delegation', request.delegation.delegationId],
+        ['tool', request.toolName],
+        ['child action', request.subject.title],
+      ]
+    : [
+        ['tool', request.toolName],
+        ['action', request.subject.title],
+      ];
+
+  // Every label that will be printed, the ones below included, so the colons line
+  // up down the whole box rather than down the first half of it.
+  const labels = [...rows.map(([k]) => k), 'scope'];
+  if (request.pending.length > 0) labels.push('requires');
+  if (request.diff) labels.push('diff');
+  const width = Math.max(...labels.map((label) => label.length));
+  const row = (label: string, value?: string): string =>
+    `  ${label.padEnd(width)} :${value === undefined ? '' : ` ${value}`}`;
+
+  for (const [label, value] of rows) lines.push(row(label, value));
 
   for (const detail of request.subject.details) {
     lines.push(`  ${detail}`);
@@ -226,7 +254,7 @@ export function renderApproval(request: ApprovalRequest): string {
   // Spell out every capability that is actually being asked for, not just the
   // headline one: an approval that hides a second access is not informed.
   if (request.pending.length > 0) {
-    lines.push('  requires :');
+    lines.push(row('requires'));
     for (const decision of request.pending) {
       lines.push(`    - ${describeAccess(decision.access)}`);
       if (decision.reason) lines.push(`      (${decision.reason})`);
@@ -235,12 +263,12 @@ export function renderApproval(request: ApprovalRequest): string {
 
   if (request.diff) {
     const preview = request.diff.split('\n').slice(0, 40).join('\n');
-    lines.push('  diff     :');
+    lines.push(row('diff'));
     lines.push(preview.replace(/^/gm, '    '));
     if (request.diff.split('\n').length > 40) lines.push('    … (truncated)');
   }
 
-  lines.push('  scope    : this call only, or the rest of this session for exactly this action');
+  lines.push(row('scope', 'this call only, or the rest of this session for exactly this action'));
 
   return lines.join('\n');
 }

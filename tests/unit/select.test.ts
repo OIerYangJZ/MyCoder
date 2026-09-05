@@ -69,12 +69,31 @@ describe('the menu, as rows', () => {
     }
   });
 
-  test('the selected row is marked and blue, and the others are not', () => {
+  test('the selected row is marked and accented, and the others are grey', () => {
+    // The accent was blue and is now a warm terracotta, which has no ANSI code —
+    // `1;33` is what it comes out as on a four-bit terminal.
+    //
+    // The unselected rows used to be unstyled, and this asserted only that they
+    // were not bold. Four plain rows and one bold one puts the work on the reader:
+    // the eye has to find the heavy row among equals. Grey rows with one accented
+    // row is a highlight rather than a difference in weight.
     const rendered = renderMenu(ITEMS, 1, fancy, g).split('\n');
-    assert.match(rendered[1] ?? '', /\[1;34m/, 'the selection is not blue');
+    assert.match(rendered[1] ?? '', /\[1;33m/, 'the selection is not in the accent');
     assert.match(rendered[1] ?? '', /❯/);
-    assert.equal(/\[1;34m/.test(rendered[0] ?? ''), false, 'an unselected row was styled');
+    assert.equal(/\[1;33m/.test(rendered[0] ?? ''), false, 'an unselected row took the accent');
+    assert.match(rendered[0] ?? '', /\[2m/, 'an unselected row is not grey');
     assert.equal((rendered[0] ?? '').includes('❯'), false);
+  });
+
+  test('the answers are numbered, which the approval prompt has claimed all along', () => {
+    // `approvalChoices` has said "the answers are numbered as well as lettered"
+    // since it was written, and it was true of the typed prompt and of nothing
+    // else. The numbers say how many answers there are without counting rows, and
+    // they are what somebody reads back over a call.
+    const rendered = renderMenu(ITEMS, 0, plain, glyphs(false)).split('\n');
+    rendered.forEach((line, index) => {
+      assert.match(line, new RegExp(`\\b${index + 1}\\.`), `row ${index} is not numbered: ${line}`);
+    });
   });
 
   test('a plain palette still marks the selection, because colour is not the only reader', () => {

@@ -73,6 +73,16 @@ export function parseKeys(data: string): MenuKey[] {
  * Exactly one line per item, because the redraw moves up by the number of items and
  * a wrapped label would make that count a lie. Labels are cut to fit rather than
  * allowed to wrap.
+ *
+ * Numbered, which `approvalChoices` has claimed in its own comment since it was
+ * written and this never actually did: "the answers are numbered as well as
+ * lettered" was true of the typed prompt and of nothing else. The numbers earn
+ * their column twice over — they say how many answers there are without counting
+ * rows, and they are what a person reads back to somebody over a call.
+ *
+ * The unselected rows are grey rather than plain. With four white rows and one
+ * bold one, the bold one is where the highlight *is*; with four grey rows and one
+ * accented one, the highlight is what the eye lands on first.
  */
 export function renderMenu(
   items: readonly string[],
@@ -81,11 +91,17 @@ export function renderMenu(
   g: Glyphs,
   columns = 80,
 ): string {
-  const room = Math.max(8, columns - 6);
+  // Wide enough for the widest number, so single- and double-digit lists both
+  // line their labels up in one column.
+  const numberWidth = String(items.length).length;
+  const room = Math.max(8, columns - 6 - numberWidth - 2);
   return items
     .map((item, index) => {
       const label = truncate(item, room);
-      return index === selected ? `  ${p.boldBlue(g.prompt)} ${p.boldBlue(label)}` : `    ${label}`;
+      const number = `${String(index + 1).padStart(numberWidth)}.`;
+      return index === selected
+        ? `  ${p.accentBold(g.prompt)} ${p.accentBold(number)} ${p.accentBold(label)}`
+        : `    ${p.grey(number)} ${p.grey(label)}`;
     })
     .join('\n');
 }

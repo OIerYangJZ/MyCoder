@@ -5,9 +5,10 @@
  * so every case below is an assertion about a string rather than a screenshot.
  *
  * The two that matter most are the ones about *not* styling: escape codes written
- * into a pipe end up in somebody's log file, and box-drawing plus Braille end up as
- * mojibake in a CI log and in `cmd.exe`. `NO_COLOR` is honoured over `FORCE_COLOR`
- * because it is the convention people set after something got this wrong.
+ * into a pipe end up in somebody's log file, and box-drawing plus the dingbats the
+ * spinner is built from end up as mojibake in a CI log and in `cmd.exe`. `NO_COLOR`
+ * is honoured over `FORCE_COLOR` because it is the convention people set after
+ * something got this wrong.
  */
 
 import { test, describe } from 'node:test';
@@ -17,9 +18,13 @@ import {
   banner,
   box,
   centre,
+  colourDepth,
   formatDuration,
+  inputFrame,
   inputRule,
+  pickThinking,
   pickTips,
+  THINKING,
   sessionList,
   statusLine,
   submitted,
@@ -99,13 +104,13 @@ describe('a tool call, as one line', () => {
   test('the call line names the tool and the result line sits under it', () => {
     const g = glyphs(true);
     assert.equal(toolCallLine('Read', '{"path":"a.ts"}', plain, g), '⏺ Read(a.ts)');
-    assert.equal(toolResultLine({ contentBytes: 2048 }, plain, g), '  ⎿ 2.0 kB');
+    assert.equal(toolResultLine({ contentBytes: 2048 }, plain, g), '  ⎿  2.0 kB');
   });
 
   test('a failure shows the error code, not a byte count', () => {
     const g = glyphs(true);
-    assert.equal(toolResultLine({ isError: true, errorCode: 'STALE_FILE' }, plain, g), '  ⎿ STALE_FILE');
-    assert.equal(toolResultLine({ isError: true }, plain, g), '  ⎿ failed');
+    assert.equal(toolResultLine({ isError: true, errorCode: 'STALE_FILE' }, plain, g), '  ⎿  STALE_FILE');
+    assert.equal(toolResultLine({ isError: true }, plain, g), '  ⎿  failed');
   });
 
   test('bytes are human, and the boundaries are the obvious ones', () => {
@@ -299,8 +304,13 @@ describe('boxes', () => {
     assert.equal(widths.size, 1, `ragged box: ${[...widths].join(', ')}`);
   });
   test('the frame, the title and the prompt all use one accent colour', () => {
-    // Blue, and only blue: a frame in one colour and a title in another reads as
-    // two unrelated things. 34 is blue, `1;34` bold blue, `2;34` dim blue.
+    // One colour, and it is the accent: a frame in one colour and a title in
+    // another reads as two unrelated things.
+    //
+    // The accent used to be blue and is now a warm terracotta, which has no ANSI
+    // code — at four bits the nearest thing is `33`, and that is what `palette(true)`
+    // produces. The 24-bit form is asserted separately below; asserting only the
+    // four-bit codes here would let the table go wrong at the depth people see.
     const framed = banner(
       {
         version: '0.1.0',
@@ -314,27 +324,75 @@ describe('boxes', () => {
       glyphs(true),
       80,
     );
-    assert.match(framed, new RegExp(`${ESC}\\[34m╭`), 'the frame is not blue');
-    assert.match(framed, new RegExp(`${ESC}\\[1;34m◆`), 'the title mark is not bold blue');
+    assert.match(framed, new RegExp(`${ESC}\\[2;33m╭`), 'the frame is not in the accent');
+    assert.match(framed, new RegExp(`${ESC}\\[1;33m✻`), 'the title mark is not the bold accent');
     assert.match(
       inputRule(fancy, glyphs(true), 40),
-      new RegExp(`${ESC}\\[2;34m─+`),
-      'the input rule is not blue',
+      new RegExp(`${ESC}\\[2;33m─+`),
+      'the input rule is not in the accent',
     );
   });
 
-  test('the input frame closes top and bottom and never at the sides', () => {
-    // Asked for, and also the only shape a readline prompt can keep: a right-hand
-    // border would need the input line rewritten on every keystroke, which is the
-    // TUI spec §1.3 rules out.
-    const rule = inputRule(plain, glyphs(true), 30);
-    assert.match(rule, /^─+$/, `the rule is not a bare horizontal: ${JSON.stringify(rule)}`);
-    assert.equal(rule.includes('│'), false, 'the input frame grew a side');
+  test('the accent is one hue at every depth, and only its precision changes', () => {
+    // The whole point of the ink table: a terminal that can show #d97757 is asked
+    // for it, and one that cannot gets the nearest thing rather than a second
+    // design. Regressing this looks like nothing on a 4-bit terminal and like a
+    // different program on a 24-bit one, which is the failure nobody notices.
+    assert.match(palette(24).accent('x'), new RegExp(`^${ESC}\\[38;2;217;119;87m`));
+    assert.match(palette(8).accent('x'), new RegExp(`^${ESC}\\[38;5;209m`));
+    assert.match(palette(4).accent('x'), new RegExp(`^${ESC}\\[33m`));
+    assert.equal(palette(0).accent('x'), 'x');
   });
 
-  test('the title is centred inside the frame, and the frame follows a resize', () => {
-    // The box is full width now — asked for, because a narrow centred box left the
-    // prose under it looking adrift. So what is centred is the title, not the box.
+  test('a deeper terminal is asked for more colour, and NO_COLOR still wins', () => {
+    assert.equal(colourDepth({ COLORTERM: 'truecolor' }, true), 24);
+    assert.equal(colourDepth({ TERM: 'xterm-256color' }, true), 8);
+    assert.equal(colourDepth({ TERM: 'xterm' }, true), 4);
+    assert.equal(colourDepth({ TERM: 'xterm' }, false), 0);
+    // The one convention a user sets *because* something got this wrong before.
+    assert.equal(colourDepth({ COLORTERM: 'truecolor', NO_COLOR: '1' }, true), 0);
+    assert.equal(colourDepth({ TERM: 'dumb', COLORTERM: 'truecolor' }, true), 0);
+    // And the override, at each of the levels the convention assigns.
+    assert.equal(colourDepth({ FORCE_COLOR: '3' }, false), 24);
+    assert.equal(colourDepth({ FORCE_COLOR: '1', COLORTERM: 'truecolor' }, true), 4);
+  });
+
+  test('the input frame closes on all four sides now, and the bare rule still does not', () => {
+    // This used to assert the opposite, on the argument that a right-hand border
+    // "would need the input line rewritten on every keystroke, which is the TUI
+    // spec §1.3 rules out". The first half stopped being a cost when ADR-0032
+    // replaced readline with an editor that rewrites every row of its block on
+    // every keystroke anyway; the second half was never what §1.3 says — it rules
+    // out an alternate screen and absolute positioning, and the frame uses
+    // neither. So the box closed, and this test now says which is which.
+    //
+    // `inputRule` survives as the shape for anything that is not a live terminal.
+    const rule = inputRule(plain, glyphs(true), 30);
+    assert.match(rule, /^─+$/, `the rule is not a bare horizontal: ${JSON.stringify(rule)}`);
+    assert.equal(rule.includes('│'), false, 'the bare rule grew a side');
+
+    const frame = inputFrame(plain, glyphs(true), 30);
+    assert.match(frame.top, /^╭─+╮$/);
+    assert.match(frame.bottom, /^╰─+╯$/);
+    assert.equal(frame.left, '│');
+    assert.equal(frame.right, '│');
+    assert.equal(
+      visibleWidth(frame.top),
+      30,
+      'the frame does not span the width it was given, so the box will be ragged',
+    );
+  });
+
+  test('the title sits at the left edge with the version at the right, at any width', () => {
+    // It was centred, which is what a narrow box wants. The box is full width, and
+    // a title floating in the middle of a hundred and twenty columns over a
+    // hard-left column of labels has nothing to line up with. Left-aligned it
+    // starts on the same vertical as the labels, the tool lines and the prompt.
+    //
+    // The version goes to the far right rather than trailing the name: it is the
+    // thing you go looking for when filing a bug and never the thing you read
+    // first, and a fixed corner is easier to find than a position that moves with
+    // the length of the name.
     const info = {
       version: '0.1.0',
       model: 'm',
@@ -353,9 +411,10 @@ describe('boxes', () => {
       );
 
       const inner = title.replace(/^.|.$/g, '');
-      const before = inner.length - inner.trimStart().length;
-      const after = inner.length - inner.trimEnd().length;
-      assert.ok(Math.abs(before - after) <= 1, `the title is not centred: ${before} vs ${after}`);
+      assert.match(inner, /^ ✻ MyCoder /, `the title is not against the left edge: ${inner}`);
+      assert.match(inner, /0\.0\.1|0\.1\.0 $/, `the version is not against the right edge: ${inner}`);
+      // Every row of the frame closes in the same column, the title row included.
+      assert.equal(visibleWidth(title), visibleWidth(frame), `the title row is ragged in ${cols}`);
     }
   });
 
@@ -479,7 +538,7 @@ describe('the spinner', () => {
     now = 13_000;
     s.tick();
     s.stop();
-    assert.match(written, /Running Shell 3s/);
+    assert.match(written, /Running Shell… \(3s\)/);
   });
 });
 
@@ -502,7 +561,7 @@ describe('the event stream, as output', () => {
       ['tool.call', { toolCallId: 'c1', name: 'Read', argsSummary: '{"path":"a.ts"}' }],
       ['tool.result', { toolCallId: 'c1', isError: false, contentBytes: 12 }],
     ]);
-    assert.equal(out, '⏺ Read(a.ts)\n  ⎿ 12 B\n');
+    assert.equal(out, '⏺ Read(a.ts)\n  ⎿  12 B\n');
   });
 
   test('a denial is a failure line, whatever the payload says', () => {
@@ -513,7 +572,7 @@ describe('the event stream, as output', () => {
       ['tool.denied', { toolCallId: 'c1' }],
     ]);
     assert.match(out, /⏺ Shell\(rm -rf \/\)/);
-    assert.match(out, /⎿ denied/);
+    assert.match(out, /⎿  denied/);
   });
 
   test('events it does not render produce nothing', () => {
@@ -589,6 +648,29 @@ describe('the banner is full width, and tips are the part that gives way', () =>
       pickTips(3, () => 0),
       TIPS.slice(0, 3),
       'a fixed generator must be deterministic',
+    );
+  });
+
+  test('the spinner has more than one word for waiting, and they all mean waiting', () => {
+    // Decoration, and the only piece of it in this file — but it is the thing on
+    // screen longest, and a fixed `Thinking` for ninety seconds reads as a hang.
+    //
+    // Synonyms rather than jokes, deliberately: this line also carries the elapsed
+    // time and the running spend, and a punchline in front of a bill is the wrong
+    // register. The assertion is the weakest one that would catch a joke slipping
+    // in — every word is a plain gerund and none of them claims to be doing
+    // anything in particular.
+    assert.ok(THINKING.length > 1, 'one word is not a rotation');
+    for (const word of THINKING) {
+      assert.match(word, /^[A-Z][a-z]+ing$/, `${word} is not a plain gerund`);
+    }
+    assert.equal(
+      pickThinking(() => 0),
+      THINKING[0],
+    );
+    assert.equal(
+      pickThinking(() => 0.999),
+      THINKING[THINKING.length - 1],
     );
   });
 });
@@ -668,34 +750,51 @@ describe('what it did, once it has done it', () => {
 });
 
 describe('the input frame, before and after sending', () => {
-  test('what was sent is written as an inverse block, with a rule under it', () => {
-    const block = submitted('fix the failing test', fancy, glyphs(true), 80);
-    assert.match(block, /\u001b\[47;30m > fix the failing test \u001b\[0m/);
-    assert.ok(block.endsWith('\n') && block.includes('─'), 'the rule has to be drawn under the block');
+  test('what was sent is marked in the margin, not repainted as a slab', () => {
+    // It was a bar of `47;30` — black on white, hardcoded, which is not "inverse"
+    // and does not follow a theme. On a dark terminal it was the brightest thing on
+    // screen, brighter than the model's own answer, drawing the eye to the one line
+    // whose contents the reader already knows; on a light one it was grey on grey.
+    // And it ran one column past the text at each end, so the width of the slab
+    // varied with the length of the prompt. A mark in the margin answers the same
+    // question — which lines were mine — and costs one column.
+    const block = submitted('fix the failing test', fancy, glyphs(true));
+    assert.match(block, /❯/, 'the sent line lost its marker');
+    assert.match(block, /fix the failing test/);
+    assert.equal(block.includes('47;30'), false, 'the slab is back');
+    assert.ok(block.endsWith('\n\n'), 'the sent line needs air under it');
   });
 
   test('it moves no cursor, because the editor has already taken its block down', () => {
     // It used to step up one row and clear, which was right when input was one
-    // readline row. The editor's block is the prompt line, any wrapped rows, and the
-    // rule — so stepping up one left the prompt line on screen and the sent line
-    // appeared twice: once as typed, once as the inverse block. Found under a pty.
-    const block = submitted('fix the failing test', fancy, glyphs(true), 80);
+    // readline row. The editor's block is the prompt line, any wrapped rows and the
+    // frame — so stepping up one left the prompt line on screen and the sent line
+    // appeared twice: once as typed, once as the block. Found under a pty.
+    const block = submitted('fix the failing test', fancy, glyphs(true));
     assert.equal(/\u001b\[\d*[ABCDJK]/.test(block), false, `it still moves: ${JSON.stringify(block)}`);
   });
 
-  test('a long line still gets its block, because that is when it matters most', () => {
-    // There used to be a guard dropping the inverse block for anything wider than
-    // the terminal — a leftover from when this moved the cursor up one row. Once the
-    // editor started clearing its own block, that guard meant a long line disappeared
-    // from the transcript altogether.
-    const block = submitted('x'.repeat(100), fancy, glyphs(true), 80);
-    assert.match(block, /47;30m > x{100} /, 'a long line lost its marker');
-    assert.ok(block.includes('─'), 'and its rule');
+  test('a long line still gets its mark, because that is when it matters most', () => {
+    // There used to be a guard dropping the block for anything wider than the
+    // terminal — a leftover from when this moved the cursor up one row. Once the
+    // editor started clearing its own block, that guard meant a long line
+    // disappeared from the transcript altogether.
+    const block = submitted('x'.repeat(100), fancy, glyphs(true));
+    assert.match(block, /x{100}/, 'a long line lost its text');
+    assert.match(block, /❯/, 'and its marker');
   });
 
-  test('a CJK line that wraps keeps its block too', () => {
-    const block = submitted('中'.repeat(50), fancy, glyphs(true), 80);
-    assert.match(block, /47;30m/);
+  test('a CJK line that wraps keeps its mark too', () => {
+    const block = submitted('中'.repeat(50), fancy, glyphs(true));
+    assert.match(block, /❯/);
+    assert.match(block, /中{50}/);
+  });
+
+  test('every line of a multi-line send is marked, not just the first', () => {
+    // A pasted task is several lines and all of them are the user's. Marking only
+    // the first would leave the rest looking like the transcript resuming.
+    const block = submitted('first\nsecond\nthird', fancy, glyphs(true));
+    assert.equal(block.split('❯').length - 1, 3, `not every line was marked: ${JSON.stringify(block)}`);
   });
 
   test('the rule spans the terminal, like the banner above it', () => {

@@ -31,8 +31,9 @@ import {
   tokenStart,
   type EditorState,
   type Key,
+  type RenderOptions,
 } from '../../src/cli/editor.ts';
-import { glyphs, palette, visibleWidth } from '../../src/cli/render.ts';
+import { glyphs, inputFrame, palette, visibleWidth } from '../../src/cli/render.ts';
 
 const ESC = String.fromCharCode(27);
 const plain = palette(false);
@@ -909,5 +910,105 @@ describe('Shift-Tab is the host’s key, and the ordering is the whole of it', (
     input.send('ok\r');
     assert.deepEqual(await line, { kind: 'line', text: 'ok' });
     assert.equal(called, 1, 'the host was not consulted');
+  });
+});
+
+describe('the box around the input', () => {
+  // The prompt used to close top and bottom only, on the argument — written into
+  // `render.test.ts` — that "a right-hand border would need the input line rewritten
+  // on every keystroke, which is the TUI spec §1.3 rules out". Neither half held:
+  // this editor rewrites every row of its block on every keystroke already, and §1.3
+  // rules out an alternate screen and absolute positioning, which a frame drawn with
+  // relative moves is not.
+  //
+  // What the sides do cost is four columns, and the whole risk lives there: rows laid
+  // out against the terminal's width rather than the content's run under the closing
+  // border. Every case here is a way of asking whether that subtraction happened.
+  const framed = (columns: number): RenderOptions => ({
+    prompt: '> ',
+    continuation: '  ',
+    columns,
+    palette: plain,
+    glyphs: g,
+    frame: inputFrame(plain, g, columns),
+  });
+
+  /** The rows as drawn, with the cursor moves stripped off. */
+  function rows(state: EditorState, opts: RenderOptions): string[] {
+    return renderEditor(state, opts, 0)
+      .replace(new RegExp(`${ESC}\\[[0-9]*[A-Za-z]`, 'g'), '')
+      .replace(/\r/g, '')
+      .split('\n');
+  }
+
+  test('every row closes in the same column, however the text wraps', () => {
+    const opts = framed(60);
+    const state = type(newEditorState(), 'the quick brown fox jumps over the lazy dog and keeps going');
+    const widths = new Set(rows(state, opts).map(visibleWidth));
+    assert.equal(widths.size, 1, `the box is ragged: ${[...widths].join(', ')}`);
+    assert.equal([...widths][0], 60, 'the box does not span the terminal');
+  });
+
+  test('a CJK line closes the box in the same place an ASCII one does', () => {
+    // The reason the padding is by display columns and not by `.length`: this is
+    // the case `reference/clio` gets wrong, and a task written in Chinese is not an
+    // edge case for the person this is for.
+    const opts = framed(40);
+    const state = type(newEditorState(), '修复失败的测试'.repeat(4));
+    const widths = new Set(rows(state, opts).map(visibleWidth));
+    assert.equal(widths.size, 1, `the box is ragged: ${[...widths].join(', ')}`);
+  });
+
+  test('the text is laid out against the box, not against the terminal', () => {
+    // The specific corruption: wrap at `columns` instead of `columns - gutter` and
+    // four characters of every wrapped row land under the closing border.
+    const opts = framed(40);
+    const state = type(newEditorState(), 'x'.repeat(100));
+    for (const row of rows(state, opts).slice(1, -1)) {
+      assert.ok(visibleWidth(row) <= 40, `a row ran past the frame: ${visibleWidth(row)}`);
+      assert.ok(row.startsWith('│ ') && row.endsWith(' │'), `a row lost a border: ${row}`);
+    }
+  });
+
+  test('the row count includes the frame, so the next redraw clears all of it', () => {
+    // The count and the drawing have to agree or the redraw clears somebody else's
+    // output — which is the whole reason `viewport` is one function.
+    const opts = framed(50);
+    const state = type(newEditorState(), 'a'.repeat(120));
+    assert.equal(renderedRows(state, opts), rows(state, opts).length);
+    assert.equal(viewport(state, opts).headerRows, 1);
+  });
+
+  test('the cursor is placed against the border, not against the margin', () => {
+    // Two columns of border and padding sit to the left of every row, so a cursor
+    // computed from the content alone lands inside the frame.
+    const opts = framed(50);
+    const bare = { ...opts, frame: undefined };
+    const state = type(newEditorState(), 'hello');
+    assert.equal(viewport(state, opts).cursorCol, viewport(state, bare).cursorCol + 2);
+    assert.equal(viewport(state, opts).cursorRow, viewport(state, bare).cursorRow + 1);
+  });
+
+  test('the completion menu goes under the box rather than inside it', () => {
+    // A suggestion is not part of what is being typed. Boxed in with the input, a
+    // four-line completion read as four more lines of buffer.
+    const opts = framed(50);
+    const state = { ...type(newEditorState(), '/mo'), menu: ['/model', '/mode'], menuAt: 0 };
+    const drawn = rows(state, opts);
+    const bottom = drawn.findIndex((row) => row.startsWith('╰'));
+    assert.ok(bottom !== -1, 'the box never closed');
+    assert.ok(
+      drawn.slice(bottom + 1).some((row) => row.includes('/model')),
+      `the menu is not under the box: ${JSON.stringify(drawn)}`,
+    );
+  });
+
+  test('a caller that asks for no frame gets exactly what it always got', () => {
+    // The bare rule is still the shape for a pipe and for `--no-colour`, and this
+    // is the assertion that the frame was added beside it rather than over it.
+    const opts = { prompt: '> ', continuation: '  ', columns: 40, palette: plain, glyphs: g };
+    const state = type(newEditorState(), 'hello');
+    assert.deepEqual(rows(state, opts), ['> hello']);
+    assert.equal(viewport(state, opts).headerRows, 0);
   });
 });

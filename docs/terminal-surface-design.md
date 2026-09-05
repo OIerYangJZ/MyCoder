@@ -224,6 +224,10 @@ a trace. Put the figures there:
 ⠹ Running Shell 4s · 3.2k tokens · $0.0041
 ```
 
+> The glyph and the layout both moved in §8 — the line reads
+> `✻ Thinking… (12s · 3.2k tokens · $0.0041 · ctrl-c to interrupt)` now. The
+> argument above is about _where the figures go_, and that part is unchanged.
+
 The renderer already receives `model.request.completed` with usage and cost. The
 spinner already takes a `write` and a clock and is already tested with an injected
 one. This is a change to one format string plus a usage field on the spinner, it
@@ -341,10 +345,10 @@ because typing `y`, `s`, `n` or `d` requires knowing in advance what four letter
 `[y]` and `[s]` are indistinguishable on sight, and the difference between them is
 how long the grant lasts, which is the entire decision.
 
-So the four answers are a list moved through with the arrow keys, the highlighted one
-in blue, Enter to confirm. Four, not three: `No, and don't ask again` is an answer
-somebody may be relying on, and dropping it would have made the menu tidier by
-removing a capability.
+So the four answers are a numbered list moved through with the arrow keys, the
+highlighted one in the accent and the rest in grey, Enter to confirm. Four, not
+three: `No, and don't ask again` is an answer somebody may be relying on, and
+dropping it would have made the menu tidier by removing a capability.
 
 Three properties carried over from the typed prompt, none of them cosmetic:
 
@@ -394,3 +398,93 @@ One bookkeeping consequence, so it is not a surprise at the gate: item 6 adds
 `LANGUAGES` to `src/cli/highlight.ts`, and `pnpm mirrors` fails the build until
 `docs/alpha12-enumeration-audit.md` gains its row and the headline count goes from
 99 to 100. The row is `CLOSED · vocabulary`; §5 argues why.
+
+---
+
+## 8. The visual pass — colour depth, the input box, and the things that were wrong
+
+Written after items 1–8 landed, and unlike everything above it this section is not a
+proposal: it describes what is in `src/cli/` now. Its trigger was an aesthetic
+request rather than a defect report, which is worth saying plainly — but a pass over
+a surface for how it _looks_ found four things that were also simply wrong, and
+those are the ones this section spends its length on.
+
+**The accent was blue, and is a warm terracotta (#d97757).** The change of hue is
+taste. What is not taste is that the old palette had one depth: sixteen ANSI codes,
+written as literals at every call site. `Palette` now carries a `ColourDepth`, `INK`
+holds every colour at 4, 8 and 24 bits in one table, and `colourDepth()` reads
+`COLORTERM`, `TERM` and `TERM_PROGRAM` to decide which column to use. The two
+mistakes are not symmetric — guessing too high writes a truecolor sequence into a
+terminal that prints it as garbage, guessing too low costs a duller accent — so
+detection errs downward, and Apple's Terminal.app is deliberately treated as 8-bit
+rather than letting it approximate a 24-bit sequence itself. `colourEnabled` still
+decides the yes/no, so `NO_COLOR` keeps winning over everything.
+
+`palette(true)` still means "four-bit", so every caller that has not measured its
+terminal behaves exactly as before.
+
+**The sent line was a slab of `47;30`, which is not inverse video.** §3's shape had
+the user's own line redrawn under the prompt in inverse — except that `47;30` is
+black-on-white _hardcoded_, not a swap of the user's own colours. On a dark terminal
+it was the brightest thing on screen, brighter than the model's answer, drawing the
+eye to the one line whose contents the reader already knows; on a light one it was
+grey on grey. It also ran a column past the text at each end, so the width of the
+slab varied with the length of what was typed. It is now `❯` in the accent with the
+text left alone: the same question — which lines were mine — answered from the
+corner of the eye, at a cost of one column. Every line of a multi-line send is
+marked, which the slab did not do either.
+
+**The input frame is closed on all four sides.** §3B shipped a top and bottom rule,
+and `render.test.ts` recorded the reason as a test: "a right-hand border would need
+the input line rewritten on every keystroke, which is the TUI spec §1.3 rules out."
+Both halves of that were wrong by the time it was written. ADR-0032 replaced
+readline with an editor that rewrites every row of its block on every keystroke
+already, so the sides cost nothing extra; and §1.3 rules out an alternate screen and
+absolute positioning, which a box drawn with relative moves is not. That claim
+survived because it was written as a passing test, which is the most durable place a
+stale claim can hide — a test asserting a thing is true is indistinguishable, from
+the outside, from a test asserting it is _right_.
+
+What the sides do cost is four columns of content width, and that is where the risk
+lives: rows laid out against the terminal's width rather than the box's run under
+the closing border. `viewport` subtracts the gutter in one place, `renderEditor`
+pads by display columns so CJK closes the box where ASCII does, and there are cases
+for both. The bare rule survives as `inputRule` and is still what a pipe and
+`--no-colour` get — the frame is drawn only where it is being drawn live.
+
+**The approval menu is numbered.** `approvalChoices` has said in its own comment
+since it was written that "the answers are numbered as well as lettered", and that
+was true of the typed prompt and of nothing else: `renderMenu` drew four unnumbered
+rows. It is a small drift and exactly the kind this repository keeps finding — a
+comment describing a sibling function's behaviour, correct when written, never
+checked again. The unselected rows are also grey now rather than unstyled, because
+four plain rows and one bold one makes the reader find the heavy row among equals.
+
+**Smaller things, in one list.** The spinner is a star that swells and settles
+rather than a Braille wheel — the same mark as the `✻` a finished turn prints, and a
+dingbat rather than U+280B, which a font without a Braille face renders as a
+replacement box of a _different width_, so the line the spinner erases is not the
+line it drew. The verb rotates per turn, from a list of plain gerunds; a fixed
+`Thinking` for ninety seconds reads as a hang. §4's figures moved into a bracket and
+gained `ctrl-c to interrupt`, because the interrupt key is not discoverable while a
+turn is in flight and the spinner is the only thing on screen during the window in
+which somebody wants it. The banner's title moved to the left edge with the version
+at the right; a centred title over a hard-left column of labels has nothing to line
+up with. Headings in the model's answer are now distinguishable by level. And the
+approval box's label column is padded from the widest label the request actually
+produces, rather than by hand — `delegation:` is ten characters where `tool     :`
+is nine, so the one screen a user is _required_ to read had its colons out of line
+in exactly the delegated case, which is the one that has to be read most carefully.
+
+**What did not change.** No new terminal state, no alternate screen, no absolute
+positioning, no dependency. Every escape sequence is still relative and still
+written out in `render.ts`. The isolation line, the caveat, the deny-by-default
+highlight and the abstention from a context percentage are all untouched: nothing
+here trades a claim for an appearance.
+
+| #   | Item                                                        | Needs an ADR?                                                    | State    |
+| --- | ----------------------------------------------------------- | ---------------------------------------------------------------- | -------- |
+| 9   | Colour depth detection and the warm accent (§8)             | no — no new capability, no new terminal state                    | **done** |
+| 10  | The input box, closed on four sides (§8)                    | no — ADR-0032 already owns the block; this changes what it draws | **done** |
+| 11  | The sent line as a margin mark (§8)                         | no                                                               | **done** |
+| 12  | Numbered menu rows, and the label column that lines up (§8) | no                                                               | **done** |

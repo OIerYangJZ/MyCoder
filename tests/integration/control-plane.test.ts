@@ -606,10 +606,17 @@ describe('delegation in the control plane (alpha.4 §40, §41)', () => {
       delegation: { agent: 'implementation-worker', delegationId: 'dlg_abc', depth: 1 },
     });
 
-    assert.match(text, /agent    : implementation-worker/);
+    // The padding is computed from the widest label the request actually produces,
+    // so it is not asserted here: it used to be typed in by hand, and the hand was
+    // wrong — `delegation:` is ten characters where `tool     :` is nine, so this
+    // screen had its colons out of line in exactly the delegated case, which is
+    // the one that has to be read most carefully.
+    assert.match(text, /agent\s+: implementation-worker/);
     assert.match(text, /subagent, depth 1/);
-    assert.match(text, /delegation: dlg_abc/);
-    assert.match(text, /child action: Run npm install zod/);
+    assert.match(text, /delegation\s+: dlg_abc/);
+    assert.match(text, /child action\s+: Run npm install zod/);
+    const colons = [...text.matchAll(/^ {2}\S.*?\s:(?= |$)/gm)].map((m) => m[0].length);
+    assert.equal(new Set(colons).size, 1, `the label column is ragged: ${colons.join(', ')}`);
 
     // NEGATIVE CONTROL: without the delegation field the same prompt reads as the
     // root agent's, so the attribution above is doing work rather than always
@@ -621,7 +628,7 @@ describe('delegation in the control plane (alpha.4 §40, §41)', () => {
       pending: [],
     });
     assert.ok(!root.includes('subagent'), 'a root approval mentioned a subagent');
-    assert.match(root, /action   : Run npm install zod/);
+    assert.match(root, /action\s+: Run npm install zod/);
   });
 
   test('/status names the active delegation and the cost split', async () => {

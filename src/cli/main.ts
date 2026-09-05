@@ -52,9 +52,10 @@ import { setupCredential } from './setup-credential.ts';
 import { TerminalApprovalPrompter } from './prompter.ts';
 import {
   banner,
+  colourDepth,
   colourEnabled,
   glyphs as glyphSet,
-  inputRule,
+  inputFrame,
   modeIndicator,
   palette as makePalette,
   sessionList,
@@ -203,20 +204,25 @@ export async function main(argv: readonly string[]): Promise<number> {
     return typeof reported === 'number' && reported > 4 ? reported : 24;
   };
 
-  // lint-allow no-host-env-read: NO_COLOR / TERM / FORCE_COLOR decide styling only.
-  // Nothing read here reaches a child process, the model or a log, and no credential
-  // can be spelled `NO_COLOR` — the three names are read and nothing else is.
+  // lint-allow no-host-env-read: NO_COLOR / TERM / FORCE_COLOR / COLORTERM /
+  // TERM_PROGRAM decide styling only. Nothing read here reaches a child process, the
+  // model or a log, and no credential is spelled any of those names.
   const colour = colourEnabled(process.env, stderr.isTTY === true) && !args.json;
   const glyphs = glyphSet(colour);
-  const palette = makePalette(colour);
+  // How *much* colour, not just whether: the accent this program is drawn in has no
+  // ANSI code, so a terminal that can show it is asked for it and one that cannot
+  // gets the nearest thing the table has. `--json` still gets nothing at all.
+  // lint-allow no-host-env-read: the same names again, on the same terms.
+  const palette = makePalette(args.json ? false : colourDepth(process.env, stderr.isTTY === true));
 
   // The answer goes to stdout and the chrome goes to stderr, so styling is decided
   // twice. `mycoder … > answer.md` has a terminal on one and a file on the other,
   // and asking `stderr.isTTY` for both is how escape codes end up in the file.
-  // lint-allow no-host-env-read: the same three names, for the same reason, on the
-  // other stream. Nothing read here leaves this expression.
+  // lint-allow no-host-env-read: the same names, for the same reason, on the other
+  // stream. Nothing read here leaves this expression.
   const answerColour = colourEnabled(process.env, stdout.isTTY === true) && !args.json;
-  const answerPalette = makePalette(answerColour);
+  // lint-allow no-host-env-read: as above, and measured against stdout this time.
+  const answerPalette = makePalette(args.json ? false : colourDepth(process.env, stdout.isTTY === true));
 
   // Resolve which session to use before building the kernel, so `-c` and `-r`
   // can be reported clearly rather than failing deep inside bootstrap.
@@ -361,6 +367,10 @@ export async function main(argv: readonly string[]): Promise<number> {
     answerPalette,
     answerIsTerminal: stdout.isTTY === true,
     columns,
+    // Only where there is a handler to hear it. `cancelTurn` is installed on SIGINT
+    // for the interactive loop and nowhere else, so a one-shot run must not offer a
+    // key that would kill the process instead of cancelling the turn.
+    ...(interactive ? { interruptHint: 'ctrl-c to interrupt' } : {}),
   });
 
   let kernel: Kernel;
@@ -461,7 +471,7 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   // Attachment notices are chrome: stderr, dim on a terminal, plain in a pipe.
   const note = (text: string): void => {
-    stderr.write(`${palette.dim(text)}\n`);
+    stderr.write(`${palette.grey(text)}\n`);
   };
 
   let exitCode: ExitCode = EXIT.OK;
@@ -485,12 +495,12 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
 
     stderr.write(
-      `${palette.dim('Type a task, or /help for control commands. Ctrl-C cancels a turn, Ctrl-D exits.')}\n\n`,
+      `${palette.grey('Type a task, or /help for control commands. Ctrl-C cancels a turn, Ctrl-D exits.')}\n\n`,
     );
 
-    // The line editor owns the whole input block now, the bottom rule included
+    // The line editor owns the whole input block now, the frame around it included
     // (ADR-0032). `keepFrame` is gone with it: it existed because readline erased
-    // everything below its line on every keystroke, and nothing erases the rule here
+    // everything below its line on every keystroke, and nothing erases the frame here
     // because the thing that draws it is the thing that clears it.
     // `@` candidates for the token being typed. Kept current by `onChange` because
     // the index is asynchronous and Tab is not: a completion that had to await would
@@ -516,8 +526,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       prompt: () => {
         const mode = kernel.session.approvalMode;
         return (
-          modeIndicator(mode, describeApprovalMode(mode).label, palette) +
-          `${palette.boldBlue(glyphs.prompt)} `
+          modeIndicator(mode, describeApprovalMode(mode).label, palette) + `${palette.accent(glyphs.prompt)} `
         );
       },
       continuation: '  ',
@@ -536,7 +545,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       onCycleMode: () => {
         const result = applyApprovalMode(kernel.session, 'next');
         if (result.projection) kernel.context.appendControlResult(result.projection);
-        return palette.dim(result.message);
+        return palette.grey(result.message);
       },
       onChange: (text) => {
         const at = text.lastIndexOf('@');
@@ -552,7 +561,11 @@ export async function main(argv: readonly string[]): Promise<number> {
         stdin.once('end', listener);
         return () => void stdin.off('end', listener);
       },
-      ...(colour ? { footer: () => inputRule(palette, glyphs, columns()) } : {}),
+      // The box, and only where it is being drawn live. A pipe and `--no-colour` get
+      // no chrome at all rather than a box in ASCII: the frame is decoration around
+      // an input nobody is typing into, and drawing it into a log is what the whole
+      // "plain when it is not a terminal" rule exists to prevent.
+      ...(colour ? { frame: () => inputFrame(palette, glyphs, columns()) } : {}),
       keybindings: keys.overrides,
       // Two completions behind one key. The token under the cursor decides which:
       // a line starting with `/` is a command, an `@` anywhere is a path.
@@ -585,7 +598,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         const line = outcome.text;
         if (line.trim() === '') continue;
         if (line.trim() === '/exit' || line.trim() === '/quit') break;
-        if (colour) stderr.write(submitted(line.trim(), palette, glyphs, columns()));
+        if (colour) stderr.write(submitted(line.trim(), palette, glyphs));
 
         const sent = await withReferences(line, kernel.workspaceRoot, note);
         exitCode = await runOnce(kernel, sent, args.json, renderer);
