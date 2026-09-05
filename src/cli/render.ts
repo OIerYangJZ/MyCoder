@@ -737,6 +737,17 @@ export interface StatusInfo {
   requests: number;
   tokens: number;
   costUsd?: number;
+  /**
+   * Model requests the kernel could not price, because the profile has no rates.
+   *
+   * Without this the line printed `$0.0000` for a session that had spent real
+   * money against an unpriced model — the total is zero because the kernel
+   * correctly refuses to add a figure it cannot compute, and zero on its own
+   * reads as "free". `ModelProfile.pricing` promises cost is reported as
+   * unknown when it is unset; this is where that promise is kept on the line
+   * people actually read.
+   */
+  unpricedRequests?: number;
   elapsedMs?: number;
 }
 
@@ -749,13 +760,30 @@ export interface StatusInfo {
  * be a number that disagrees with `/status` — which is the shape of half the defects
  * this milestone found.
  */
+/**
+ * The money, or an honest refusal to name it.
+ *
+ * Three states, not two. Everything priced is a figure; nothing priced is
+ * `cost unknown`; a mixture is a floor, written `≥$x`, because the total is
+ * real but covers only part of the session.
+ */
+function costParts(info: StatusInfo, p: Palette): string[] {
+  const unpriced = info.unpricedRequests ?? 0;
+  if (info.costUsd === undefined) return [];
+  if (unpriced === 0) return [p.green(`$${info.costUsd.toFixed(4)}`)];
+  if (info.costUsd === 0) {
+    return [p.dim(`cost unknown (${unpriced} unpriced request${unpriced === 1 ? '' : 's'})`)];
+  }
+  return [p.green(`≥$${info.costUsd.toFixed(4)}`), p.dim(`${unpriced} unpriced`)];
+}
+
 export function statusLine(info: StatusInfo, p: Palette): string {
   const parts = [
     p.blue(info.model),
     ...(info.contextWindow === undefined ? [] : [p.dim(`${Math.round(info.contextWindow / 1000)}k ctx`)]),
     p.dim(`${info.requests} request${info.requests === 1 ? '' : 's'}`),
     p.dim(`${formatTokens(info.tokens)} tokens`),
-    ...(info.costUsd === undefined ? [] : [p.green(`$${info.costUsd.toFixed(4)}`)]),
+    ...costParts(info, p),
     ...(info.elapsedMs === undefined ? [] : [p.dim(formatDuration(info.elapsedMs))]),
   ];
   return `  ${parts.join(p.dim(' · '))}`;

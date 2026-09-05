@@ -30,6 +30,7 @@ import {
   type ApprovalMode,
 } from '../../src/policy/approval-mode.ts';
 import { ALL_CAPABILITIES, type AccessRequest } from '../../src/policy/access.ts';
+import { DenyAllPrompter } from '../../src/tools/runtime.ts';
 import { PolicyEngine, SessionApprovalStore, type PolicyDecision } from '../../src/policy/policy-engine.ts';
 import { ProtectedPaths } from '../../src/policy/protected-paths.ts';
 import { readOnlyProfile, workspaceDevProfile } from '../../src/policy/profiles.ts';
@@ -495,5 +496,45 @@ describe('the mode state', () => {
   test('cycling reports where it came from, which is what the message prints', () => {
     const state = new ApprovalModeState('manual');
     assert.deepEqual(state.cycle(), { mode: 'accept-edits', previous: 'manual' });
+  });
+});
+
+/**
+ * A refusal names who refused, and only when that is known.
+ *
+ * Every denial said "The user declined", including under `--non-interactive`
+ * where nobody was asked. Seen on a live run: the model reported a refusal by a
+ * user who was not there, three words above the reason explaining that the
+ * session had no user.
+ */
+describe('a denial does not invent a decider', () => {
+  test('the non-interactive prompter says nobody was asked', async () => {
+    const outcome = await new DenyAllPrompter().request();
+    assert.equal(outcome.decision, 'deny');
+    assert.equal(outcome.consulted, false, 'the deny-all prompter claimed somebody was consulted');
+  });
+
+  test('a prompter that really asked leaves `consulted` alone', async () => {
+    // Absent means yes. Every prompter that exists to ask somebody does, so the
+    // default must not be the claim that nobody was.
+    const outcome = await new RecordingPrompter({ decision: 'deny', scope: 'once' }).request(
+      requestFor(access.net),
+    );
+    assert.notEqual(outcome.consulted, false);
+  });
+
+  /**
+   * `consulted` and `answeredByMode` are not each other's negation, and the
+   * distinction is the reason there are two fields: a mode answering is one way
+   * nobody was asked, a non-interactive refusal is another, and only the first
+   * belongs in the audit log as a mode's decision.
+   */
+  test('the two fields are independent facts', async () => {
+    const byMode = await gate('auto', new RecordingPrompter()).request(requestFor(access.exec));
+    assert.equal(byMode.answeredByMode, true);
+
+    const byNobody = await new DenyAllPrompter().request();
+    assert.notEqual(byNobody.answeredByMode, true, 'a non-interactive refusal is not a mode answering');
+    assert.equal(byNobody.consulted, false);
   });
 });

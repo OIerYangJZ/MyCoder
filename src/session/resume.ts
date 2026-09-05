@@ -320,13 +320,43 @@ export function workspaceIdentity(workspaceRoot: string, gitRoot?: string): stri
  * touched today picked up a session from somewhere else and died on the identity
  * check, in a directory where a perfectly good session of its own was waiting.
  */
+/**
+ * The session `-c` continues: the most recent one that has something to continue.
+ *
+ * "Most recent" alone was wrong, and it was wrong in a way that hid the answer
+ * behind the act of looking for it. Every invocation persists a session — a
+ * one-shot `mycoder "/status"` included — so a slash command created an empty
+ * session that became the newest, and `-c` resumed *that*. On a live run the
+ * sequence was exactly:
+ *
+ *     mycoder "…refactor…"     → 17 tool calls, 4 reversible edits
+ *     mycoder "/undo list"     → new empty session, now the newest
+ *     mycoder -c "/undo list"  → resumed the empty one: "No edit can be reversed"
+ *
+ * The journal rebuild was fine. The user was being handed a different session
+ * and told, accurately, that it contained nothing.
+ *
+ * `modelRequests === 0` is the test because it is the one that means "this
+ * session never held a conversation". A session with no model request has no
+ * context to resume into and no journal to rebuild, so continuing it and
+ * starting fresh are the same thing — except that one of them silently discards
+ * the session the user meant. Tool calls are not the test: `/undo` runs a tool
+ * without a model request, and a session that did only that is still worth
+ * continuing.
+ */
 export async function findMostRecentSession(
   store: SessionStore,
   workspaceRoot?: string,
 ): Promise<SessionMetadata | undefined> {
   const sessions = await store.listSessions();
-  if (workspaceRoot === undefined) return sessions[0];
-  return sessions.find((s) => s.workspaceRoot === workspaceRoot);
+  const inWorkspace =
+    workspaceRoot === undefined ? sessions : sessions.filter((s) => s.workspaceRoot === workspaceRoot);
+
+  const started = inWorkspace.find((s) => s.usage.modelRequests > 0 || s.usage.toolCalls > 0);
+  // Falling back to the newest empty one rather than to nothing: a session that
+  // genuinely has not started yet is still the right thing to continue, and
+  // refusing would turn "you have nothing to resume" into a lie.
+  return started ?? inWorkspace[0];
 }
 
 /**

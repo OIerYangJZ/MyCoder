@@ -76,10 +76,28 @@ export interface ApprovalRequest {
  * consequential one. Absent here means "not answered by a mode", which is true
  * of the terminal prompter, the scripted prompter and the non-interactive
  * refusal alike, and stays true of a prompter nobody has written yet.
+ *
+ * `consulted` answers a different question — **was this put to a person at
+ * all?** — and the two are not each other's negation. A mode answering is one
+ * way nobody was asked; a non-interactive session refusing is another, and it is
+ * not a mode. They are separate fields because they are separate facts: the
+ * first is what the audit log records, the second is what the refusal is allowed
+ * to claim. Absent means yes, because every prompter that exists to ask somebody
+ * does.
+ *
+ * The message is why this exists. Every denial said "The user declined", and
+ * under `--non-interactive` no user was ever asked — seen on a live run, where
+ * the model dutifully reported a refusal by a user who was not there.
  */
 export type ApprovalOutcome =
-  | { decision: 'allow'; scope: 'once' | 'session'; answeredByMode?: boolean }
-  | { decision: 'deny'; scope: 'once' | 'session'; reason?: string; answeredByMode?: boolean };
+  | { decision: 'allow'; scope: 'once' | 'session'; answeredByMode?: boolean; consulted?: boolean }
+  | {
+      decision: 'deny';
+      scope: 'once' | 'session';
+      reason?: string;
+      answeredByMode?: boolean;
+      consulted?: boolean;
+    };
 
 export interface ApprovalPrompter {
   request(request: ApprovalRequest): Promise<ApprovalOutcome>;
@@ -94,7 +112,10 @@ export class DenyAllPrompter implements ApprovalPrompter {
   }
 
   async request(): Promise<ApprovalOutcome> {
-    return { decision: 'deny', scope: 'once', reason: this.reason };
+    // `consulted: false` — there is nobody to consult, which is the entire
+    // reason this prompter exists. Without it the refusal claimed a user
+    // declined, in a session that by definition has no user to decline.
+    return { decision: 'deny', scope: 'once', reason: this.reason, consulted: false };
   }
 }
 
@@ -596,7 +617,11 @@ export class ToolRuntime {
         return {
           result: {
             content:
-              `error: TOOL_DENIED\nThe user declined: ${summary}.` +
+              // Who refused, only when that is known. "The user declined" was
+              // printed unconditionally, including where nobody was asked.
+              (outcome.consulted === false
+                ? `error: TOOL_DENIED\nNot approved: ${summary}. Nobody was asked.`
+                : `error: TOOL_DENIED\nThe user declined: ${summary}.`) +
               (outcome.reason ? `\nReason: ${outcome.reason}` : '') +
               '\nDo not retry this. Choose a different approach, or ask the user what they would prefer.',
             isError: true,

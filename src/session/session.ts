@@ -250,6 +250,20 @@ export class Session {
   /** Cost this session spent *directly*, excluding delegated work (§14). */
   private directCostUsd = 0;
   private delegatedCostUsd = 0;
+  /**
+   * Model requests whose cost could not be priced at all.
+   *
+   * Counted because the total on its own cannot express them. `estimateCost`
+   * already returns `provenance: 'unknown'` when a profile has no pricing, and
+   * this session already refuses to add such a figure to the running total — so
+   * the total stays at `0`, and `0` is indistinguishable from "this was free".
+   * The CLI printed `$0.0000` for a session that had spent real money against a
+   * model nobody had priced, which is the one number people paste into a report.
+   *
+   * `ModelProfile.pricing` says "unset means cost is reported as `unknown`
+   * (§18)". This is what makes that true above the model layer as well.
+   */
+  private unpricedRequests = 0;
   /** Skill activations in force, and the ones staged for the next step (§22). */
   private skillEntries: Array<{ activated: ActivatedSkill; scope: SkillActivationScope }> = [];
   private pendingSkillEntries: Array<{ activated: ActivatedSkill; scope: SkillActivationScope }> = [];
@@ -480,11 +494,24 @@ export class Session {
    * "does delegation pay for itself?" — answerable from recorded runs instead of
    * from a new experiment.
    */
-  get costBreakdown(): { directUsd: number; delegatedUsd: number; totalUsd: number } {
+  /**
+   * What was spent, and how much of the session that figure actually covers.
+   *
+   * `unpricedRequests` is part of the answer, not a footnote to it: with any
+   * unpriced request the total is a floor rather than a cost, and a caller that
+   * prints it as a cost is making a claim the kernel did not.
+   */
+  get costBreakdown(): {
+    directUsd: number;
+    delegatedUsd: number;
+    totalUsd: number;
+    unpricedRequests: number;
+  } {
     return {
       directUsd: this.directCostUsd,
       delegatedUsd: this.delegatedCostUsd,
       totalUsd: this.directCostUsd + this.delegatedCostUsd,
+      unpricedRequests: this.unpricedRequests,
     };
   }
 
@@ -905,7 +932,9 @@ export class Session {
       const usageReport = resolveUsage(modelTurn.usage, { responseText: modelTurn.text });
       const cost = estimateCost(usageReport, model.profile.pricing);
       this.usageReport = addUsage(this.usageReport, usageReport);
-      if (cost.provenance !== 'unknown') {
+      if (cost.provenance === 'unknown') {
+        this.unpricedRequests += 1;
+      } else {
         this.usage.costUsd += cost.usd;
         this.directCostUsd += cost.usd;
       }

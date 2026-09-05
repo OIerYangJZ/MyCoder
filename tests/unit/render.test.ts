@@ -996,3 +996,47 @@ describe('the footer counts what ran, not what was attempted (alpha.12)', () => 
     assert.match(out, /2 refused \(Delete ×2\)/);
   });
 });
+
+describe('the money line does not claim a cost it could not compute (alpha.12)', () => {
+  const p = palette(false);
+  const base = { model: 'gpt', requests: 1, tokens: 2400 };
+
+  /**
+   * `estimateCost` returns `provenance: 'unknown'` when a profile has no rates,
+   * and the session correctly refuses to add such a figure to the total — so the
+   * total stays at zero, and zero on its own reads as "this was free". A live
+   * run against an unpriced model printed `$0.0000` for a session that had spent
+   * real money. `ModelProfile.pricing` promises cost is reported as unknown when
+   * it is unset; this is where that promise reaches the line people read.
+   */
+  test('nothing priced says so, rather than printing zero', () => {
+    const out = statusLine({ ...base, costUsd: 0, unpricedRequests: 1 }, p);
+    assert.ok(!/\$0\.0000/.test(out), `claims it was free: ${out}`);
+    assert.match(out, /cost unknown \(1 unpriced request\)/);
+  });
+
+  test('a partly priced session reports a floor, not a total', () => {
+    const out = statusLine({ ...base, costUsd: 0.0071, unpricedRequests: 2 }, p);
+    assert.match(out, /≥\$0\.0071/);
+    assert.match(out, /2 unpriced/);
+  });
+
+  test('a fully priced session is exactly what it always was', () => {
+    const out = statusLine({ ...base, costUsd: 0.0071, unpricedRequests: 0 }, p);
+    assert.match(out, /\$0\.0071/);
+    assert.ok(!/≥/.test(out), `a complete total should not be hedged: ${out}`);
+    assert.ok(!/unpriced/.test(out));
+  });
+
+  test('a genuinely free priced session still shows zero, because that is true', () => {
+    const out = statusLine({ ...base, costUsd: 0, unpricedRequests: 0 }, p);
+    assert.match(out, /\$0\.0000/);
+  });
+
+  test('a caller that knows nothing about pricing is unchanged', () => {
+    // `unpricedRequests` is optional; omitting it must not turn a real figure
+    // into a hedge.
+    assert.match(statusLine({ ...base, costUsd: 0.5 }, p), /\$0\.5000/);
+    assert.equal(statusLine({ ...base }, p).includes('$'), false);
+  });
+});

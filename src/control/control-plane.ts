@@ -824,7 +824,17 @@ const handleStatus: ControlHandler = (_args, host) => {
       `goal         : ${session.goal ? `${session.goal.objective} (${session.goal.status})` : 'none'}`,
       `usage        : ${u.inputTokens.toLocaleString()} in / ${u.outputTokens.toLocaleString()} out, ` +
         `${u.modelRequests} requests, ${u.toolCalls} tool calls` +
-        (u.costUsd > 0 ? `, $${u.costUsd.toFixed(4)}` : ''),
+        // A cost, a floor, or a refusal to name one. `u.costUsd` is zero both
+        // when a session was free and when nothing in it could be priced, and
+        // printing the zero for the second case is the claim `ModelProfile.pricing`
+        // says the kernel does not make.
+        (cost.unpricedRequests > 0
+          ? u.costUsd > 0
+            ? `, ≥$${u.costUsd.toFixed(4)} (${cost.unpricedRequests} request(s) unpriced)`
+            : `, cost unknown (${cost.unpricedRequests} request(s) unpriced)`
+          : u.costUsd > 0
+            ? `, $${u.costUsd.toFixed(4)}`
+            : ''),
       `dirty files  : ${dirty.length === 0 ? 'none' : `${dirty.length} (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? ', …' : ''})`}`,
       // alpha.10 §12. The count on its own would be the dishonest half — a user
       // reading "12 reversible" would take the workspace to be 12 steps from

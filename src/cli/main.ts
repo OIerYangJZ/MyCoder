@@ -701,6 +701,7 @@ async function runOnce(
             requests: usage.modelRequests,
             tokens: usage.inputTokens + usage.outputTokens,
             costUsd: kernel.session.costBreakdown.totalUsd,
+            unpricedRequests: kernel.session.costBreakdown.unpricedRequests,
           },
           renderer.palette,
         )}\n\n`,
