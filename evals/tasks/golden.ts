@@ -274,7 +274,8 @@ export const GOLDEN_TASKS: GoldenTask[] = [
   {
     id: 'single-file-bug-fix',
     family: 'model-capability',
-    fixtureVersion: 1,
+    // 2: the verification step went through `sh -c` and no longer can.
+    fixtureVersion: 2,
     description: 'Read one file, correct one line, verify.',
     files: { 'src/math.ts': 'export const add = (a: number, b: number) => a - b;\n' },
     prompt: 'add() subtracts instead of adding. Fix it.',
@@ -284,7 +285,7 @@ export const GOLDEN_TASKS: GoldenTask[] = [
     script: (receipt) => [
       read('src/math.ts'),
       edit('src/math.ts', 'a - b', 'a + b', receipt('math.ts')),
-      shell(['sh', '-c', 'grep -q "a + b" src/math.ts']),
+      shell(['grep', '-q', 'a + b', 'src/math.ts']),
       done('Fixed add().'),
     ],
     checks: [
@@ -341,7 +342,8 @@ export const GOLDEN_TASKS: GoldenTask[] = [
   {
     id: 'test-driven-fix',
     family: 'model-capability',
-    fixtureVersion: 1,
+    // 2: both check steps went through `sh -c` and no longer can.
+    fixtureVersion: 2,
     description: 'Run a failing check, fix, re-run.',
     files: { 'src/n.ts': 'export const n = 1;\n' },
     prompt: 'Make the check pass.',
@@ -349,10 +351,10 @@ export const GOLDEN_TASKS: GoldenTask[] = [
       'The check for this project is `grep -q "export const n = 2;" src/n.ts`. ' +
       'Run it to see it fail, edit src/n.ts so it passes, then run it again to confirm.',
     script: (receipt) => [
-      shell(['sh', '-c', 'grep -q "export const n = 2;" src/n.ts']),
+      shell(['grep', '-q', 'export const n = 2;', 'src/n.ts']),
       read('src/n.ts'),
       edit('src/n.ts', 'const n = 1', 'const n = 2', receipt('n.ts')),
-      shell(['sh', '-c', 'grep -q "export const n = 2;" src/n.ts']),
+      shell(['grep', '-q', 'export const n = 2;', 'src/n.ts']),
       done('The check passes.'),
     ],
     checks: [turnState('completed'), resultsMention('exit 1'), resultsMention('exit 0')],
@@ -361,7 +363,8 @@ export const GOLDEN_TASKS: GoldenTask[] = [
   {
     id: 'stale-edit',
     family: 'kernel-invariant',
-    fixtureVersion: 1,
+    // 2: the external rewrite went through `sh -c` and no longer can.
+    fixtureVersion: 2,
     description: 'An edit against content that changed is refused.',
     files: { 'src/s.ts': 'const v = 1;\n' },
     prompt: 'Edit with a stale receipt.',
@@ -369,8 +372,11 @@ export const GOLDEN_TASKS: GoldenTask[] = [
       'requires an edit against a receipt the model knows is outdated; a real model re-reads first',
     script: (receipt) => [
       read('src/s.ts'),
-      // The shell rewrites the file, invalidating what the model saw.
-      shell(['sh', '-c', 'printf "const v = 99;\\n" > src/s.ts']),
+      // Something outside the edit engine rewrites the file, invalidating what
+      // the model saw. `node -e` rather than a redirection, because a shell is
+      // `ask` under `workspace-dev` and this trajectory is scripted to succeed —
+      // it is measuring the freshness ledger, not the approval prompt.
+      shell(['node', '-e', "require('fs').writeFileSync('src/s.ts', 'const v = 99;\\n')"]),
       edit('src/s.ts', 'const v = 1;', 'const v = 2;', receipt('s.ts')),
       done('The edit was refused, as expected.'),
     ],
@@ -380,15 +386,16 @@ export const GOLDEN_TASKS: GoldenTask[] = [
   {
     id: 'concurrent-external-change',
     family: 'kernel-invariant',
-    fixtureVersion: 1,
-    description: 'A shell command that rewrites source is detected and audited.',
+    // 2: the rewrite went through `sh -c`, and so did the live prompt.
+    fixtureVersion: 2,
+    description: 'A command that rewrites source outside the edit engine is detected and audited.',
     files: { 'src/c.ts': 'export const c = 1;\n' },
     prompt: 'Run a formatter that rewrites a source file.',
     livePrompt:
-      'Run this exact shell command to reformat the file, then tell me what it did: ' +
-      '`printf "export const c = 2;\\n" > src/c.ts`',
+      'Run this exact command to reformat the file, then tell me what it did: ' +
+      `\`node -e "require('fs').writeFileSync('src/c.ts', 'export const c = 2;\\n')"\``,
     script: () => [
-      shell(['sh', '-c', 'printf "export const c = 2;\\n" > src/c.ts']),
+      shell(['node', '-e', "require('fs').writeFileSync('src/c.ts', 'export const c = 2;\\n')"]),
       done('The rewrite was reported.'),
     ],
     checks: [
