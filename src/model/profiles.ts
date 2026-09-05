@@ -188,6 +188,29 @@ const DEFAULT_ALIASES: ModelAlias[] = [
   { alias: 'openai/gpt', provider: 'openai', modelId: 'gpt-5', profile: 'frontier-normal' },
 ];
 
+/**
+ * The slack between what the kernel counts and what the provider bills.
+ *
+ * Named, because measuring it turned out to be the only way to know what it was
+ * for. `ContextEngine.estimatedTokens` counts the system prompt and the
+ * messages; a request also carries the **tool schemas**, and nothing counts
+ * those. On the first request of a live session the kernel estimated 845 tokens
+ * and the provider counted 3,436 — a 2,591-token gap that is almost exactly the
+ * eleven serialised JSON schemas.
+ *
+ * So this margin is not general prudence: it is what absorbs that gap, plus
+ * whatever the provider's tokeniser does differently from `bytes / 3.6`. Today
+ * it covers it with about 1,400 tokens to spare.
+ *
+ * That spare is the thing to watch. The catalogue is not fixed — an MCP server
+ * contributes its tools to it (ADR-0022), and a few servers could double it.
+ * When the catalogue outgrows this margin the estimate stops being conservative
+ * and compaction starts triggering *after* the real window is already full,
+ * which surfaces as a provider length error rather than as anything the kernel
+ * says. `Session` checks for that and warns rather than leaving it implicit.
+ */
+export const CONTEXT_SAFETY_MARGIN_TOKENS = 4_000;
+
 export class ModelRegistry {
   private readonly profiles = new Map<string, ModelProfile>(Object.entries(DEFAULT_PROFILES));
   private readonly endpoints = new Map<string, ProviderEndpoint>(Object.entries(DEFAULT_ENDPOINTS));
@@ -226,7 +249,10 @@ export class ModelRegistry {
    * Usable context, after reserving room for the response and a safety margin
    * (spec §20.1). Compaction triggers when the projection exceeds this.
    */
-  static usableContextTokens(profile: ModelProfile, safetyMarginTokens = 4_000): number {
+  static usableContextTokens(
+    profile: ModelProfile,
+    safetyMarginTokens = CONTEXT_SAFETY_MARGIN_TOKENS,
+  ): number {
     return Math.max(1_000, profile.contextWindow - profile.reservedOutputTokens - safetyMarginTokens);
   }
 

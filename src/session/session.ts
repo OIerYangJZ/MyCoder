@@ -19,6 +19,7 @@ import {
   type TurnId,
 } from '../util/ids.ts';
 import { PROJECT_DIR } from '../app.ts';
+import { estimateTokens } from '../util/text.ts';
 import { kernelError, toKernelError, type KernelError } from '../util/errors.ts';
 import type { Logger } from '../util/logger.ts';
 import type { Clock } from '../util/clock.ts';
@@ -33,7 +34,7 @@ import {
 } from '../model/ir.ts';
 import type { ModelRegistry, ResolvedModelProfile } from '../model/profiles.ts';
 import { addUsage, emptyUsage, estimateCost, resolveUsage, type UsageReport } from '../model/usage.ts';
-import { ModelRegistry as Registry } from '../model/profiles.ts';
+import { CONTEXT_SAFETY_MARGIN_TOKENS, ModelRegistry as Registry } from '../model/profiles.ts';
 import { ContextEngine, type GoalState } from '../context/context-engine.ts';
 import { ContextProjector, type ContextOverlay } from '../context/projector.ts';
 import { compact, needsCompaction } from '../context/compaction.ts';
@@ -264,6 +265,8 @@ export class Session {
    * (§18)". This is what makes that true above the model layer as well.
    */
   private unpricedRequests = 0;
+  /** Once per session; see . */
+  private toolCatalogueWarned = false;
   /** Skill activations in force, and the ones staged for the next step (§22). */
   private skillEntries: Array<{ activated: ActivatedSkill; scope: SkillActivationScope }> = [];
   private pendingSkillEntries: Array<{ activated: ActivatedSkill; scope: SkillActivationScope }> = [];
@@ -865,6 +868,7 @@ export class Session {
       });
 
       const model = this.resolveModel();
+      this.checkToolCatalogueFitsMargin(model);
       await this.maybeCompact(turn, model);
 
       const step = this.freezeStep(turn, model, budget);
@@ -1171,6 +1175,49 @@ export class Session {
     return resolved;
   }
 
+  /**
+   * What the tool catalogue costs — the part of every request nothing counts.
+   *
+   * `ContextEngine.estimatedTokens` covers the system prompt and the messages.
+   * The tool schemas go on the wire too and are not in that number, which is why
+   * a live first request measured 845 estimated against 3,436 billed.
+   *
+   * That gap is *supposed* to be absorbed by `CONTEXT_SAFETY_MARGIN_TOKENS`, and
+   * today it is. This exists to check that it still is, because the catalogue
+   * grows — an MCP server adds its tools to it — and the margin does not.
+   */
+  private toolCatalogueTokens(): number {
+    const view = this.opts.toolRegistry.view(this.effectiveTools ? { allowed: this.effectiveTools } : {});
+    return estimateTokens(JSON.stringify(view.tools));
+  }
+
+  /**
+   * Warn when the tool catalogue has outgrown the margin that hides it.
+   *
+   * Once per session, not per step: the catalogue only changes when a skill
+   * narrows it, and narrowing can only make it smaller. Left implicit, the
+   * failure mode is a provider length error on a session the kernel believed was
+   * comfortably inside its window.
+   */
+  private checkToolCatalogueFitsMargin(model: ResolvedModelProfile): void {
+    if (this.toolCatalogueWarned) return;
+    this.toolCatalogueWarned = true;
+
+    const catalogue = this.toolCatalogueTokens();
+    if (catalogue <= CONTEXT_SAFETY_MARGIN_TOKENS) return;
+
+    this.logger.warn('the tool catalogue no longer fits the context safety margin', {
+      catalogueTokens: catalogue,
+      safetyMarginTokens: CONTEXT_SAFETY_MARGIN_TOKENS,
+      model: model.alias,
+      detail:
+        'Every request carries the tool schemas and the context estimate does not count them. ' +
+        'While the catalogue fits inside the safety margin the estimate stays conservative; past ' +
+        'that point compaction triggers later than the real window allows, and the symptom is a ' +
+        'provider length error rather than anything this kernel reports.',
+    });
+  }
+
   private async maybeCompact(turn: Turn, model: ResolvedModelProfile): Promise<void> {
     const snapshot = this.opts.projector.project(this.context, this.context.repository.facts);
     const budgetTokens = Registry.usableContextTokens(model.profile);
@@ -1179,6 +1226,14 @@ export class Session {
     turn.transition('compacting', this.clock.now(), 'context budget exceeded');
     const result = this.runCompaction(snapshot.system, budgetTokens);
 
+    // What it cost *and* whether it worked. Compaction can run, drop nothing and
+    // leave the context over budget — `compact` has a branch for exactly that
+    // ("the tail alone is over budget") whose comment says to report it, and
+    // nothing was reporting it. A live run produced
+    // `droppedMessages: 0, tokensBefore: 8460, tokensAfter: 8460` against a
+    // 6,000-token budget, and the turn then sent the oversized request without a
+    // word to anyone.
+    const stillOver = needsCompaction(result.tokensAfter, budgetTokens);
     await this.append(
       'compaction.boundary',
       {
@@ -1188,9 +1243,34 @@ export class Session {
         tokensBefore: result.tokensBefore,
         tokensAfter: result.tokensAfter,
         preservedExchanges: result.preservedExchanges,
+        overBudget: stillOver,
+        budgetTokens,
       },
       turn.turnId,
     );
+
+    if (stillOver) {
+      this.logger.warn('compaction could not reach the context budget', {
+        tokensAfter: result.tokensAfter,
+        budgetTokens,
+        droppedMessages: result.droppedMessages,
+      });
+      // Told to the model, not only logged — it is the only party that can act.
+      // The precedent is the turn budget two hundred lines up: a limit enforced
+      // against a model that was never told it existed produces a turn that
+      // stops for no reason the model can explain. The same is true here, except
+      // that the stop is a provider error rather than a clean halt.
+      this.context.addFact({
+        id: 'context-over-budget',
+        priority: 'critical',
+        text:
+          `Context is over budget: about ${result.tokensAfter} tokens against a ` +
+          `${budgetTokens}-token window, and compaction could not reduce it because everything in it is ` +
+          'recent. Stop reading new files and stop running commands that return long output. Summarise ' +
+          'what you already have, write down anything that must survive, and finish. The next request may ' +
+          'be refused by the provider for length.',
+      });
+    }
 
     // Back to `preparing` before the step is frozen. `compacting → sampling` is
     // not a legal move (§5.2), and taking it threw INTERNAL_ERROR *and failed the
