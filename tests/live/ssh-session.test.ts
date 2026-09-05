@@ -25,7 +25,7 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -35,8 +35,43 @@ import { ScriptedPrompter } from '../../src/cli/prompter.ts';
 import { replaySession } from '../../src/session/resume.ts';
 import { REMOTE_CANARY, shq, sshUnavailable, startSshFixture, type SshFixture } from './ssh-harness.ts';
 
-/** The canary path, as a shell expression the remote hook evaluates. */
-const REMOTE_CANARY_FILE_EXPR = '$HOME/.agent-test-secret 2>/dev/null || true';
+/**
+ * What the remote hook runs, and why it is not a shell.
+ *
+ * It was `sh -c "uname -s > marker; echo …; cat $HOME/.agent-test-secret"`, and
+ * alpha.12's "a shell is not a development command" made shells `ask` under
+ * `workspace-dev` — which for a hook means *no*, deliberately: a hook comes from
+ * a repository and must never raise a prompt the user did not initiate. So the
+ * hook stopped running, and the four things this suite measures through it
+ * stopped being measured. The commit that made the change fixed the 13 tests it
+ * broke; this suite runs only on CI with an `sshd`, so nobody saw these.
+ *
+ * `awk` rather than `node`, and the reason is PATH. A hook runs as a
+ * non-interactive remote command, which gets the login shell's PATH and not the
+ * one the CI job assembled — `awk` is POSIX-mandated and in the default PATH of
+ * every remote this suite targets. It is also a development command, so policy
+ * allows it without asking, which is the property the hook needs.
+ *
+ * One program, doing all four things the shell pipeline did: announce itself,
+ * report the environment it was given, read the out-of-workspace canary, and
+ * leave a side effect on the remote filesystem.
+ */
+const MARKER_CONTENT = 'hook-ran-on-the-remote';
+
+const hookProgram = (marker: string): string =>
+  [
+    'BEGIN {',
+    'print "hook-output-marker";',
+    // Expected empty. The kernel scrubs the environment before a remote command
+    // sees it, and this is how that is measured rather than assumed.
+    'print "tok=[" ENVIRON["GITHUB_TOKEN"] "]";',
+    'canary = ENVIRON["HOME"] "/.agent-test-secret";',
+    // Absent is fine: whether the read succeeds is the backend's business, and
+    // whether the value survives into context is the Redactor's.
+    'while ((getline line < canary) > 0) print line;',
+    `print "${MARKER_CONTENT}" > "${marker}";`,
+    '}',
+  ].join(' ');
 
 const unavailable = sshUnavailable();
 const ENABLED = process.env.KERNEL_SSH === '1' || Boolean(process.env.KERNEL_SSH_REMOTE);
@@ -154,7 +189,7 @@ describe('a full turn drives remote tools (ADR-0012)', () => {
         const steps: FakeStep[] = [
           read('target.ts'),
           edit(receipt),
-          shell(['sh', '-c', 'grep -q "const v = 2;" target.ts']),
+          shell(['grep', '-q', 'const v = 2;', 'target.ts']),
           done('edited on the remote'),
         ];
         return steps[index];
@@ -414,7 +449,7 @@ describe('remote hook execution (§21)', () => {
       '[[hooks]]\n' +
         'event = "PostToolUse"\n' +
         'matcher = "Read"\n' +
-        `command = ["sh", "-c", "uname -s > ${MARKER}; echo hook-output-marker; echo \\"tok=[$GITHUB_TOKEN]\\"; cat ${REMOTE_CANARY_FILE_EXPR}"]\n` +
+        `command = ${JSON.stringify(['awk', hookProgram(MARKER)])}\n` +
         'inject_output = true\n',
       'utf8',
     );
@@ -442,17 +477,18 @@ describe('remote hook execution (§21)', () => {
     // locally in a directory that happens to have the same name.
     const marker = await fixture.raw(`cat ${shq(`${fixture.workspace}/${MARKER}`)}`);
     assert.equal(marker.code, 0, 'the hook left no marker on the remote, so it did not run there');
-    assert.match(marker.stdout.trim(), /^(Linux|Darwin|FreeBSD)/);
+    assert.equal(marker.stdout.trim(), MARKER_CONTENT);
 
-    if (!fixture.loopback) {
-      // On a real VM the remote is Linux and the client is macOS, so the marker
-      // contents alone prove the locality. Loopback cannot make this claim.
-      assert.equal(
-        marker.stdout.trim(),
-        'Linux',
-        'the hook reported a non-Linux uname from a Linux remote, so it ran locally',
-      );
-    }
+    // And nothing beside the hook *definition*, which is a local file. This
+    // replaces a `uname -s` comparison that could only be made against a
+    // non-Linux client, so loopback was excused from it. "Present there, absent
+    // here" is the same claim, holds in both modes, and does not depend on the
+    // two machines running different operating systems — the remote workspace is
+    // a different directory from the local project even on one filesystem.
+    await assert.rejects(
+      () => stat(path.join(projectDir, MARKER)),
+      'the hook left its marker next to its own definition, so it ran locally',
+    );
   });
 
   test('the hook output was injected into the conversation', (t) => {
