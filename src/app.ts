@@ -22,7 +22,7 @@
  * number npm publishes and the number `mycoder --version` prints are the same claim
  * and two places to write it is one place to get it wrong.
  */
-export const APP_VERSION = '0.1.0-alpha.13';
+export const APP_VERSION = '0.1.0-alpha.14';
 
 /** Directory and binary name. Lowercase: it becomes a path component. */
 export const APP_NAME = 'mycoder';

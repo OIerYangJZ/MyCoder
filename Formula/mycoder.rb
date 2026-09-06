@@ -15,11 +15,11 @@
 class Mycoder < Formula
   desc "Coding agent kernel for the terminal, with explicit security boundaries"
   homepage "https://github.com/OIerYangJZ/MyCoder"
-  url "https://registry.npmjs.org/mycoder-cli/-/mycoder-cli-0.1.0-alpha.13.tgz"
+  url "https://registry.npmjs.org/mycoder-cli/-/mycoder-cli-0.1.0-alpha.14.tgz"
   # Stated rather than inferred. Homebrew derives a version from the url when it can,
   # and `mycoder-cli-0.1.0-alpha.13.tgz` is exactly the shape it guesses wrong on —
   # the prerelease suffix reads as part of the filename rather than the version.
-  version "0.1.0-alpha.13"
+  version "0.1.0-alpha.14"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
 

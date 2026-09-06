@@ -45,12 +45,12 @@ pnpm install && pnpm build
 node bin/mycoder.mjs doctor
 ```
 
-<sub><code>@alpha</code> because this is one: the version is
-<code>0.1.0-alpha.13</code>, and typing it is how you say you meant to install a
-prerelease. It is published under the <code>alpha</code> dist-tag — but npm pins
-<code>latest</code> to the first version a package ever publishes and will not let
-that be removed, so <code>latest</code> also points here until there is a stable
-release to move it to. The npm name is
+<sub><code>@alpha</code> because this is one — every release so far is a
+prerelease, and typing the tag is how you say you meant to install one. They are
+published under the <code>alpha</code> dist-tag, but npm pins <code>latest</code>
+to the first version a package ever publishes and will not let that be removed, so
+<code>latest</code> points at an alpha too until there is a stable release to move
+it to. The npm name is
 <code>mycoder-cli</code> because <code>mycoder</code> on npm belongs to an
 unrelated project. What you type afterwards is <code>mycoder</code>.
 Releases are published from the tarball the release gate installed and ran, with

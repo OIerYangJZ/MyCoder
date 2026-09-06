@@ -44,8 +44,8 @@ npm install -g mycoder-cli@alpha
 mycoder --version
 ```
 
-`@alpha` because it is: the current version is `0.1.0-alpha.13`, and typing the tag
-is how you say you meant to install a prerelease.
+`@alpha` because it is: every release so far is a prerelease, and typing the tag is
+how you say you meant to install one. `mycoder --version` tells you which.
 
 It is published under the `alpha` dist-tag. `latest` points at it too, and that is
 not what the workflow asked for: **npm pins `latest` to the first version a package
@@ -68,7 +68,7 @@ is simply where you say you meant it.
 Or from a release artifact you were handed, which is the same bytes:
 
 ```sh
-npm install -g ./mycoder-cli-0.1.0-alpha.13.tgz
+npm install -g ./mycoder-cli-<version>.tgz
 ```
 
 Every release is published from the tarball the release gate installed and drove

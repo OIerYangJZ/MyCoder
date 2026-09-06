@@ -1,7 +1,7 @@
 {
   "comment:name": "The npm name is `mycoder-cli`; the command it installs is `mycoder`. `mycoder` on npm belongs to an unrelated project (drivecore/mycoder), and taking a name someone else already ships under is not something a package whose thesis is honest claims gets to do. `src/app.ts` owns the binary and directory name, so the two are decoupled by design (spec \u00a715).",
   "name": "mycoder-cli",
-  "version": "0.1.0-alpha.13",
+  "version": "0.1.0-alpha.14",
   "description": "MyCoder \u2014 a coding agent kernel: small, verifiable, with explicit security boundaries.",
   "license": "MIT",
   "author": "Jinze Yang",

@@ -42,10 +42,10 @@ pnpm install && pnpm build
 node bin/mycoder.mjs doctor
 ```
 
-<sub><code>@alpha</code> 是因为它确实是 alpha：版本号是 <code>0.1.0-alpha.13</code>，
-显式写出来才算你是有意装预发布版。它发在 <code>alpha</code> 这个 dist-tag 下 ——
+<sub><code>@alpha</code> 是因为它确实是 alpha —— 目前每一个版本都是预发布版，
+显式写出 tag 才算你是有意装它。它们发在 <code>alpha</code> 这个 dist-tag 下 ——
 不过 npm 会把 <code>latest</code> 钉在一个包首次发布的那个版本上，而且不允许删除，
-所以在有稳定版把它挪走之前，<code>latest</code> 也指向这里。
+所以在有稳定版把它挪走之前，<code>latest</code> 也指向某个 alpha。
 npm 上的包名叫 <code>mycoder-cli</code>，因为 <code>mycoder</code> 已经属于另一个
 无关项目。装完之后你敲的仍然是 <code>mycoder</code>。每次发布上传的都是发布门禁
 真正装过、跑过的那个 tarball，并附带
