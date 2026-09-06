@@ -39,6 +39,10 @@ pnpm install && pnpm build
 node bin/mycoder.mjs doctor
 ```
 
+**New here?** [`docs/using-mycoder.md`](docs/using-mycoder.md) walks through a
+real session end to end — the approval prompt, the four modes, seeing what it
+changed, and steering a long task.
+
 `doctor` reaches one of two conclusions and never a third — **ready**, or
 **blocked** naming the file to create, the key to put in it, and the command that
 proves it worked. It builds no session and writes nothing, because it is what you

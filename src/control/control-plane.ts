@@ -1364,6 +1364,7 @@ function handleHelp(args: string[], commands: readonly string[]): ControlResult 
       '  /remote [list|connect <name>|status|disconnect]',
       '  /skills [list|use <name> [--turn|--run]]  activate a skill; it can only narrow',
       '  /agents, /hooks                         what is discovered and how it is constrained',
+      '  /diff [last|<path>]                     what this session changed, from the undo journal',
       '  /undo [last <n>|path <f>|turn|list]     reverse edits; all of them or none, and it',
       '                                          always says what it could not reach',
       '  /cancel                                 stop the current turn',

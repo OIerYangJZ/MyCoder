@@ -36,6 +36,9 @@ pnpm install && pnpm build
 node bin/mycoder.mjs doctor
 ```
 
+**第一次用？**[`docs/using-mycoder.md`](docs/using-mycoder.md) 从头到尾走一遍
+真实会话 —— 审批弹窗、四种模式、怎么看它改了什么、以及长任务怎么把控。（英文）
+
 `doctor` 只会得出两个结论之一，不会有第三个 —— **就绪**，或者**被挡住**，
 并说出要创建哪个文件、往里放哪个 key、以及哪条命令能证明它生效了。
 它不建立会话，也不写任何东西，因为它正是 `mycoder` 起不来时你会去敲的那条命令。
