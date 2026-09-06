@@ -1289,9 +1289,13 @@ const handleVerbose: ControlHandler = (args, host) => {
   return {
     ok: true,
     command: 'verbose',
+    // Says "from the next call" because it is true and because the alternative is
+    // that somebody turns this on to see the result they just read about, watches
+    // nothing appear, and concludes the feature is broken. Off means the bytes were
+    // never captured, not that something declined to print them.
     message: now
-      ? 'Tool output preview on: up to 2 kB and 20 lines per result, redacted.'
-      : 'Tool output preview off.',
+      ? 'Tool output preview on from the next call: up to 2 kB and 20 lines per result, redacted.'
+      : 'Tool output preview off. Results already on screen keep the preview they were shown with.',
   };
 };
 
@@ -1344,7 +1348,7 @@ function handleHelp(args: string[], commands: readonly string[]): ControlResult 
       '  /loop [status|start [--max-steps N --max-time 20m --max-cost 1.50]|stop]',
       `  /mode [${APPROVAL_MODES.join('|')}|next]  who answers an approval; Shift-Tab cycles`,
       '  /permissions [show|explain <subject>|reset-session]',
-      '  /verbose [on|off]                        show what each tool returned, redacted',
+      '  /verbose [on|off]                        show what each tool returns, redacted, from now on',
       "  /thinking [on|off]                       show the model's reasoning as it arrives",
       '  /status                                 session, model, context, budget, dirty files',
       '  /compact [status]                       summarise older conversation',

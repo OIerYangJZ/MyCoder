@@ -903,3 +903,48 @@ describe("/thinking — the model's reasoning", () => {
     }
   });
 });
+
+describe('/verbose — and the boundary it has always had', () => {
+  test('it says the preview starts at the next call, because it does', async () => {
+    // Off does not mean "captured and not printed", it means the bytes were never
+    // put on the record. Somebody who turns this on to expand the result they just
+    // read will see nothing appear, and without this sentence the honest conclusion
+    // from outside is that the feature is broken.
+    const ws = await createTestWorkspace();
+    try {
+      const on = await ws.kernel.control.execute('/verbose on');
+      assert.ok(on.ok, on.message);
+      assert.match(on.message, /from the next call/);
+
+      const off = await ws.kernel.control.execute('/verbose off');
+      assert.ok(off.ok, off.message);
+      assert.match(off.message, /already on screen/, 'turning it off must not imply a retraction');
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('a result from before it was turned on carries no preview', async () => {
+    // The claim above, as a fact about the record rather than about the sentence.
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const ws = await createTestWorkspace({
+      captureEvents: events,
+      files: { 'a.txt': 'the contents\n' },
+    });
+    try {
+      setScript(ws.kernel, [
+        { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'a.txt' } }] },
+        { kind: 'final', text: 'read' },
+      ]);
+      await ws.kernel.session.runTurn('read it');
+      await ws.kernel.control.execute('/verbose on');
+
+      const results = events.filter((e) => e.type === 'tool.result');
+      assert.equal(results.length, 1, 'the fixture did not run a tool');
+      const payload = results[0]!.payload as { preview?: string };
+      assert.equal(payload.preview, undefined, 'a preview appeared for a call made before /verbose on');
+    } finally {
+      await ws.cleanup();
+    }
+  });
+});

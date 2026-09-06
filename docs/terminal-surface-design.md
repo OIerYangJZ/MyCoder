@@ -620,3 +620,35 @@ number of.
 | #   | Item                                      | Needs an ADR?                                                    | State    |
 | --- | ----------------------------------------- | ---------------------------------------------------------------- | -------- |
 | 15  | Context pressure on the status line (§11) | no — one existing figure, read by a second reader, computed once | **done** |
+
+---
+
+## 12. Expanding a result after the fact — why this is still not done
+
+`/verbose` attaches a bounded, redacted preview to every tool result **from the next
+call**. That is the whole of it, and it is a worse fit for the moment somebody reaches
+for it than it looks: the reason to want a preview is a result already on screen, and
+that result was executed with the preview off, which means the bytes were never
+captured. Turning it on and watching nothing appear reads, from outside, as a broken
+feature.
+
+Two halves, and only one of them is closed here:
+
+- **Closed.** `/verbose` now says `from the next call`, and turning it off says that
+  results already on screen keep what they were shown with. A test asserts both
+  sentences, and a second test asserts the fact underneath them — that a call made
+  before `/verbose on` carries no preview on its record.
+- **Not closed.** Making it retroactive means retaining redacted previews for calls
+  the user did not ask to preview. The content already exists in memory for the
+  duration of the step, so the increment is _lifetime_, not exposure — but a
+  retention window for tool output is a security-relevant default, `ToolExecutionRecord`
+  documents the current one in as many words ("off means the bytes were never put
+  here"), and §2 already sequenced this behind V09 and A15 with an ADR. It is not
+  something to change in a rendering pass.
+
+Recorded here rather than left as a known-worse experience nobody wrote down.
+
+| #   | Item                                    | Needs an ADR?                                       | State    |
+| --- | --------------------------------------- | --------------------------------------------------- | -------- |
+| 16  | `/verbose` states its boundary (§12)    | no — a sentence about behaviour that did not change | **done** |
+| 17  | Retroactive expansion of a result (§12) | **yes** — a retention window for tool output        | **open** |
