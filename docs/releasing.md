@@ -53,6 +53,11 @@ Every one of those failure modes is a property of holding a long-lived credentia
 Trusted publishing has none of them, which is why the token was deleted rather than
 kept as a fallback: a fallback credential is a credential.
 
+`v0.1.0-alpha.14` published on the first attempt with no secret in the repository
+at all — recorded because the registry exposes nothing about its own
+trusted-publisher configuration, so a publish is the only thing that can check one,
+and this is the publish that did.
+
 ### The first publish
 
 Trusted publishing is configured **on a package**, so a name that has never been
