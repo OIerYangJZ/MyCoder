@@ -1026,6 +1026,11 @@ export class Session {
             ...(outcome.previews.get(result.toolCallId) === undefined
               ? {}
               : { preview: outcome.previews.get(result.toolCallId) }),
+            // The kernel's own words for why, when it refused. Not gated on
+            // `--verbose` the way a preview is, because no tool wrote any of it.
+            ...(outcome.safeMessages.get(result.toolCallId) === undefined
+              ? {}
+              : { safeMessage: outcome.safeMessages.get(result.toolCallId) }),
           },
           turn.turnId,
           step.stepId,
@@ -1595,8 +1600,13 @@ export class Session {
    * and a persisted copy is a copy of tool output sitting on disk forever. Emitting
    * it in-process and stripping it before `store.append` gives the terminal the
    * bytes and leaves the record exactly as it was before the feature existed.
+   *
+   * `safeMessage` is here for the same reason and not the same one: it contains no
+   * tool output at all, so it is not a leak risk — but it is a rendering of an
+   * `errorCode` the record already carries, and a log that stores both stores the
+   * same fact twice, in two formats, one of which is prose that can drift.
    */
-  private static readonly EPHEMERAL_FIELDS = ['preview'] as const;
+  private static readonly EPHEMERAL_FIELDS = ['preview', 'safeMessage'] as const;
 
   private static forTheRecord(payload: unknown): unknown {
     if (payload === null || typeof payload !== 'object') return payload;

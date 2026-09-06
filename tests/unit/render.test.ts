@@ -19,6 +19,7 @@ import {
   box,
   centre,
   colourDepth,
+  formatCost,
   formatDuration,
   inputFrame,
   inputRule,
@@ -1297,5 +1298,73 @@ describe('which end of a long path to keep', () => {
     assert.ok(visibleWidth(cut) <= 10, `${visibleWidth(cut)} columns`);
     assert.equal(cut.includes('�'), false, 'a character was cut in half');
     assert.ok(cut.endsWith('.ts'), `the tail was not kept: ${cut}`);
+  });
+});
+
+describe('a cost too small to round to a cent', () => {
+  test('a real charge never renders as zero', () => {
+    // Seen on the recording that went into the README: `3.5k tokens · $0.0000`,
+    // on a session that was being billed. `toFixed(4)` on 4e-5 is `0.0000`, and
+    // zero on its own reads as free — which is the exact sentence `costParts`
+    // was already written to avoid one level up. The fix had stopped at the
+    // case it was looking at.
+    assert.equal(formatCost(0.00004), '<$0.0001');
+    assert.equal(formatCost(0.000049), '<$0.0001');
+    assert.equal(formatCost(0.0001), '$0.0001');
+    assert.equal(formatCost(0.4213), '$0.4213');
+  });
+
+  test('and an actual zero still says zero, because that is true', () => {
+    assert.equal(formatCost(0), '$0.0000');
+  });
+
+  test('the line the user reads uses it too, not just the spinner', () => {
+    const line = statusLine({ model: 'm', requests: 1, tokens: 10, costUsd: 0.00004 }, plain);
+    assert.match(line, /<\$0\.0001/);
+    assert.equal(line.includes('$0.0000'), false, 'a billed session was reported as free');
+  });
+});
+
+describe('why a call was refused, not just that it was', () => {
+  test('the kernel-authored reason is shown beside the code', () => {
+    // The asymmetry: a schema failure tells the *model* `$.limit is not an
+    // allowed property (expected one of: path, offsetLine, limitLines)` and
+    // told the person watching `TOOL_INVALID_ARGS`. The party that could act on
+    // it got the detail; the party supervising got a code.
+    const line = toolResultLine(
+      { isError: true, errorCode: 'TOOL_INVALID_ARGS', why: '$.limit is not an allowed property' },
+      plain,
+      glyphs(true),
+    );
+    assert.equal(line, '  ⎿  TOOL_INVALID_ARGS — $.limit is not an allowed property');
+  });
+
+  test('a result with no kernel reason is exactly what it was', () => {
+    // Most failures are a tool's own, and a tool's output is not this line's to
+    // print: it is redacted, bounded and gated behind `--verbose` (ADR-0031).
+    assert.equal(
+      toolResultLine({ isError: true, errorCode: 'TOOL_FAILED' }, plain, glyphs(true)),
+      '  ⎿  TOOL_FAILED',
+    );
+    assert.equal(toolResultLine({ contentBytes: 12 }, plain, glyphs(true)), '  ⎿  12 B');
+  });
+
+  test('the renderer takes it off the event, where the session puts it', () => {
+    let written = '';
+    const renderer = new SessionRenderer({
+      write: (s) => (written += s),
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+    });
+    renderer.on('turn.started', {});
+    renderer.on('tool.call', { toolCallId: 'c1', name: 'Read', argsSummary: '{"path":"a.ts"}' });
+    renderer.on('tool.result', {
+      toolCallId: 'c1',
+      isError: true,
+      errorCode: 'TOOL_INVALID_ARGS',
+      safeMessage: '$.limit is not an allowed property',
+    });
+    assert.match(written, /TOOL_INVALID_ARGS — \$\.limit is not an allowed property/);
   });
 });

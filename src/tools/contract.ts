@@ -118,6 +118,21 @@ export interface ToolResult {
   /** Machine-readable companion to `content`. */
   structured?: unknown;
   errorCode?: ErrorCode;
+  /**
+   * One line the *kernel itself* wrote, safe to show a person unredacted.
+   *
+   * The asymmetry this closes: a schema failure tells the model
+   * `$.limit is not an allowed property (expected one of: path, offsetLine,
+   * limitLines)` and told the person watching `TOOL_INVALID_ARGS`. The party
+   * that could act on it got the detail; the party supervising got a code.
+   *
+   * Set **only** where the kernel composed the whole sentence — schema
+   * validation, an unknown tool, a refusal, a cancellation. Never where a tool
+   * or a subprocess contributed any of the text, because that is output, it is
+   * the most secret-dense thing in the system, and it goes through `preview`
+   * and the redactor like everything else (§21.2, ADR-0031).
+   */
+  safeMessage?: string;
   /** Recorded in the event log, never sent to the model verbatim. */
   metadata?: Record<string, unknown>;
   /** Reference to spilled full output (spec invariant 9). */

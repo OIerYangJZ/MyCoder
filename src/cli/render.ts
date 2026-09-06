@@ -517,6 +517,14 @@ export interface ResultInfo {
    * the name would be noise on every line of a transcript.
    */
   of?: string;
+  /**
+   * Why, in the kernel's own words, when the kernel is the one that refused.
+   *
+   * Never a tool's output — that is what `preview` is for, and it is redacted
+   * and gated. This is text the kernel composed itself: which property failed
+   * validation, which subject was declined.
+   */
+  why?: string;
 }
 
 /**
@@ -537,7 +545,12 @@ export function toolResultLine(info: ResultInfo, p: Palette, g: Glyphs): string 
   const of = info.of === undefined || info.of === '' ? '' : `${p.grey(`${info.of} · `)}`;
   if (info.isError === true) {
     const what = info.errorCode ?? 'failed';
-    return `  ${p.red(g.result)}  ${of}${p.red(what)}`;
+    // The kernel's own sentence, where it wrote one. A schema failure told the
+    // *model* which property was wrong and told the person watching
+    // `TOOL_INVALID_ARGS` — the detail went to the party that could act on it
+    // and the code went to the party supervising, which is backwards.
+    const why = info.why === undefined || info.why === '' ? '' : ` ${p.grey(`— ${info.why}`)}`;
+    return `  ${p.red(g.result)}  ${of}${p.red(what)}${why}`;
   }
   return `  ${p.grey(g.result)}  ${of}${p.grey(formatBytes(info.contentBytes ?? 0))}`;
 }
@@ -1136,11 +1149,11 @@ export interface StatusInfo {
 function costParts(info: StatusInfo, p: Palette): string[] {
   const unpriced = info.unpricedRequests ?? 0;
   if (info.costUsd === undefined) return [];
-  if (unpriced === 0) return [p.green(`$${info.costUsd.toFixed(4)}`)];
+  if (unpriced === 0) return [p.green(formatCost(info.costUsd))];
   if (info.costUsd === 0) {
     return [p.grey(`cost unknown (${unpriced} unpriced request${unpriced === 1 ? '' : 's'})`)];
   }
-  return [p.green(`≥$${info.costUsd.toFixed(4)}`), p.grey(`${unpriced} unpriced`)];
+  return [p.green(`≥${formatCost(info.costUsd)}`), p.grey(`${unpriced} unpriced`)];
 }
 
 export function statusLine(info: StatusInfo, p: Palette): string {
@@ -1200,6 +1213,24 @@ export function sessionList(
     );
   });
   return lines.join('\n');
+}
+
+/**
+ * A dollar figure, or an honest refusal to round one away.
+ *
+ * `toFixed(4)` on a real cost below half a hundredth of a cent produces
+ * `$0.0000`, which reads as free. Seen on the recording that went into the
+ * README: `3.5k tokens · $0.0000`, under a session that was being billed.
+ *
+ * This is the same defect `costParts` was already written to avoid one level up
+ * — its comment says "zero on its own reads as free" — and the fix stopped at
+ * the case it was looking at. Zero is zero; anything that rounds to zero and is
+ * not zero says so.
+ */
+export function formatCost(usd: number): string {
+  if (usd === 0) return '$0.0000';
+  if (usd < 0.0001) return '<$0.0001';
+  return `$${usd.toFixed(4)}`;
 }
 
 export function formatTokens(n: number): string {
@@ -1522,7 +1553,7 @@ export class SessionRenderer {
         // `$`, which this figure was printing without. It is a dollar amount either
         // way, and a bare `0.4213` next to a token count reads as another count.
         this.spinner.setDetail(
-          `${formatTokens(this.tokens)} tokens` + (this.costUsd > 0 ? ` · $${this.costUsd.toFixed(4)}` : ''),
+          `${formatTokens(this.tokens)} tokens` + (this.costUsd > 0 ? ` · ${formatCost(this.costUsd)}` : ''),
         );
         return;
       }
@@ -1619,6 +1650,9 @@ export class SessionRenderer {
               ...(type === 'tool.denied' ? { errorCode: 'denied' } : {}),
               ...(typeof data.contentBytes === 'number' ? { contentBytes: data.contentBytes } : {}),
               ...(many && call ? { of: call.label } : {}),
+              ...(typeof data.safeMessage === 'string' && data.safeMessage !== ''
+                ? { why: data.safeMessage }
+                : {}),
             },
             p,
             g,

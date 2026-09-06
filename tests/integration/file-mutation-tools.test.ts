@@ -414,3 +414,56 @@ describe('what the event log keeps of a call that is too big for it', () => {
     }
   });
 });
+
+describe('what a refusal tells the person watching', () => {
+  test('the kernel says why on the event, and not one word of it reaches the log', async () => {
+    // The asymmetry this closes: the *model* was told `$.limit is not an allowed
+    // property (expected one of: path, offsetLine, limitLines)` and the person
+    // supervising was told `TOOL_INVALID_ARGS`. The detail went to the party
+    // that could act on it; the code went to the party watching.
+    //
+    // It is ephemeral for the same reason `preview` is, and a different one: it
+    // carries no tool output, so it is not a leak — but it is a rendering of an
+    // `errorCode` the record already has, and a log holding both holds one fact
+    // twice, in two formats, one of which is prose that can drift.
+    const captureEvents: Array<{ type: string; payload: unknown }> = [];
+    const ws = await createTestWorkspace({
+      files: { 'src/a.ts': 'export const a = 1;\n' },
+      captureEvents,
+    });
+    try {
+      setScript(ws.kernel, [
+        // `limit` is not a property of Read; `limitLines` is. A real model made
+        // exactly this mistake, twice.
+        { kind: 'tools', calls: [{ name: 'Read', arguments: { path: 'src/a.ts', limit: 20 } }] },
+        { kind: 'final', text: 'tried' },
+      ]);
+      await ws.kernel.session.runTurn('read it');
+
+      // What the host — the terminal — was handed.
+      const live = captureEvents
+        .filter((e) => e.type === 'tool.result')
+        .map((e) => e.payload as Record<string, unknown>);
+      assert.equal(live.length, 1, `expected one tool result, saw ${live.length}`);
+      assert.equal(live[0]?.errorCode, 'TOOL_INVALID_ARGS');
+      assert.match(
+        String(live[0]?.safeMessage),
+        /\$\.limit is not an allowed property/,
+        'the person watching was told only the code',
+      );
+
+      // And what the record kept.
+      let records = 0;
+      for await (const event of ws.kernel.store.readEvents(ws.kernel.sessionId)) {
+        if (event.type !== 'tool.result') continue;
+        records += 1;
+        const payload = event.payload as Record<string, unknown>;
+        assert.equal(payload.errorCode, 'TOOL_INVALID_ARGS', 'the code is what the record keeps');
+        assert.equal(payload.safeMessage, undefined, 'the prose was written to disk');
+      }
+      assert.equal(records, 1, 'no tool result was recorded at all');
+    } finally {
+      await ws.cleanup();
+    }
+  });
+});

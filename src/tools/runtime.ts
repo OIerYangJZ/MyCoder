@@ -221,6 +221,13 @@ export interface BatchOutcome {
    */
   previews: ReadonlyMap<string, string>;
   /**
+   * Kernel-authored one-liners by tool call id, for the result line.
+   *
+   * Unlike `previews` this is not conditional on `previewOutput`: the text is
+   * the kernel's own and contains no tool output, so there is nothing to gate.
+   */
+  safeMessages: ReadonlyMap<string, string>;
+  /**
    * Why a call failed, by tool call id. Absent for calls that succeeded.
    *
    * Alongside the results rather than on `ToolResultPart` for the same reason
@@ -296,6 +303,7 @@ export class ToolRuntime {
   ): Promise<BatchOutcome> {
     const results: ToolResultPart[] = [];
     const previews = new Map<string, string>();
+    const safeMessages = new Map<string, string>();
     const errorCodes = new Map<string, ErrorCode>();
     let terminalFailure: KernelError | undefined;
 
@@ -391,6 +399,7 @@ export class ToolRuntime {
         record.preview = preview;
         previews.set(call.id, preview);
       }
+      if (result.safeMessage) safeMessages.set(call.id, result.safeMessage);
       this.opts.onRecord?.(record);
 
       const part: ToolResultPart = {
@@ -419,8 +428,8 @@ export class ToolRuntime {
     }
 
     return terminalFailure
-      ? { results, previews, errorCodes, terminalFailure }
-      : { results, previews, errorCodes };
+      ? { results, previews, safeMessages, errorCodes, terminalFailure }
+      : { results, previews, safeMessages, errorCodes };
   }
 
   /**
@@ -498,6 +507,7 @@ export class ToolRuntime {
             `Available tools: ${step.tools.tools.map((t) => t.name).join(', ')}.`,
           isError: true,
           errorCode: 'TOOL_NOT_FOUND',
+          safeMessage: `there is no tool named "${call.name}"`,
         },
         decisions: [],
       };
@@ -517,6 +527,7 @@ export class ToolRuntime {
           content: `error: TOOL_NOT_FOUND\n"${call.name}" was not available in this step.`,
           isError: true,
           errorCode: 'TOOL_NOT_FOUND',
+          safeMessage: `"${call.name}" was not available in this step`,
         },
         decisions: [],
       };
@@ -531,6 +542,7 @@ export class ToolRuntime {
             `${formatIssues(validation.issues)}.`,
           isError: true,
           errorCode: 'TOOL_INVALID_ARGS',
+          safeMessage: formatIssues(validation.issues),
         },
         decisions: [],
       };
@@ -626,6 +638,10 @@ export class ToolRuntime {
               '\nDo not retry this. Choose a different approach, or ask the user what they would prefer.',
             isError: true,
             errorCode: 'TOOL_DENIED',
+            safeMessage:
+              outcome.consulted === false
+                ? `not approved: ${summary} — nobody was asked`
+                : `declined: ${summary}${outcome.reason ? ` — ${outcome.reason}` : ''}`,
           },
           decisions,
         };
