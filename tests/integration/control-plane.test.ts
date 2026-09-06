@@ -948,3 +948,50 @@ describe('/verbose — and the boundary it has always had', () => {
     }
   });
 });
+
+describe('goal criteria say who checks them, because nothing does', () => {
+  test('/loop does not promise a stop it has no way to implement', async () => {
+    // The budget is arithmetic the kernel does. The criteria are prose the model is
+    // shown. This line used to say the turn stops when "the budget or the goal
+    // criteria are met", which reads as two enforced conditions and is one.
+    const ws = await createTestWorkspace();
+    try {
+      const result = await ws.kernel.control.execute('/loop start');
+      assert.ok(result.ok, result.message);
+      assert.match(result.message, /hard stop the kernel/);
+      assert.match(result.message, /Goal criteria are not/);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('adding a criterion says what happens to it', async () => {
+    const ws = await createTestWorkspace();
+    try {
+      await ws.kernel.control.execute('/goal set ship the parser');
+      const added = await ws.kernel.control.execute('/goal criteria every test passes');
+      assert.ok(added.ok, added.message);
+      assert.match(added.message, /for the model to work to/);
+
+      const status = await ws.kernel.control.execute('/goal status');
+      assert.match(status.message, /every test passes/);
+      assert.match(status.message, /does not check these/);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('a criterion still reaches the model, which is the whole of what it does', async () => {
+    // Correcting the claim must not quietly remove the feature: the criterion is
+    // context, and context is what it was always for.
+    const ws = await createTestWorkspace();
+    try {
+      await ws.kernel.control.execute('/goal set ship the parser');
+      const added = await ws.kernel.control.execute('/goal criteria every test passes');
+      assert.match(added.projection ?? '', /every test passes/);
+      assert.deepEqual(ws.kernel.session.goal?.criteria, ['every test passes']);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+});

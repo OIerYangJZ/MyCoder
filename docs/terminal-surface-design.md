@@ -652,3 +652,37 @@ Recorded here rather than left as a known-worse experience nobody wrote down.
 | --- | --------------------------------------- | --------------------------------------------------- | -------- |
 | 16  | `/verbose` states its boundary (§12)    | no — a sentence about behaviour that did not change | **done** |
 | 17  | Retroactive expansion of a result (§12) | **yes** — a retention window for tool output        | **open** |
+
+---
+
+## 13. Goal criteria — the claim, corrected, and the feature that would justify it
+
+`/goal criteria <text>` appends a line to `GoalState.criteria`, and the projector
+shows it to the model. That is the whole mechanism. Nothing evaluates it, nothing
+can: the criteria are natural language, and the only thing in the system that reads
+natural language is the model whose stopping decision they are supposed to constrain.
+
+`/loop start` said the turn stops "when the budget or the goal criteria are met".
+The first half is arithmetic the kernel does. The second half is prose the model is
+shown. Saying them in one breath promises a stop nothing implements — and a user who
+sets a criterion and walks away has been told the kernel is watching for them. That
+sentence is now two, and they say which is which. `/goal criteria` and `/goal status`
+say the same thing at the two other points somebody reads it.
+
+**What would make the original claim true.** Not a model evaluating its own criteria
+— that is the same trust boundary in a new place. A criterion the _kernel_ can check
+has to be something the kernel can run: a command and an expected exit code, checked
+by the existing tool runtime under the existing policy engine, with the result
+projected as a fact rather than as a request. `pnpm test` exiting `0` is a criterion.
+`the parser is finished` is not, and no amount of plumbing makes it one.
+
+That is a real feature and it needs an ADR, for reasons none of which are rendering:
+it runs a command the user did not approve at the moment it runs; it runs after every
+step, so its cost is a budget question; and a criterion that fails has to not become
+an infinite loop with `/loop`. Left open, and written down as open, rather than
+half-built.
+
+| #   | Item                                              | Needs an ADR?                                           | State    |
+| --- | ------------------------------------------------- | ------------------------------------------------------- | -------- |
+| 18  | `/loop` and `/goal` say who checks criteria (§13) | no — a claim corrected to match the code                | **done** |
+| 19  | Verifiable, kernel-checked criteria (§13)         | **yes** — runs commands, on a schedule, inside a budget | **open** |

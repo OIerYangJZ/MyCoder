@@ -398,7 +398,10 @@ const handleGoal: ControlHandler = (args, host) => {
       return {
         ok: true,
         command: 'goal',
-        message: `Added criterion: ${text}`,
+        // Says who checks it, because nothing does. A criterion is context, and a
+        // user who reads `Added criterion` as `the kernel will now verify this` has
+        // been told something the kernel never promised.
+        message: `Added criterion, for the model to work to: ${text}`,
         projection: `[control] A success criterion was added: ${text}`,
       };
     }
@@ -433,7 +436,8 @@ const handleGoal: ControlHandler = (args, host) => {
         message: goal
           ? `Goal (${goal.status}): ${goal.objective}` +
             (goal.criteria.length > 0
-              ? `\nDone when:\n${goal.criteria.map((c) => `  - ${c}`).join('\n')}`
+              ? `\nDone when, as told to the model:\n${goal.criteria.map((c) => `  - ${c}`).join('\n')}` +
+                '\nThe kernel does not check these. Use /loop for a stop it does enforce.'
               : '')
           : 'No goal is set. Use /goal set <objective>.',
       };
@@ -495,7 +499,12 @@ const handleLoop: ControlHandler = (args, host) => {
           ? `  cost           : $${effective.maxCostUsd.toFixed(2)}\n`
           : '') +
         (clamped.length > 0 ? `Clamped to the session ceiling: ${clamped.join(', ')}.\n` : '') +
-        'This is not unlimited autonomy: the turn stops when the budget or the goal criteria are met.',
+        // What stops the turn, and what does not. The budget is arithmetic the
+        // kernel does; the criteria are prose the model is shown. Saying the two in
+        // one breath — which this line used to — promises a stop nothing implements.
+        'This is not unlimited autonomy: the budget above is a hard stop the kernel\n' +
+        'enforces. Goal criteria are not — they are told to the model, and the model\n' +
+        'is what decides they are met.',
       projection:
         '[control] Autonomous continuation is enabled with a hard budget. ' +
         'Keep working toward the goal until it is met or the budget runs out.',
