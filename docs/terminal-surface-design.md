@@ -345,10 +345,20 @@ because typing `y`, `s`, `n` or `d` requires knowing in advance what four letter
 `[y]` and `[s]` are indistinguishable on sight, and the difference between them is
 how long the grant lasts, which is the entire decision.
 
-So the four answers are a numbered list moved through with the arrow keys, the
-highlighted one in the accent and the rest in grey, Enter to confirm. Four, not
-three: `No, and don't ask again` is an answer somebody may be relying on, and
-dropping it would have made the menu tidier by removing a capability.
+So the answers are a numbered list moved through with the arrow keys, the
+highlighted one in the accent and the rest in grey, Enter to confirm. `No, and
+don't ask again` is kept even though the menu would be tidier without it: it is an
+answer somebody may be relying on, and dropping it would have removed a capability
+to improve the look of a list.
+
+The fifth answer, `No, and tell it what to do differently`, is the only one that
+asks a follow-up. Refusing used to be a dead end — the model was told the call was
+denied and nothing else, so it guessed, and the usual way to steer it was to let the
+turn fail and start another. But somebody declining a command almost always knows
+what they wanted instead. What is typed becomes `ApprovalOutcome.reason`, which
+`src/tools/runtime.ts` already appended to the denial the model sees; the prompt was
+the missing half. An empty answer is a plain refusal rather than an empty reason, so
+changing your mind about explaining does not trap you in the prompt.
 
 Three properties carried over from the typed prompt, none of them cosmetic:
 

@@ -358,3 +358,48 @@ describe('who is holding stdin', () => {
     assert.equal(opened, 1, 'a second interface was opened for the second question');
   });
 });
+
+describe('"no — do this instead"', () => {
+  test('the answer exists, and it is the only one that asks a follow-up', () => {
+    // Refusing used to be a dead end: four answers, all of them yes or no, and
+    // the only way to say *why* was to let the turn fail and start another. But
+    // somebody declining a command almost always knows what they wanted instead,
+    // and the model is about to guess.
+    const choices = approvalChoices(REQUEST);
+    const withReason = choices.filter((c) => c.needsReason);
+    assert.equal(withReason.length, 1, 'exactly one answer should stop to ask');
+    assert.equal(withReason[0]?.outcome.decision, 'deny', 'it is a refusal, not a conditional yes');
+    assert.match(withReason[0]?.label ?? '', /differently/);
+  });
+
+  test('the default answer is still No, and still costs one keystroke', () => {
+    // The new choice must not become what Enter lands on, and must not make the
+    // common answers slower.
+    const choices = approvalChoices(REQUEST);
+    const initial = choices.findIndex((c) => c.outcome.decision === 'deny');
+    assert.equal(choices[initial]?.label, 'No');
+    assert.equal(choices[initial]?.needsReason, undefined);
+  });
+
+  test('what the user typed becomes the reason the model is given', async () => {
+    const prompter = new TerminalApprovalPrompter({
+      openRl: () => fakeRl(['r', 'use node -e instead of sed']) as never,
+      write: () => {},
+    });
+    const outcome = await prompter.request(REQUEST);
+    assert.equal(outcome.decision, 'deny');
+    assert.equal(outcome.reason, 'use node -e instead of sed');
+  });
+
+  test('an empty answer is a plain refusal, not an empty reason', async () => {
+    // Somebody who changes their mind about explaining should not be made to
+    // type something to get out of the prompt.
+    const prompter = new TerminalApprovalPrompter({
+      openRl: () => fakeRl(['r', '   ']) as never,
+      write: () => {},
+    });
+    const outcome = await prompter.request(REQUEST);
+    assert.equal(outcome.decision, 'deny');
+    assert.equal(outcome.reason, undefined);
+  });
+});

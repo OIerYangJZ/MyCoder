@@ -135,13 +135,44 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
         });
         // Abandoned with Escape or Ctrl-C. The caller decides what that means and
         // here it means no — the one reading it is a security question.
-        return choices[picked ?? -1]?.outcome ?? { decision: 'deny', scope: 'once' };
+        const choice = choices[picked ?? -1];
+        if (!choice) return { decision: 'deny', scope: 'once' };
+        return choice.needsReason ? this.withReason(choice.outcome) : choice.outcome;
       } finally {
         this.rl?.resume();
       }
     }
 
     return this.typed(choices);
+  }
+
+  /**
+   * "No — do this instead", which is the answer people actually have.
+   *
+   * Refusing was a dead end: four answers, all of them yes or no, and the only
+   * way to say *why* was to wait for the turn to fail and then start a new one.
+   * But somebody declining `sed -i` almost always knows what they wanted instead,
+   * and the model is about to guess.
+   *
+   * Nothing downstream is new. `ApprovalOutcome.reason` has always existed and
+   * `runtime.ts` has always appended it to what the model is told —
+   * `\nReason: …` under the refusal — so this fills a field that was already
+   * being read and, until now, only ever held the kernel's own words.
+   *
+   * An empty answer is a plain refusal: somebody who changed their mind about
+   * explaining should not be made to type something.
+   */
+  private async withReason(outcome: ApprovalOutcome): Promise<ApprovalOutcome> {
+    const rl = (this.rl ??= this.openRl?.());
+    if (!rl) return outcome;
+    this.quiet();
+    const said = (
+      await rl.question(`  ${this.p.accentBold('why?')} ${this.p.grey('(sent to the model)')} `)
+    ).trim();
+    // `reason` lives on the deny arm of the union, which is the only arm that
+    // can get here — the guard is what lets the compiler see that.
+    if (said === '' || outcome.decision !== 'deny') return outcome;
+    return { ...outcome, reason: said };
   }
 
   /**
@@ -166,7 +197,8 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
       const answer = (
         await rl.question(
           `  ${this.p.accentBold('[y]')} once  ${this.p.accentBold('[s]')} this session  ` +
-            `${this.p.accentBold('[n]')} no  ${this.p.accentBold('[d]')} deny for session ${this.p.grey('>')} `,
+            `${this.p.accentBold('[n]')} no  ${this.p.accentBold('[d]')} deny for session  ` +
+            `${this.p.accentBold('[r]')} no, with a reason ${this.p.grey('>')} `,
         )
       )
         .trim()
@@ -175,9 +207,9 @@ export class TerminalApprovalPrompter implements ApprovalPrompter {
       const key = ANSWER_KEYS[answer];
       if (key !== undefined) {
         const found = choices.find((c) => c.key === key);
-        if (found) return found.outcome;
+        if (found) return found.needsReason ? this.withReason(found.outcome) : found.outcome;
       }
-      this.write('  Please answer y, s, n or d.\n');
+      this.write('  Please answer y, s, n, d or r.\n');
     }
   }
 }
@@ -192,12 +224,22 @@ const ANSWER_KEYS: Readonly<Record<string, string>> = {
   no: 'n',
   '': 'n',
   d: 'd',
+  r: 'r',
+  reason: 'r',
 };
 
 export interface ApprovalChoice {
   key: string;
   label: string;
   outcome: ApprovalOutcome;
+  /**
+   * Whether picking this answer asks a follow-up before it resolves.
+   *
+   * Only one does. Everything else about an approval is answerable with a
+   * keystroke, and a prompt that stopped to ask "why?" on the common path would
+   * be a tax on the answer people give most.
+   */
+  needsReason?: boolean;
 }
 
 /**
@@ -226,6 +268,12 @@ export function approvalChoices(request: ApprovalRequest): ApprovalChoice[] {
       key: 'd',
       label: `No, and don't ask again for: ${what}`,
       outcome: { decision: 'deny', scope: 'session', reason: 'denied for the rest of this session' },
+    },
+    {
+      key: 'r',
+      label: 'No, and tell it what to do differently',
+      outcome: { decision: 'deny', scope: 'once' },
+      needsReason: true,
     },
   ];
 }
