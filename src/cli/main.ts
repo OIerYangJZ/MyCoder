@@ -54,6 +54,7 @@ import {
   banner,
   colourDepth,
   colourEnabled,
+  diffBlock,
   glyphs as glyphSet,
   inputFrame,
   modeIndicator,
@@ -688,7 +689,15 @@ async function runOnce(
   if (kernel.control.isCommand(trimmed)) {
     const result = await kernel.control.execute(trimmed);
     if (json) emit({ type: 'control', ...result });
-    else stdout.write(`${result.message}\n\n`);
+    else {
+      // Control output is plain text, and one command's output is a diff. The
+      // control plane has no business knowing about colour — it returns the
+      // text, and the CLI, which owns the palette, decides how to draw it.
+      const ink = renderer?.palette ?? makePalette(false);
+      stdout.write(
+        `${result.command === 'diff' ? diffBlock(result.message, ink, Number.MAX_SAFE_INTEGER) : result.message}\n\n`,
+      );
+    }
 
     // Project the state change so the model's next step knows about it.
     if (result.projection) kernel.context.appendControlResult(result.projection);

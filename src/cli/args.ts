@@ -311,10 +311,12 @@ Exit codes (ADR-0021):
 
 Inside a session, control commands change kernel state directly:
   /model  /effort  /goal  /loop  /mode  /permissions  /status  /compact
-  /remote  /skills  /agents  /hooks  /undo  /cancel  /verbose  /help
+  /remote  /skills  /agents  /hooks  /diff  /undo  /cancel  /verbose  /help
 
   /mode switches who answers an approval, and Shift-Tab cycles it. /effort sets
   how hard the model thinks. Run either with no argument to see the choices.
+  /diff shows what this session has changed — every edit, or one file's, or the
+  last turn's — from the same journal /undo reverses.
 `;
 
 /**

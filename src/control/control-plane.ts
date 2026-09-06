@@ -123,9 +123,26 @@ export interface ControlHost {
     ok: boolean;
     message: string;
   }>;
-  /** The journal inventory, for `/undo list`. */
+  /**
+   * The journal inventory, for `/undo list` and `/diff`.
+   *
+   * `diff` is the redacted unified diff the edit engine already stored against
+   * every entry so that an undo can reverse-apply it (ADR-0025). `/diff` is a
+   * second reader of it rather than a second copy: nothing new is recorded, and
+   * a change the journal cannot show is a change `/undo` cannot reverse either,
+   * which is the honest thing for the two commands to agree about.
+   */
   undoInventory(): {
-    entries: Array<{ entryId: string; kind: string; displayPath: string; turnId: string; undoOf?: string }>;
+    entries: Array<{
+      entryId: string;
+      kind: string;
+      displayPath: string;
+      turnId: string;
+      undoOf?: string;
+      diff?: string;
+      /** Bytes the §5 ceiling dropped. Present only when the diff was omitted. */
+      diffOmitted?: number;
+    }>;
     uncovered: string;
   };
   /**
@@ -178,6 +195,7 @@ export class ControlPlane {
     this.register('skills', handleSkills);
     this.register('agents', handleAgents);
     this.register('hooks', handleHooks);
+    this.register('diff', handleDiff);
     this.register('undo', handleUndo);
     this.register('cancel', handleCancel);
     this.register('verbose', handleVerbose);
@@ -1097,6 +1115,80 @@ const handleHooks: ControlHandler = (_args, host) => ({
  * session-wide revert with no VCS underneath it is a restore, not an undo, and
  * it should look like one.
  */
+/**
+ * What this session changed, and nothing else.
+ *
+ * The gap this closes is the one the product's own thesis opens. Everything here
+ * is built on you supervising it — and the moment you press Shift-Tab into
+ * `accept-edits`, which is the mode that makes it pleasant to use, the
+ * supervising stops: a turn writes eighteen files and the only ways to find out
+ * what it did are to scroll the transcript, to run `git diff` in another
+ * terminal, or to `/undo` and hope.
+ *
+ * Reads the edit journal, which already holds a redacted unified diff per entry
+ * because `/undo` needs one to reverse-apply. So this adds a reader, not a
+ * record — and the two commands necessarily agree about what is coverable,
+ * because a change `/diff` cannot show is a change `/undo` cannot reverse.
+ *
+ * Oldest first, deliberately: `/undo list` is newest-first because the thing you
+ * are about to reverse is the last one, and reading a diff is the opposite
+ * question — you want the order things happened in.
+ */
+const handleDiff: ControlHandler = (args, host) => {
+  const inventory = host.undoInventory();
+  const target = args[0];
+
+  // The journal is newest-first for `/undo`; a diff reads forwards.
+  let entries = [...inventory.entries].reverse();
+
+  if (target === 'last') {
+    const lastTurn = entries.at(-1)?.turnId;
+    entries = entries.filter((e) => e.turnId === lastTurn);
+  } else if (target !== undefined && target !== '') {
+    const wanted = target.toLowerCase();
+    entries = entries.filter((e) => e.displayPath.toLowerCase().includes(wanted));
+    if (entries.length === 0) {
+      return {
+        ok: false,
+        command: 'diff',
+        message: `No edit in this session touched a path matching "${target}".`,
+      };
+    }
+  }
+
+  if (entries.length === 0) {
+    return {
+      ok: true,
+      command: 'diff',
+      message: `Nothing has been changed in this session.\n\n${inventory.uncovered}`,
+    };
+  }
+
+  const body = entries.map((e) => {
+    const head = `${e.kind} ${e.displayPath}${e.undoOf ? '  (a reversal)' : ''}`;
+    if (e.diffOmitted !== undefined) {
+      return `${head}\n  (diff not kept — ${e.diffOmitted} bytes, over the ceiling)`;
+    }
+    if (e.diff === undefined || e.diff === '') return `${head}\n  (no diff recorded)`;
+    return `${head}\n${e.diff.replace(/\n$/, '')}`;
+  });
+
+  const scope =
+    target === 'last' ? "the last turn's edits" : target ? `edits matching "${target}"` : 'this session';
+
+  return {
+    ok: true,
+    command: 'diff',
+    message: [
+      `${entries.length} change(s) in ${scope}, oldest first:`,
+      '',
+      ...body,
+      '',
+      inventory.uncovered,
+    ].join('\n'),
+  };
+};
+
 const handleUndo: ControlHandler = async (args, host) => {
   const sub = (args[0] ?? '').toLowerCase();
 

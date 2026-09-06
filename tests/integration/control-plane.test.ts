@@ -26,6 +26,14 @@ import type { SessionMetadata } from '../../src/session/store.ts';
 import { parseArgs, USAGE } from '../../src/cli/args.ts';
 import { parseDuration, tokenize } from '../../src/control/control-plane.ts';
 import { renderApproval } from '../../src/cli/prompter.ts';
+import type { Kernel } from '../../src/kernel.ts';
+import type { FakeStep } from '../../src/model/adapters/fake.ts';
+
+/** Point the `fake` alias at a scripted trajectory. */
+function setScript(kernel: Kernel, script: FakeStep[]): void {
+  const routed = kernel.modelRuntime as unknown as { routes: Map<string, unknown> };
+  routed.routes.set('fake', new FakeModel({ script }));
+}
 
 describe('/model', () => {
   test('changes the session model without consulting the model', async () => {
@@ -764,6 +772,85 @@ describe('delegation in the control plane (alpha.4 §40, §41)', () => {
       const records = ws.kernel.session.delegationRecords();
       assert.equal(records.length, 1, 'a denied delegation should not have produced a child run');
       assert.equal(records[0]!.agent, 'reviewer');
+    } finally {
+      await ws.cleanup();
+    }
+  });
+});
+
+describe('/diff — what this session changed', () => {
+  test('it shows the edits, oldest first, with the diff the journal already had', async () => {
+    // The gap this closes is the one the product's own thesis opens: everything
+    // rests on the user supervising, and `accept-edits` — the mode that makes it
+    // pleasant — removes the supervision. A turn writes eighteen files and the
+    // only ways to see what happened were to scroll, to run `git diff` in
+    // another terminal, or to `/undo` and hope.
+    const ws = await createTestWorkspace({ files: { 'src/a.ts': 'export const a = 1;\n' } });
+    try {
+      setScript(ws.kernel, [
+        {
+          kind: 'tools',
+          calls: [{ name: 'Write', arguments: { path: 'src/b.ts', content: 'export const b = 2;\n' } }],
+        },
+        { kind: 'final', text: 'written' },
+      ]);
+      await ws.kernel.session.runTurn('create it');
+
+      const result = await ws.kernel.control.execute('/diff');
+      assert.ok(result.ok, result.message);
+      assert.match(result.message, /1 change\(s\) in this session/);
+      assert.match(result.message, /src\/b\.ts/);
+      assert.match(result.message, /\+export const b = 2;/, 'the diff itself is missing');
+      // The same sentence `/undo` prints about what it cannot cover: the two
+      // commands read one journal, so they cannot disagree about its edges.
+      assert.match(result.message, /shell|not covered|outside/i);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('a clean session says so rather than printing an empty list', async () => {
+    const ws = await createTestWorkspace({ files: { 'src/a.ts': 'export const a = 1;\n' } });
+    try {
+      const result = await ws.kernel.control.execute('/diff');
+      assert.ok(result.ok);
+      assert.match(result.message, /Nothing has been changed/);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('a path that nothing touched is refused, not answered with silence', async () => {
+    const ws = await createTestWorkspace({ files: { 'src/a.ts': 'export const a = 1;\n' } });
+    try {
+      setScript(ws.kernel, [
+        {
+          kind: 'tools',
+          calls: [{ name: 'Write', arguments: { path: 'src/b.ts', content: 'export const b = 2;\n' } }],
+        },
+        { kind: 'final', text: 'written' },
+      ]);
+      await ws.kernel.session.runTurn('create it');
+
+      const hit = await ws.kernel.control.execute('/diff b.ts');
+      assert.ok(hit.ok, hit.message);
+      assert.match(hit.message, /src\/b\.ts/);
+
+      const miss = await ws.kernel.control.execute('/diff nothing-here.ts');
+      assert.equal(miss.ok, false);
+      assert.match(miss.message, /No edit in this session touched/);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('it never reaches the model, because looking at a diff is not a turn', async () => {
+    const ws = await createTestWorkspace({ files: {} });
+    try {
+      const before = ws.fakeModel.callCount;
+      const result = await ws.kernel.control.execute('/diff');
+      assert.equal(ws.fakeModel.callCount, before, 'a model request was made');
+      assert.equal(result.projection, undefined, 'a read-only command projected state');
     } finally {
       await ws.cleanup();
     }

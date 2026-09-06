@@ -1549,6 +1549,9 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
             displayPath: e.displayPath,
             turnId: e.turnId,
             ...(e.undoOf ? { undoOf: e.undoOf } : {}),
+            // Already stored, already redacted: `/undo` reverse-applies it.
+            ...(e.diff ? { diff: e.diff } : {}),
+            ...(e.diffOmitted !== undefined ? { diffOmitted: e.diffOmitted } : {}),
           })),
         uncovered: uncovered.render(editJournal),
       };
