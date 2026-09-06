@@ -874,14 +874,63 @@ describe('the answer, streamed', () => {
     assert.equal(err.join('').includes('hello'), false);
   });
 
-  test('anything that is not visible text is ignored, reasoning included', () => {
+  test('nothing that is neither text nor reasoning is rendered at all', () => {
     const s = streaming();
     s.renderer.on('turn.started', {});
-    s.renderer.on('model.stream', { type: 'reasoning_delta', text: 'let me think' });
     s.renderer.on('model.stream', { type: 'usage', usage: {} });
     s.renderer.on('model.stream', { type: 'tool_call_start', id: 'a', name: 'Read' });
     assert.equal(s.answer(), '');
+    assert.equal(s.err.join(''), '');
     assert.equal(s.renderer.streamedAnswer(), false);
+  });
+
+  test('reasoning is chrome: it goes to stderr, and never into the answer', () => {
+    // `mycoder … > answer.md` must contain the answer and only the answer. The model
+    // is explicit that reasoning is it working, not it concluding — and it used to be
+    // dropped entirely, so a reasoning model showed a spinner for a minute and
+    // nothing else.
+    const s = streaming();
+    s.renderer.on('turn.started', {});
+    s.renderer.on('model.stream', { type: 'reasoning_delta', text: 'weighing it up\n' });
+    assert.match(s.err.join(''), /weighing it up/);
+    assert.equal(s.answer(), '', 'the working leaked into the payload');
+    assert.equal(s.renderer.streamedAnswer(), false, 'reasoning is not the answer');
+  });
+
+  test('the working is closed off before the conclusion starts', () => {
+    // Both halves arrive on one stream, and interleaving them on screen would make
+    // the answer read as a continuation of the thinking.
+    const s = streaming();
+    s.renderer.on('turn.started', {});
+    s.renderer.on('model.stream', { type: 'reasoning_delta', text: 'nearly there' });
+    s.renderer.on('model.stream', { type: 'text_delta', text: 'The answer is 4.\n' });
+    assert.match(s.err.join(''), /nearly there/, 'the held tail was dropped instead of closed');
+    assert.match(s.answer(), /The answer is 4\./);
+  });
+
+  test('/thinking off silences it, and closes what was open', () => {
+    const s = streaming();
+    s.renderer.on('turn.started', {});
+    s.renderer.on('model.stream', { type: 'reasoning_delta', text: 'first thought\n' });
+    assert.equal(s.renderer.setReasoning(false), false);
+    s.renderer.on('model.stream', { type: 'reasoning_delta', text: 'second thought\n' });
+    const err = s.err.join('');
+    assert.match(err, /first thought/);
+    assert.equal(err.includes('second thought'), false, 'reasoning was shown after it was hidden');
+  });
+
+  test('a renderer built with it off shows none of it', () => {
+    const err: string[] = [];
+    const renderer = new SessionRenderer({
+      write: (t) => err.push(t),
+      palette: plain,
+      glyphs: glyphs(true),
+      live: false,
+      showReasoning: false,
+    });
+    renderer.on('turn.started', {});
+    renderer.on('model.stream', { type: 'reasoning_delta', text: 'unwanted\n' });
+    assert.equal(err.join('').includes('unwanted'), false);
   });
 
   test('the caller is told whether it streamed, so the answer is not printed twice', () => {

@@ -151,6 +151,17 @@ export interface CreateKernelOptions {
   nonInteractive?: boolean;
   /** Attach a bounded, redacted preview of tool output to each record (ADR-0031). */
   verbose?: boolean;
+  /**
+   * Show or hide the model's reasoning, for whoever is rendering.
+   *
+   * The kernel holds the setting and nothing else: the deltas already reach the
+   * host through `onEvent`, and what is drawn with them is not the kernel's
+   * business. Supplied as a callback so `/thinking` reaches the same renderer
+   * `--no-thinking` configured, and absent where nothing renders — which is what
+   * makes `/thinking` say so under `--json` rather than silently succeed.
+   */
+  showReasoning?: boolean;
+  onShowReasoning?: (on: boolean) => void;
   prompter?: ApprovalPrompter;
   /**
    * Watch the session's event stream as it happens (alpha.12).
@@ -1036,6 +1047,8 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
   // A holder rather than a value: `/verbose` flips it mid-session, and the runtime
   // asks each time rather than being rebuilt.
   const verbose = { on: opts.verbose === true };
+  // The same shape, for the same reason: `/thinking` flips it mid-session.
+  const reasoning = { on: opts.showReasoning !== false };
   const toolRuntime = new ToolRuntime({
     registry: toolRegistry,
     policy,
@@ -1457,6 +1470,18 @@ export async function createKernel(opts: CreateKernelOptions): Promise<Kernel> {
       verbose.on = on;
       return verbose.on;
     },
+    get thinking() {
+      return reasoning.on;
+    },
+    ...(opts.onShowReasoning
+      ? {
+          setThinking: (on: boolean): boolean => {
+            reasoning.on = on;
+            opts.onShowReasoning?.(on);
+            return reasoning.on;
+          },
+        }
+      : {}),
     session,
     policy,
     config,

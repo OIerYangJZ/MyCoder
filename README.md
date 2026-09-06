@@ -236,11 +236,13 @@ effects, and anything from before the journal starts.
 ## Control plane
 
 `/model` `/effort` `/goal` `/loop` `/mode` `/permissions` `/status` `/compact`
-`/remote` `/skills` `/agents` `/hooks` `/undo` `/cancel` `/verbose` `/help` —
-each changes kernel state directly and is never routed through the model. `/loop`
-sets a per-turn step, wall-clock and cost budget; `/compact` summarises the older
-conversation and reports when it could not; `/permissions explain <subject>` says
-why a decision went the way it did.
+`/remote` `/skills` `/agents` `/hooks` `/diff` `/undo` `/cancel` `/verbose`
+`/thinking` `/help` — each changes kernel state directly and is never routed
+through the model. `/loop` sets a per-turn step, wall-clock and cost budget;
+`/compact` summarises the older conversation and reports when it could not;
+`/diff` shows what the session has changed, from the same journal `/undo`
+reverses; `/permissions explain <subject>` says why a decision went the way it
+did.
 
 Sessions are an append-only event log. `mycoder -c` continues this workspace's
 last one; `mycoder -r` lists them by what each was asked to do. Resume rebuilds

@@ -84,6 +84,8 @@ export interface TestWorkspaceOptions {
   outsideFiles?: Array<[string, string, number?]>;
   /** Attach a bounded, redacted preview of tool output to each record (ADR-0031). */
   verbose?: boolean;
+  /** Stand in for the renderer `/thinking` reaches, so the command has a sink. */
+  onShowReasoning?: (on: boolean) => void;
   /** Collects events as the host sees them — before anything is stripped for the log. */
   captureEvents?: Array<{ type: string; payload: unknown }>;
   logLevel?: 'silent' | 'trace';
@@ -182,6 +184,7 @@ export async function createTestWorkspace(opts: TestWorkspaceOptions = {}): Prom
     workspaceDir: root,
     dirsRoot,
     verbose: opts.verbose === true,
+    ...(opts.onShowReasoning ? { onShowReasoning: opts.onShowReasoning } : {}),
     ...(opts.captureEvents
       ? { onEvent: (type: string, payload: unknown) => opts.captureEvents!.push({ type, payload }) }
       : {}),

@@ -400,6 +400,9 @@ export async function main(argv: readonly string[]): Promise<number> {
     // for the interactive loop and nowhere else, so a one-shot run must not offer a
     // key that would kill the process instead of cancelling the turn.
     ...(interactive ? { interruptHint: 'ctrl-c to interrupt' } : {}),
+    // Not under `--json`: the envelope owns stdout and the reasoning would be
+    // interleaved chrome nobody asked for.
+    showReasoning: !args.noThinking && !args.json,
   });
 
   let kernel: Kernel;
@@ -421,6 +424,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       ...(args.logLevel ? { logLevel: args.logLevel as LogLevel } : {}),
       json: args.json,
       verbose: args.verbose,
+      showReasoning: !args.noThinking && !args.json,
+      // Only where something is drawing. `/thinking` under `--json` reports that it
+      // has nothing to show reasoning on, which is true.
+      ...(args.json ? {} : { onShowReasoning: (on: boolean) => void renderer.setReasoning(on) }),
       nonInteractive: args.nonInteractive || !interactive,
       ...(resumeSessionId ? { resumeSessionId } : {}),
       ...(interactive && !args.nonInteractive

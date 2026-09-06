@@ -66,6 +66,14 @@ export interface CliArgs {
   noTelemetry: boolean;
   /** Attach a bounded, redacted preview of tool output to each result (ADR-0031). */
   verbose: boolean;
+  /**
+   * Suppress the model's reasoning, which is otherwise shown as it arrives.
+   *
+   * Negative because the default is on: the deltas have always arrived and the
+   * renderer used to drop them, so showing them is the fix and hiding them is the
+   * preference.
+   */
+  noThinking: boolean;
   json: boolean;
   /** Print the effective config and exit. */
   printConfig: boolean;
@@ -88,6 +96,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     readOnly: false,
     noTelemetry: false,
     verbose: false,
+    noThinking: false,
     json: false,
     printConfig: false,
     sandboxStatus: false,
@@ -184,6 +193,10 @@ export function parseArgs(argv: readonly string[]): CliArgs {
         break;
       case '--no-telemetry':
         args.noTelemetry = true;
+        break;
+
+      case '--no-thinking':
+        args.noThinking = true;
         break;
 
       case '--json':
@@ -290,6 +303,7 @@ Usage:
   mycoder --read-only               force the read-only profile
   mycoder --no-telemetry            disable telemetry entirely
   mycoder --verbose                 show a redacted preview of what each tool returned
+  mycoder --no-thinking             hide the model's reasoning, where it sends any
   mycoder --json                    emit machine-readable events on stdout
   mycoder --non-interactive         deny anything that would need approval
   mycoder --print-config            print the effective configuration and exit
@@ -311,7 +325,8 @@ Exit codes (ADR-0021):
 
 Inside a session, control commands change kernel state directly:
   /model  /effort  /goal  /loop  /mode  /permissions  /status  /compact
-  /remote  /skills  /agents  /hooks  /diff  /undo  /cancel  /verbose  /help
+  /remote  /skills  /agents  /hooks  /diff  /undo  /cancel  /verbose  /thinking
+  /help
 
   /mode switches who answers an approval, and Shift-Tab cycles it. /effort sets
   how hard the model thinks. Run either with no argument to see the choices.
@@ -340,6 +355,7 @@ export const CONTRACT_FLAGS: readonly string[] = [
   '--read-only',
   '--no-telemetry',
   '--verbose',
+  '--no-thinking',
   '--json',
   '--non-interactive',
   '--print-config',

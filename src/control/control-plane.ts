@@ -80,6 +80,15 @@ export interface ControlHost {
   /** Whether the preview is currently on, so `/verbose` with no argument can toggle. */
   verbose?: boolean;
   setVerbose?: (on: boolean) => boolean;
+  /**
+   * Show or hide the model's reasoning, and report where it landed.
+   *
+   * Absent wherever there is nothing rendering — the JSON envelope carries the
+   * deltas but draws nothing — so `/thinking` says so rather than reporting a
+   * setting that changes nothing.
+   */
+  thinking?: boolean;
+  setThinking?: (on: boolean) => boolean;
   modelRegistry: ModelRegistry;
   configSources: readonly string[];
   remotes: readonly RemoteConfig[];
@@ -199,6 +208,7 @@ export class ControlPlane {
     this.register('undo', handleUndo);
     this.register('cancel', handleCancel);
     this.register('verbose', handleVerbose);
+    this.register('thinking', handleThinking);
     this.register('help', (args) => handleHelp(args, this.commandNames()));
   }
 
@@ -1273,6 +1283,30 @@ const handleVerbose: ControlHandler = (args, host) => {
   };
 };
 
+const handleThinking: ControlHandler = (args, host) => {
+  if (!host.setThinking) {
+    return {
+      ok: false,
+      command: 'thinking',
+      message: 'This session has nothing to show reasoning on.',
+    };
+  }
+  const asked = (args[0] ?? '').toLowerCase();
+  if (asked !== '' && asked !== 'on' && asked !== 'off') {
+    return { ok: false, command: 'thinking', message: 'Usage: /thinking [on|off]' };
+  }
+  const now = host.setThinking(asked === '' ? host.thinking !== true : asked === 'on');
+  return {
+    ok: true,
+    command: 'thinking',
+    // Said in the conditional, because a model that sends no reasoning will show
+    // none either way and the setting would otherwise look broken.
+    message: now
+      ? 'Reasoning shown as it arrives, where the model sends any. It is not part of the answer, so it goes to stderr.'
+      : 'Reasoning hidden.',
+  };
+};
+
 const handleCancel: ControlHandler = (_args, host) => {
   const cancelled = host.session.cancel();
   return {
@@ -1299,6 +1333,7 @@ function handleHelp(args: string[], commands: readonly string[]): ControlResult 
       `  /mode [${APPROVAL_MODES.join('|')}|next]  who answers an approval; Shift-Tab cycles`,
       '  /permissions [show|explain <subject>|reset-session]',
       '  /verbose [on|off]                        show what each tool returned, redacted',
+      "  /thinking [on|off]                       show the model's reasoning as it arrives",
       '  /status                                 session, model, context, budget, dirty files',
       '  /compact [status]                       summarise older conversation',
       '  /remote [list|connect <name>|status|disconnect]',

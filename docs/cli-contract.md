@@ -87,7 +87,7 @@ Semantics will not change within `0.1.x`. Removing or repurposing one needs an A
 [prompt]              -c/--continue     -r/--resume [id]    -m/--model <alias>
 --profile <name>      --cwd <path>      --remote <name>     --read-only
 --no-telemetry        --json            --non-interactive   --print-config
---verbose
+--verbose             --no-thinking
 --log-level <level>   --backend         -h/--help           -v/--version    --
 ```
 

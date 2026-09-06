@@ -91,7 +91,8 @@ like clio. Recommend shipping the first anyway if the second is not ready — ei
 beats what is there.
 
 **Reasoning.** `reasoning_delta` arrives by the same route and wants the same
-treatment, dim and behind a flag. Not designed here; noted so it is not rediscovered.
+treatment, dim and behind a flag. Designed and built in §10, which differs from this
+recommendation on one point and says why.
 
 ---
 
@@ -541,3 +542,47 @@ written top to bottom and never revisited.
 | #   | Item                              | Needs an ADR?                                                 | State    |
 | --- | --------------------------------- | ------------------------------------------------------------- | -------- |
 | 13  | Tables in the model's answer (§9) | no — a rendering of bytes already arriving, as §1 already was | **done** |
+
+---
+
+## 10. Reasoning
+
+`reasoning_delta` has arrived beside `text_delta` since the model layer was written,
+and §1 rendered one of them. So a reasoning model spent forty seconds behind a
+spinner that said `Thinking` and nothing else, while the bytes that would have said
+what it was thinking about were being decoded, forwarded, and dropped by the
+renderer's `default: return`.
+
+§1 recommended "dim and behind a flag". Dim, yes. Behind a flag, no: **on by
+default**, with `--no-thinking` and `/thinking off` to turn it off. A flag that is
+off by default leaves the deltas dropped for everyone who never learns the flag
+exists, which is the same outcome as not building it. The negative form is the
+honest one — showing what arrived is the fix, and hiding it is the preference.
+
+Three ways it is deliberately not §1's stream:
+
+- **It is chrome, so it goes to stderr.** The answer is the payload and goes to
+  stdout; `mycoder … > answer.md` must contain the answer and only the answer. The
+  model itself is clear that reasoning is it working, not it concluding.
+- **It is a line at a time, and never erased.** §1 buys immediacy with an
+  echo-then-erase that is only correct below the wrap point. Reasoning is not worth
+  that risk: a complete line is printed once, and until the newline arrives the
+  spinner says exactly what it says today. The floor is the current behaviour.
+- **It is not markdown.** Reasoning is a model talking to itself. Running a heading
+  renderer over it would style whatever punctuation it happened to reach for. It is
+  one grey column under a `✻ Thinking` mark — the same mark the spinner uses, so the
+  block reads as the spinner's line growing rather than as a new kind of output.
+
+The working is closed before the conclusion starts: a `text_delta` flushes the
+reasoning block first, so the two never interleave even though they arrive
+interleaved. It is still model bytes, so it is still sanitised by the same function
+§1's text is.
+
+`/thinking` reaches the renderer through a callback the kernel is given, not through
+anything the kernel draws — and where no callback was supplied, `/thinking` reports
+that there is nothing to show reasoning on rather than flipping a boolean nobody
+reads. That is the same shape `/verbose` already had, and the same reason.
+
+| #   | Item                               | Needs an ADR?                                         | State    |
+| --- | ---------------------------------- | ----------------------------------------------------- | -------- |
+| 14  | The model's reasoning, shown (§10) | no — a rendering of bytes already arriving, as §1 was | **done** |

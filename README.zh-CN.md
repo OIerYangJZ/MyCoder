@@ -224,10 +224,11 @@ Escape 和 Ctrl-C 都解析为拒绝，而不是把这一轮悬在那里。
 ## 控制平面
 
 `/model` `/effort` `/goal` `/loop` `/mode` `/permissions` `/status` `/compact`
-`/remote` `/skills` `/agents` `/hooks` `/undo` `/cancel` `/verbose` `/help` ——
-每一条都直接改内核状态，绝不经过模型。`/loop` 给一轮设定步数、墙钟时间和花费预算；
-`/compact` 压缩较早的对话，并在压不动时如实说；`/permissions explain <subject>`
-解释某个裁决为什么是那样。
+`/remote` `/skills` `/agents` `/hooks` `/diff` `/undo` `/cancel` `/verbose`
+`/thinking` `/help` —— 每一条都直接改内核状态，绝不经过模型。`/loop` 给一轮设定步数、
+墙钟时间和花费预算；`/compact` 压缩较早的对话，并在压不动时如实说；
+`/diff` 用 `/undo` 反向应用的那同一份日志，显示这次会话改了什么；
+`/permissions explain <subject>` 解释某个裁决为什么是那样。
 
 会话是一份只追加的事件日志。`mycoder -c` 接着这个工作区最近一次；
 `mycoder -r` 按「当时让它做什么」把它们列出来。恢复时会从日志重建编辑日志，

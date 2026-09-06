@@ -33,7 +33,7 @@
  *   out as mojibake.
  */
 
-import { MarkdownStream } from './markdown.ts';
+import { MarkdownStream, ReasoningStream } from './markdown.ts';
 
 /** One place where the escape codes live. */
 export interface Palette {
@@ -1436,6 +1436,15 @@ export interface RendererOptions {
    * bind it at all, in which case the spinner says nothing about interrupting.
    */
   interruptHint?: string;
+  /**
+   * Whether to show the model's reasoning, where the provider sends any.
+   *
+   * On by default and to **stderr**, because it is chrome: a reasoning model that
+   * thinks for a minute has been showing a spinner and nothing else, and the bytes
+   * to fix that were already arriving. `/thinking off` turns it off mid-session for
+   * a reader who wants the answer and not the working.
+   */
+  showReasoning?: boolean;
 }
 
 /**
@@ -1474,6 +1483,9 @@ export class SessionRenderer {
   private costUsd = 0;
   /** Present only when the answer is to be streamed. */
   private readonly answer: MarkdownStream | undefined;
+  /** The model's working, when it sends any and the reader wants it. */
+  private readonly reasoning: ReasoningStream;
+  private showReasoning: boolean;
 
   /**
    * The word the spinner is using for this turn.
@@ -1504,6 +1516,21 @@ export class SessionRenderer {
           echo: opts.answerIsTerminal === true,
         })
       : undefined;
+    // The chrome palette, not the answer's: reasoning goes where the tool lines go.
+    this.reasoning = new ReasoningStream({ palette: opts.palette, glyphs: opts.glyphs });
+    this.showReasoning = opts.showReasoning !== false;
+  }
+
+  /**
+   * Turn the reasoning display on or off mid-session, and report where it landed.
+   *
+   * Turning it off closes whatever is open rather than abandoning it, so the block
+   * on screen is never left without its blank line.
+   */
+  setReasoning(on: boolean): boolean {
+    if (!on) this.flushReasoning();
+    this.showReasoning = on;
+    return this.showReasoning;
   }
 
   /**
@@ -1529,6 +1556,7 @@ export class SessionRenderer {
         this.costUsd = 0;
         this.spinner.setDetail('');
         this.answer?.reset();
+        this.reasoning.reset();
         this.thinking = pickThinking();
         this.spinner.start(this.thinking);
         return;
@@ -1568,12 +1596,26 @@ export class SessionRenderer {
         return;
       }
 
-      // Already emitted by `Session` for every `ModelEvent`; until now nothing
-      // listened. Only the visible text is rendered — reasoning arrives here too and
-      // is deliberately left for a separate decision.
+      // Already emitted by `Session` for every `ModelEvent`; until now only the
+      // visible text was rendered. Both halves of the stream land here, and they go
+      // to different files: the answer is the payload, the working is chrome.
       case 'model.stream': {
         const event = (payload ?? {}) as { type?: unknown; text?: unknown };
-        if (event.type !== 'text_delta' || typeof event.text !== 'string') return;
+        if (typeof event.text !== 'string') return;
+
+        if (event.type === 'reasoning_delta') {
+          if (!this.showReasoning) return;
+          const thought = this.reasoning.feed(event.text);
+          if (thought === '') return;
+          this.spinner.stop();
+          write(thought);
+          return;
+        }
+
+        if (event.type !== 'text_delta') return;
+        // The working stops when the conclusion starts, so the two are never
+        // interleaved on screen even though they arrive from the same stream.
+        this.flushReasoning();
         const out = this.answer?.feed(event.text);
         if (out === undefined || out === '') return;
         // The spinner erases the row it is on, which from here is the row the answer
@@ -1693,8 +1735,15 @@ export class SessionRenderer {
 
   /** Close off whatever of the answer is on the current line. Safe when idle. */
   private flushAnswer(): void {
+    this.flushReasoning();
     const tail = this.answer?.flush();
     if (tail !== undefined && tail !== '') this.opts.writeAnswer?.(tail);
+  }
+
+  /** Close off the reasoning block, to stderr. Safe when idle. */
+  private flushReasoning(): void {
+    const tail = this.reasoning.flush();
+    if (tail !== '') this.opts.write(tail);
   }
 
   /** The palette this renderer was built with, so a caller can match it. */

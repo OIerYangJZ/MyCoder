@@ -856,3 +856,50 @@ describe('/diff — what this session changed', () => {
     }
   });
 });
+
+describe("/thinking — the model's reasoning", () => {
+  test('it toggles, it reaches the renderer, and it says which way it went', async () => {
+    // The setting lives in the kernel and the drawing does not, so the only thing
+    // that makes `/thinking` real is that the callback fires. A command that flipped
+    // a boolean nobody read would report success every time.
+    const seen: boolean[] = [];
+    const ws = await createTestWorkspace({ onShowReasoning: (on) => seen.push(on) });
+    try {
+      const off = await ws.kernel.control.execute('/thinking off');
+      assert.ok(off.ok, off.message);
+      assert.match(off.message, /hidden/i);
+
+      const on = await ws.kernel.control.execute('/thinking');
+      assert.ok(on.ok, on.message);
+      assert.match(on.message, /stderr/, 'it must say where reasoning goes, because it is not the answer');
+
+      assert.deepEqual(seen, [false, true], 'the renderer was not told');
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('a session with nothing drawing says so rather than reporting a setting', async () => {
+    // `--json` owns stdout and draws no chrome. Reporting "reasoning shown" there
+    // would be a claim about a screen that does not exist.
+    const ws = await createTestWorkspace();
+    try {
+      const result = await ws.kernel.control.execute('/thinking on');
+      assert.equal(result.ok, false);
+      assert.match(result.message, /nothing to show reasoning on/);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
+  test('an argument that is neither on nor off is refused, not guessed at', async () => {
+    const ws = await createTestWorkspace({ onShowReasoning: () => {} });
+    try {
+      const result = await ws.kernel.control.execute('/thinking sometimes');
+      assert.equal(result.ok, false);
+      assert.match(result.message, /Usage: \/thinking \[on\|off\]/);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+});
