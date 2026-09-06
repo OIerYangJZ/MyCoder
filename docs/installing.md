@@ -44,10 +44,15 @@ npm install -g mycoder-cli@alpha
 mycoder --version
 ```
 
-`@alpha` because it is: the current version is `0.1.0-alpha.13`, and a prerelease is
-published under a prerelease dist-tag rather than `latest`. A bare
-`npm install -g mycoder-cli` resolves nothing on purpose — a version number that says
-alpha should not be what somebody gets by typing the name.
+`@alpha` because it is: the current version is `0.1.0-alpha.13`, and typing the tag
+is how you say you meant to install a prerelease.
+
+It is published under the `alpha` dist-tag. `latest` points at it too, and that is
+not what the workflow asked for: **npm pins `latest` to the first version a package
+ever publishes**, whatever `--tag` says, and offers no way to remove the `latest`
+tag afterwards. So until a stable release exists to move it to, a bare
+`npm install -g mycoder-cli` gets the alpha. Recorded here rather than left as a
+sentence about what should happen.
 
 ```sh
 brew tap OIerYangJZ/mycoder

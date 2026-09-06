@@ -353,6 +353,16 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing is an npm-CLI feature, and Node 22 ships npm 10.9 —
+      # below the 11.5.1 that first understood how to exchange a GitHub OIDC token
+      # for a registry credential. Without this the job falls back to looking for
+      # `NODE_AUTH_TOKEN`, finds none, and fails with `ENEEDAUTH` — which reads
+      # like a missing secret rather than like a too-old client.
+      - name: npm new enough to publish without a token
+        run: |
+          npm install -g npm@latest
+          npm --version
+
       # The artifact the gate verified, not a fresh one.
       #
       # Re-packing here would publish bytes nothing in this workflow has run. The
@@ -392,10 +402,20 @@ jobs:
           echo "TARBALL=$tarball" >> "$GITHUB_ENV"
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      # `--provenance` is the reason `id-token: write` is above. It publishes a
-      # signed statement binding the tarball to this workflow, this commit and
-      # this repository — which is the supply-chain form of the claim the rest of
-      # this project makes about everything else: checkable, not asserted.
+      # No `NODE_AUTH_TOKEN`, and no secret behind it.
+      #
+      # npm trusted publishing: the registry is told, once, that `release.yml` in
+      # this repository and this environment may publish `mycoder-cli`, and the job
+      # exchanges the GitHub OIDC token `id-token: write` grants it for a short-lived
+      # credential. Nothing long-lived is stored, so there is nothing to rotate,
+      # nothing to leak, and nothing to expire in ninety days — and `alpha.13` cost
+      # five failed attempts to a token that was pasted into a secret *name*, which
+      # is a field that is not secret.
+      #
+      # `--provenance` is the reason `id-token: write` was already here. It publishes
+      # a signed statement binding the tarball to this workflow, this commit and this
+      # repository — the supply-chain form of the claim the rest of this project makes
+      # about everything else: checkable, not asserted.
       - name: Publish to npm
         run: |
           set -euo pipefail
@@ -412,8 +432,6 @@ jobs:
           esac
           echo "publishing $VERSION under dist-tag $tag"
           npm publish "$TARBALL" --provenance --access public --tag "$tag"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # After npm, deliberately. The registry is the thing the Homebrew formula's
       # url points at, so a release that advertised the formula before the tarball

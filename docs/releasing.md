@@ -15,19 +15,50 @@ to rebrand, which there is.
 
 ## What publishing needs, once
 
-Neither of these lives in the repository, and neither can be set from here:
+**There is no npm token.** Publishing uses npm trusted publishing: the registry is
+told, once, which workflow in which repository may publish `mycoder-cli`, and the
+job exchanges the GitHub OIDC token for a short-lived credential. Nothing long-lived
+is stored, so there is nothing to rotate, nothing to leak and nothing to expire.
 
-| Secret / setting      | Where                   | What it is for                                                   |
-| --------------------- | ----------------------- | ---------------------------------------------------------------- |
-| `NPM_TOKEN`           | repository secret       | an npm **automation** token for the account owning `mycoder-cli` |
-| environment `release` | Settings → Environments | where a required reviewer goes, if publishing should need one    |
+Configured on npmjs.com, on the package's own settings page, and it cannot be set
+from here:
 
-`GITHUB_TOKEN` is provided by Actions; the `publish` job asks for `contents: write`
-to create the release and `id-token: write` for npm provenance.
+| Field        | Value          |
+| ------------ | -------------- |
+| Publisher    | GitHub Actions |
+| Organization | `OIerYangJZ`   |
+| Repository   | `MyCoder`      |
+| Workflow     | `release.yml`  |
+| Environment  | `release`      |
 
-Nothing else is needed. The first publish also has to happen from an account that
-owns the name, so if `mycoder-cli` has never been published, do that once by hand
-before relying on the workflow.
+The environment name must match the `environment:` on the `publish` job, or the
+exchange is refused — that is the point of naming it.
+
+`GITHUB_TOKEN` is provided by Actions. The `publish` job asks for `contents: write`
+to create the GitHub release and `id-token: write` for both the credential exchange
+and provenance.
+
+### Why it is not a token
+
+`v0.1.0-alpha.13` was published with one, and it took six attempts:
+
+1. the token was pasted into the secret's **name** rather than its value — and a
+   secret name is not secret, so it had to be treated as leaked and revoked;
+2. then `EOTP`, because the account required a one-time password for writes and no
+   CI job can produce one;
+3. then `EOTP` again with a fresh token, because regenerating does not change that;
+4. and finally a granular token with **bypass 2FA** ticked.
+
+Every one of those failure modes is a property of holding a long-lived credential.
+Trusted publishing has none of them, which is why the token was deleted rather than
+kept as a fallback: a fallback credential is a credential.
+
+### The first publish
+
+Trusted publishing is configured **on a package**, so a name that has never been
+published has no settings page to configure. `mycoder-cli@0.1.0-alpha.13` was
+published with a token, which is what makes the trusted publisher configurable at
+all. Every release after it uses no token.
 
 ## Cutting a release, from a checkout
 
@@ -55,10 +86,16 @@ Only then does `publish` run, and only for a tag. It:
 2. refuses if the tag does not name the version in `package.json`;
 3. `npm publish <tarball> --provenance --tag <alpha|beta|rc|latest>`, chosen from the
    version's own suffix. `npm publish` sets `latest` by default whatever the version
-   says, so publishing a prerelease without this makes `npm install -g mycoder-cli`
-   hand an alpha to anyone who types the name — the version number lying through a
-   channel it does not control. The signature binds those bytes to this workflow,
-   this commit and this repository;
+   says, so publishing a prerelease without this hands an alpha to anyone who types
+   the package name. The signature binds those bytes to this workflow, this commit
+   and this repository;
+
+   > **This does not work on the first publish, and cannot.** npm pins `latest` to
+   > the first version a package ever publishes regardless of `--tag`, and provides
+   > no way to remove a `latest` tag afterwards — only to move it. `0.1.0-alpha.13`
+   > is therefore `latest` as well as `alpha` until a stable release moves it. The
+   > flag is still right for every subsequent publish, which is why it stays.
+
 4. creates the GitHub release with the same tarball attached;
 5. prints the two lines the Homebrew tap needs.
 
@@ -89,21 +126,18 @@ The `url` is the npm registry tarball rather than a GitHub source archive, becau
 is byte-identical to what the release gate installed and ran — `npm publish <tarball>`
 uploads the file it is given rather than re-packing one.
 
-### Opening the tap, from a checkout
-
-Not done, and one command when it is wanted:
+### Updating the tap, from a checkout
 
 ```sh
-gh repo create OIerYangJZ/homebrew-mycoder --public \
-  --description "Homebrew tap for MyCoder"
 git clone git@github.com:OIerYangJZ/homebrew-mycoder.git
-mkdir -p homebrew-mycoder/Formula
 cp Formula/mycoder.rb homebrew-mycoder/Formula/
-# then fill in the url and sha256 the publish job printed
-cd homebrew-mycoder && git add -A && git commit -m "mycoder 0.1.0" && git push
+# then fill in the sha256 the publish job printed — the tap carries the real one,
+# this repository carries the placeholder, and the reason is a few lines above.
+cd homebrew-mycoder && git add -A && git commit -m "mycoder <version>" && git push
 ```
 
-After which:
+The tap is [`OIerYangJZ/homebrew-mycoder`](https://github.com/OIerYangJZ/homebrew-mycoder),
+opened on 2026-09-06. After which:
 
 ```sh
 brew tap OIerYangJZ/mycoder
