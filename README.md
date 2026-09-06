@@ -2,215 +2,307 @@
 
 # MyCoder
 
-**A coding agent for your terminal that asks before it acts — and tells you what it cannot promise.**
+**A coding agent kernel for the terminal — one process, no runtime dependencies, and an enforcement level it will not overstate.**
+
+[![node](https://img.shields.io/badge/node-%E2%89%A5%2022.18-3c873a)](https://nodejs.org)
+[![runtime dependencies](https://img.shields.io/badge/runtime%20dependencies-0-d97757)](package.json)
+[![platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-6c7086)](docs/installing.md)
 
 **English** · [简体中文](README.zh-CN.md)
 
 <img src="docs/media/demo.gif" width="820" alt="A MyCoder session: a task is typed into the prompt, two files are read in parallel, and the answer streams back with a summary of what the turn did.">
 
-<sub>A real session, recorded on an Ubuntu VM. Nothing here is a mock-up.</sub>
-
 </div>
 
 ---
 
-## Why this one
-
-**It shows you the decision, not a confirmation.** When it wants to run a command
-or touch a file, you get what it intends to do, to which files, over which network
-destination, and how long the permission lasts. The highlight starts on _No_, and
-walking away means no.
-
-**It does not overstate what it is protecting you from.** Most agents say
-"sandboxed". This one prints, at startup and in `/status`, one enforcement level
-per dimension — and refuses to say "enforced" about anything that is only policy.
-If subprocess network denial is best-effort on your setup, it says so before you
-type anything.
-
-**It is one process and nothing else.** Zero runtime dependencies. Node 22.18+,
-and that is the entire supply chain.
+Point it at a repository and describe a task. It reads, edits, runs your tests and
+checks its own work, and every tool call it makes is resolved into an
+`AccessRequest` that a policy engine decides on **before** the tool does anything.
+What that engine decides, and what it can actually enforce, are two different
+questions — and MyCoder answers the second one on the first screen, per dimension,
+in the vocabulary of the mechanism doing the enforcing.
 
 ## Install
+
+Node **22.18+**. There are no runtime dependencies; that is the entire supply
+chain.
 
 ```bash
 npm install -g ./mycoder-0.1.0.tgz
 mycoder doctor
 ```
 
-`doctor` reaches one of exactly two conclusions and never a third: **ready**, or
-**blocked** — while naming the file to create, the key to set, and how to check it
-worked. It builds no session and writes nothing, because it is the command you
-reach for when `mycoder` itself will not start.
+```bash
+# from a checkout of this repository
+pnpm install && pnpm build
+node bin/mycoder.mjs doctor
+```
 
-## Point it at a model
+`doctor` reaches one of two conclusions and never a third — **ready**, or
+**blocked** naming the file to create, the key to put in it, and the command that
+proves it worked. It builds no session and writes nothing, because it is what you
+run when `mycoder` will not start.
 
-MyCoder talks to Anthropic, OpenAI, and anything speaking the OpenAI-compatible
-Chat API (DeepSeek, Together, OpenRouter, a local llama.cpp server). Put the key
-somewhere the kernel can read and nothing else can:
+| Platform          | Tier | Backends available                   |
+| ----------------- | ---- | ------------------------------------ |
+| Linux x64 / arm64 | 1    | `local`, `container`, `linux-native` |
+| macOS arm64 / x64 | 1    | `local`, `container`                 |
+| Windows x64       | 2    | `local`                              |
+
+## Configure a provider
+
+Adapters for **Anthropic Messages**, **OpenAI Responses**, and the
+**OpenAI-compatible Chat** API — DeepSeek, OpenRouter, Together, a local
+llama.cpp. Plus a `fake` adapter, which is why the whole kernel is testable
+offline.
+
+The credential is read from stdin and never from a terminal, so it is not echoed
+to your screen or into shell history:
 
 ```bash
 printf %s "$YOUR_API_KEY" | mycoder setup-credential ~/.config/mycoder/secrets/deepseek.key
 ```
 
-It reads from stdin and refuses to read from the terminal, so your key is never
-echoed to the screen — and it sets the file's permissions itself.
-
-Then name the provider in `~/.config/mycoder/config.toml`:
-
 ```toml
+# ~/.config/mycoder/config.toml
 [model.provider.deepseek]
 protocol     = "openai-chat"
 base_url     = "https://api.deepseek.com"
 api_key_file = "secrets/deepseek.key"
 
+[model.profile.deepseek-chat]
+context_window    = 65536
+max_output_tokens = 8192
+input_per_mtok    = 0.14      # omit and cost is reported `unknown`, never guessed
+output_per_mtok   = 0.28
+
 [model.alias.deepseek]
 provider = "deepseek"
 model    = "deepseek-chat"
+profile  = "deepseek-chat"
 
 [model]
 default = "deepseek"
 ```
 
-`docs/configuring-a-provider.md` has a worked example, a reference for every
-field, and the local-model variant; `mycoder doctor` will name the line that is
-wrong if one is.
+## A session
 
-## Use it
+```console
+$ mycoder
+❯ read src/bars.js and src/format.js, then explain how one chart row is laid out
 
-Run `mycoder` in the project you want to work on. It opens with what it is about
-to do this session — the model, how much context it has, which permission profile
-is in force, whether it will ask before acting, and what the isolation actually is.
+⏺ Read(src/bars.js)
+⏺ Read(src/format.js)
+  ⎿  Read(src/bars.js) · 4.8 kB
+  ⎿  Read(src/format.js) · 2.0 kB
+One chart row is laid out in renderRows in bars.js as a single string made of
+three fixed-width columns separated by single spaces: a left-aligned label column
+(middle-truncated to labelW by truncateMiddle, then padded), a bar column holding
+rune repeated scaleCells(row.value, max, barW) times and padded to barW, and a
+right-aligned count column padded via padStart(countW). …
 
-<img src="docs/media/banner.png" width="820" alt="The startup banner: model, context window, profile, approval mode, isolation and working directory, with a column of tips beside it and the input box below.">
+✻ Worked for 5s
+  read 2 files
+  deepseek · 66k ctx · 2 requests · 9.5k tokens · $0.0008
+```
 
-Then type what you want. Plain sentences; no prompt format to learn.
+Results are keyed to their call, not to their position — a step that issues four
+`Read`s gets four results back in completion order, and each one names the call it
+answers. The footer is counted from the session's own event log rather than from
+the model's summary of itself, and anything refused is reported separately from
+anything done.
 
-| While you type      |                                                                 |
-| ------------------- | --------------------------------------------------------------- |
-| `@src/thing.ts`     | attach a file — Tab completes it                                |
-| `/`                 | a control command — Tab completes those too, `/help` lists them |
-| `!npm test`         | show how that command would be parsed, without running it       |
-| **Shift-Tab**       | cycle how much it is allowed to do without asking               |
-| **Ctrl-C / Ctrl-D** | cancel this turn / leave                                        |
+| Input               | Effect                                                              |
+| ------------------- | ------------------------------------------------------------------- |
+| `@src/thing.ts`     | attach a file; Tab completes paths under the workspace              |
+| `/…`                | control command, resolved by the kernel and never sent to the model |
+| `!npm test`         | print how that line would parse into argv — does not run it         |
+| **Shift-Tab**       | cycle the approval mode                                             |
+| **Ctrl-R**          | reverse history search                                              |
+| **Ctrl-C / Ctrl-D** | cancel the turn / end the session                                   |
 
-**Watch it work.** One line per tool call, one per result. When it calls several
-tools at once, each result says which call it belongs to — they come back in
-whatever order they finish.
+For automation, `--json` puts one object per line on stdout and nothing else —
+chrome goes to stderr, so `mycoder … | jq` never has to filter prose out of its
+input:
 
-<img src="docs/media/tools.png" width="820" alt="A turn in progress: parallel Read calls, each result line naming the file it belongs to and its size.">
+```console
+$ mycoder --json "fix add()"
+{"schema":"mycoder.v1","type":"turn","state":"completed","steps":1,"text":"…","exit":0}
+```
 
-**Answer the questions it asks.** Arrow keys, or type the number.
+## What is actually enforced
+
+Six dimensions, five levels — `none`, `best-effort`, `policy-enforced`,
+`container-enforced`, `os-enforced` — reported per backend, and derived from the
+backend's own descriptor rather than asserted by the CLI. `/status` prints this;
+so does the startup banner, in prose.
+
+| Dimension                            | `local`         | `--remote` (SSH) | `--backend container` | `linux-native` (experimental)         |
+| ------------------------------------ | --------------- | ---------------- | --------------------- | ------------------------------------- |
+| Subprocess filesystem                | policy-enforced | policy-enforced  | container-enforced    | **os-enforced** (Landlock)            |
+| Subprocess network                   | best-effort     | best-effort      | container-enforced ¹  | os-enforced (TCP only) ¹              |
+| Subprocess privileges                | none            | none             | container-enforced ²  | os-enforced (seccomp, `no_new_privs`) |
+| Environment isolation                | policy-enforced | policy-enforced  | container-enforced    | policy-enforced                       |
+| **Host file broker** (`Read`/`Edit`) | policy-enforced | policy-enforced  | **policy-enforced**   | **policy-enforced**                   |
+| Network host allowlist               | best-effort     | best-effort      | container-enforced    | none                                  |
+
+<sub>¹ when a denial or a host list is in force; an unrestricted network is `none`. ² with a read-only root filesystem; without one, `best-effort`.</sub>
+
+Read the bolded row across. The strongest sandbox in this product **does not cover
+`Read` and `Edit`** — they are trusted kernel operations on your real filesystem,
+and reporting them as containerised would be the overclaim the whole scheme exists
+to prevent. Attach an MCP server and a seventh dimension appears,
+`foreignToolEffects`, whose only honest value is `none`: the kernel cannot enforce
+a boundary inside somebody else's process.
+
+The `local` row in prose, printed before you type anything:
+
+> …subprocesses are not OS-isolated: a process that runs can still reach the
+> filesystem with your user rights. Network denial for subprocesses is
+> best-effort, and weaker than it sounds: nothing inspects a command for network
+> use, so a command that reaches the network is neither approved nor refused — it
+> simply works.
+
+## Permissions
+
+A tool never acts and then reports. `ToolDefinition → ToolExecution →
+AccessRequest` is two-phase on purpose: the execution declares what it intends —
+`file.read`, `file.write`, `file.delete`, `process.exec`, `network.connect`,
+`secret.use`, `env.read`, `vcs.mutate`, `remote.connect`, `agent.invoke`,
+`mcp.invoke` — and the policy engine answers `allow` / `ask` / `deny` on the
+description, before any side effect exists.
+
+Profiles compose by **intersection**, so no layer can widen another:
+
+| Profile         | Its own description                                                          |
+| --------------- | ---------------------------------------------------------------------------- |
+| `workspace-dev` | Edit the workspace and run local verification. Network and VCS mutation ask. |
+| `read-only`     | Inspect the workspace. No writes, no network, no VCS mutation.               |
+| `review`        | Read and run verification commands. No writes, no network.                   |
+
+`--read-only` wins over `--profile`, and says so rather than silently resolving it.
+
+An approval mode answers a question the engine had already decided to raise — it
+cannot create permission that a profile denied. Shift-Tab cycles:
+
+| Mode           | Answers for you, without asking                        |
+| -------------- | ------------------------------------------------------ |
+| `plan`         | nothing; intersects read-only, so mutation is _denied_ |
+| `manual`       | nothing (default)                                      |
+| `accept-edits` | `file.write` inside the workspace                      |
+| `auto`         | plus `file.delete` and `process.exec`                  |
+
+That table is the whole of it — `AUTO_ANSWERED` names three capabilities and no
+mode reaches past them. So `secret.use`, `network.connect`, `vcs.mutate` and
+`mcp.invoke` ask in **every** mode, `auto` included. So does a `file.read` that
+needed approval in the first place: reading outside the workspace is never
+answered for you. And `env.read` is a hard deny that can never become an approval
+at all, in any mode.
+
+The starting mode comes from your own configuration — `[security] approval_mode`
+in a repository is ignored, because a repository does not get to decide whether
+you are asked before its code runs.
 
 <img src="docs/media/approval.png" width="820" alt="The approval prompt: a framed box listing the tool, action, command, directory, network and scope, with four numbered answers below it and the highlight resting on No.">
 
-If you would rather not be asked about every edit, **Shift-Tab** moves through
-`plan` → `manual` → `accept-edits` → `auto`. `accept-edits` applies edits inside
-the workspace without asking and still asks about everything else. `plan` cannot
-change anything at all. No mode can approve something the permission profile
-denied — credentials, network, git history and foreign tools ask in every one.
+The prompt shows semantics, not the command string: which subject, which accesses,
+and how long a grant lasts. A session grant is remembered against a concrete
+subject key — `process.exec:npm:install` — never a capability class. The highlight
+starts on **No**; Escape and Ctrl-C resolve to deny rather than leaving the turn
+open.
 
-**See what it did.** A turn ends with what actually happened, counted from the
-events rather than from the model's summary of itself — and anything it was
-refused, listed separately.
-
-<img src="docs/media/turn.png" width="820" alt="The end of a turn: files read, directories listed and files written, then a status line with the model, context window, request count, token count and cost.">
-
-### Between sessions
-
-```bash
-mycoder -c                        # continue this project's last session
-mycoder -r                        # pick from recent ones, listed by what you asked
-mycoder "fix the failing test"    # one task, then exit
-mycoder --json "…"                # one JSON object per line, for scripts
-mycoder --read-only "…"           # it may look, and may not touch
-```
-
-### When it gets something wrong
-
-`/undo` reverses the last edit, the last turn's edits, or a file's — restoring the
-exact prior bytes. It refuses rather than guessing if the file changed underneath,
-it reverses all of a set or none of it, and it tells you what it did **not** cover:
-a shell command's side effects, and anything from before the session started.
-
-## What it can do
+## Tools
 
 **Nine core tools:** `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Delete`, `Move`,
-`Shell`, `GitDiff` — all behind one contract that separates what a tool intends
-from doing it, so permission is decided before anything happens. Deletion asks
-where an ordinary write does not. `WebFetch` appears only if you name a host it
-may reach.
+`Shell`, `GitDiff` — all behind the contract above.
 
-**It cannot edit a file it has not read.** Every edit must cite the read that
-showed the model the region it is changing, so an edit against content that moved
-is refused instead of silently applying to the wrong lines.
+| Tool                 | Declares                                                 | Notes                                                                                                                  |
+| -------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `Read` `Grep` `Glob` | `file.read`                                              | paths that hold credentials are denied outright, not redacted                                                          |
+| `Edit`               | `file.write`                                             | must cite the `receiptId` of the `Read` that covered the region, or the call returns `STALE_FILE`                      |
+| `Write`              | `file.write`                                             | overwriting an existing file needs full read coverage of it                                                            |
+| `Move`               | `file.delete` + `file.write`                             | one call, two capabilities, both decided before anything moves                                                         |
+| `Delete`             | `file.delete`                                            | its own capability, so it asks where an ordinary write does not (ADR-0016)                                             |
+| `Shell`              | `process.exec`, and `file.read` per path-like argv token | argv, never a string — so `cat .env` is a hard deny rather than a redaction problem                                    |
+| `GitDiff`            | `process.exec` + `file.read`                             | shells out to `git`; the diff is read, never written                                                                   |
+| `WebFetch`           | `network.connect`                                        | registered only when `[egress] web` names a host. GET only, no redirects followed, response treated as untrusted input |
 
-**Writes are atomic**, with a unified diff, rollback metadata and your line endings
-preserved.
+Writes are atomic, with a unified diff, rollback metadata and line endings
+preserved. `/undo` reverses one edit, a turn's edits, or a file's — all of a set
+or none of it — and enumerates what it did **not** cover: a shell command's side
+effects, and anything from before the journal starts.
 
-**Secrets are handled as secrets.** Paths that hold them are denied outright, tool
-output is scanned before the model sees it, and keys are held in a broker whose
-leases cannot be turned back into the value by printing them.
+## Control plane
 
-**Every outbound byte goes through one gate**, with a host allowlist per channel.
-Telemetry is metadata-only, and `--no-telemetry` turns it off.
+`/model` `/effort` `/goal` `/loop` `/mode` `/permissions` `/status` `/compact`
+`/remote` `/skills` `/agents` `/hooks` `/undo` `/cancel` `/verbose` `/help` —
+each changes kernel state directly and is never routed through the model. `/loop`
+sets a per-turn step, wall-clock and cost budget; `/compact` summarises the older
+conversation and reports when it could not; `/permissions explain <subject>` says
+why a decision went the way it did.
 
-**Long jobs stay bounded.** `/loop` sets a step, time and cost budget for a turn;
-`/compact` summarises the older conversation when context runs short; `/status`
-shows what has been spent.
+Sessions are an append-only event log. `mycoder -c` continues this workspace's
+last one; `mycoder -r` lists them by what each was asked to do. Resume rebuilds
+the edit journal from the log, so an undo survives a crash, and synthesises
+results for tool calls that were interrupted.
 
-**It can run somewhere else.** `--remote` executes tools over SSH; `--backend
-container` runs commands in a container with your home directory and credentials
-absent rather than merely denied.
+## Exit codes
 
-**It can be extended by a repository** — skills, subagents and hooks discovered
-from the project — under a rule that a definition may only ever narrow what is
-permitted, never widen it.
+A contract within `0.1.x`, so a wrapper can branch without parsing English.
 
-## What you are trusting
+|                      |                                                   |                     |            |
+| -------------------- | ------------------------------------------------- | ------------------- | ---------- |
+| `0` ok               | `1` incomplete — gave up, hit a budget, cancelled | `2` usage           | `3` config |
+| `4` denied by policy | `5` unavailable — runtime, backend, network       | `6` internal defect |            |
 
-The whole point of the startup banner is that this section is not a surprise.
+Nothing goes above 6: `127` and `128+` belong to the shell, and borrowing them
+would make our failures indistinguishable from its. Tool-level failures carry
+their own codes — `STALE_FILE`, `TOOL_DENIED`, `PROTECTED_PATH`,
+`INSUFFICIENT_READ_COVERAGE`, `LOOP_BUDGET_EXCEEDED` — each with a fixed blame
+attribution.
 
-On the **local** and **SSH** backends MyCoder is `policy-enforced`, **not**
-`os-isolated`. The kernel decides what tools may request and redacts what they
-return, but a command that runs is a normal process with your user's rights: it
-can reach the filesystem, and "network is off" is best-effort — nothing inspects a
-command for network use, so one that reaches the internet is neither approved nor
-refused. It simply works.
+## Architecture
 
-`--backend container` changes that for commands, and only for commands. They run
-with a read-only root filesystem, dropped capabilities, `no-new-privileges`, no
-network unless something granted it, and your home and credential directories
-absent from the container rather than denied inside it. Reading and editing files
-is still done by the kernel on your real filesystem, and is still reported as
-`policy-enforced` — because that is what it is.
+```
+User / CLI  →  Control Plane
+                    ↓
+        Session / Turn Coordinator
+                    ↓
+              Step Engine
+   ┌────────────┼────────────┐
+   ▼            ▼            ▼
+Context   Model Runtime  Tool Runtime
+Engine          │             │
+                ▼             ▼
+          Egress Gate   Tool.resolve() → Policy Engine
+                                              ↓
+                                        Sandbox Planner
+                                              ↓
+                                        Executor / Backend
+                                              ↓
+                                         Audited Result
+```
 
-`docs/threat-model.md` is the long version, including what an attacker who owns
-the repository you point this at can and cannot do.
+Every outbound byte crosses one egress gate, with a host allowlist per channel and
+a metadata-only telemetry channel. Secrets live in a broker whose leases cannot be
+stringified back into a value. Tool output is scanned before the model sees it.
+Skills, subagents and hooks are discovered from the repository under one rule: a
+definition may narrow what is permitted and may never widen it.
 
 ## Not in this version
 
-No MCP marketplace, agent teams, IDE plugin, browser control, embeddings or repo
-map, model routing, cloud sync, or background daemon. Each has somewhere to attach
-later; none is half-built and in the way now.
+MCP marketplace, agent teams, IDE plugins, a full TUI, browser control,
+embeddings, repo maps, model routing, cloud session sync, a background daemon.
+Each has a place to attach later; none is half-built and in the way now.
 
-## When something goes wrong
+## Documentation
 
-`mycoder doctor` first — it is written for exactly this moment.
-
-Exit codes are a contract, not decoration. **1** means the model did not finish —
-gave up, hit a budget, was cancelled. **3** is your configuration, **4** is
-something policy denied, **5** is your machine, **6** is a bug in MyCoder. Nothing
-goes above 6, because `127` and `>=128` belong to the shell. A wrapper script can
-tell those apart without reading English; `docs/cli-contract.md` lists all of them
-and promises they do not change within `0.1.x`.
-
-## More
-
-|                                  |                                                             |
-| -------------------------------- | ----------------------------------------------------------- |
-| `docs/installing.md`             | supported platforms, and the first run in detail            |
-| `docs/configuring-a-provider.md` | a worked example per protocol                               |
-| `docs/cli-contract.md`           | every flag and exit code, and what is guaranteed            |
-| `docs/web-access.md`             | turning on `WebFetch`, and what it will not do              |
-| `docs/threat-model.md`           | what this defends against, and what it does not             |
-| `docs/development.md`            | building it, testing it, and how the repository is laid out |
+|                                  |                                                       |
+| -------------------------------- | ----------------------------------------------------- |
+| `docs/installing.md`             | platform tiers, and the first run in detail           |
+| `docs/configuring-a-provider.md` | every field, local models, verifying before you spend |
+| `docs/cli-contract.md`           | every flag and exit code, and what `0.1.x` guarantees |
+| `docs/web-access.md`             | enabling `WebFetch`, and what it will not do          |
+| `docs/threat-model.md`           | what this defends against, and what it does not       |
+| `docs/development.md`            | building, testing, and how the repository is laid out |
