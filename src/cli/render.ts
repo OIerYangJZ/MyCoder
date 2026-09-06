@@ -1138,16 +1138,50 @@ export interface StatusInfo {
    */
   unpricedRequests?: number;
   elapsedMs?: number;
+  /**
+   * The authoritative context estimate, and the budget it is measured against.
+   *
+   * Both come from `ControlPlane.contextUsage()` — the same call `/status` makes,
+   * never a second estimate computed here. That distinction is the whole reason
+   * this line abstained from a percentage until now: the objection was to a figure
+   * that could disagree with `/status`, not to the figure itself.
+   *
+   * The budget is the *usable* window, with the reserved output subtracted, which is
+   * what the conversation actually has to fit inside.
+   */
+  context?: { estimatedTokens: number; budgetTokens: number };
+}
+
+/**
+ * How full the context is, said only when that is news.
+ *
+ * Silent below `PRESSURE`, because a percentage on every turn is a number the reader
+ * learns to stop seeing, and then it is not there when it matters. Above it the share
+ * joins the window it is a share of, so the line says what the pressure is against —
+ * yellow while there is room to finish, red once compaction is close enough to change
+ * what the next turn remembers.
+ */
+const PRESSURE = 0.6;
+const CROWDED = 0.9;
+
+function contextParts(info: StatusInfo, p: Palette): string[] {
+  if (info.contextWindow === undefined) return [];
+  const window = `${Math.round(info.contextWindow / 1000)}k ctx`;
+  const budget = info.context?.budgetTokens ?? 0;
+  if (budget <= 0) return [p.grey(window)];
+  const share = info.context!.estimatedTokens / budget;
+  if (share < PRESSURE) return [p.grey(window)];
+  const said = `${window} (${Math.min(100, Math.round(share * 100))}% used)`;
+  return [share >= CROWDED ? p.red(said) : p.yellow(said)];
 }
 
 /**
  * One line under the frame: what answered, how much of it there was, what it cost.
  *
- * Every figure comes from the session's own counters. There is deliberately **no
- * context percentage**: the authoritative estimate lives on the control-plane host
- * (`contextUsage`), not on the kernel, and a percentage computed a second way would
- * be a number that disagrees with `/status` — which is the shape of half the defects
- * this milestone found.
+ * Every figure comes from the session's own counters, or — for the context share —
+ * from the one call `/status` makes for it. Nothing on this line is computed a
+ * second way, which is the rule half the defects this milestone found came from
+ * breaking.
  */
 /**
  * The money, or an honest refusal to name it.
@@ -1169,7 +1203,7 @@ function costParts(info: StatusInfo, p: Palette): string[] {
 export function statusLine(info: StatusInfo, p: Palette): string {
   const parts = [
     p.accent(info.model),
-    ...(info.contextWindow === undefined ? [] : [p.grey(`${Math.round(info.contextWindow / 1000)}k ctx`)]),
+    ...contextParts(info, p),
     p.grey(`${info.requests} request${info.requests === 1 ? '' : 's'}`),
     p.grey(`${formatTokens(info.tokens)} tokens`),
     ...costParts(info, p),

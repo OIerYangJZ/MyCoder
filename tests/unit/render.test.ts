@@ -1417,3 +1417,63 @@ describe('why a call was refused, not just that it was', () => {
     assert.match(written, /TOOL_INVALID_ARGS — \$\.limit is not an allowed property/);
   });
 });
+
+describe('context pressure on the status line', () => {
+  const base = { model: 'sonnet', contextWindow: 200_000, requests: 3, tokens: 1_000 };
+  const p = plain;
+
+  test('a session with room says nothing about how full it is', () => {
+    // A percentage on every turn is a number the reader learns to stop seeing, and
+    // then it is not there on the turn that mattered.
+    const line = statusLine({ ...base, context: { estimatedTokens: 10_000, budgetTokens: 190_000 } }, p);
+    assert.match(line, /200k ctx/);
+    assert.equal(/%/.test(line), false, `a share appeared with 5% used: ${line}`);
+  });
+
+  test('past the threshold it says the share, against the window it is a share of', () => {
+    const line = statusLine({ ...base, context: { estimatedTokens: 140_000, budgetTokens: 190_000 } }, p);
+    assert.match(line, /200k ctx \(74% used\)/);
+  });
+
+  test('the share is measured against the usable budget, not the whole window', () => {
+    // The reserved output is not available to the conversation, so measuring against
+    // the raw window would under-report the pressure by exactly the reservation —
+    // and the number would then disagree with `/status`, which measures the way this
+    // one now does.
+    // 95k is 48% of a 200k window and 63% of the 150k a 200k model actually leaves
+    // for the conversation. Only the second is over the threshold, and the second is
+    // the true one.
+    const line = statusLine({ ...base, context: { estimatedTokens: 95_000, budgetTokens: 150_000 } }, p);
+    assert.match(line, /63% used/, 'the raw window was used as the denominator');
+  });
+
+  test('a session with no figure to report is unchanged', () => {
+    // `statusLine` is called from places that have no control plane to ask.
+    assert.match(statusLine({ ...base }, p), /200k ctx/);
+    assert.equal(/%/.test(statusLine({ ...base }, p)), false);
+    const zero = statusLine({ ...base, context: { estimatedTokens: 9, budgetTokens: 0 } }, p);
+    assert.match(zero, /200k ctx/, 'an unresolvable budget must not divide by zero');
+    assert.equal(/%|NaN|Infinity/.test(zero), false, zero);
+  });
+
+  test('crowded is red where merely full is yellow', () => {
+    const colour = palette(true);
+    const full = statusLine(
+      { ...base, context: { estimatedTokens: 140_000, budgetTokens: 190_000 } },
+      colour,
+    );
+    const crowded = statusLine(
+      { ...base, context: { estimatedTokens: 185_000, budgetTokens: 190_000 } },
+      colour,
+    );
+    assert.match(full, /\[33m/, 'the warning tier is not yellow');
+    assert.match(crowded, /\[31m/, 'the crowded tier is not red');
+  });
+
+  test('over budget is 100%, not 104%', () => {
+    // The estimate can exceed the budget between a turn ending and compaction
+    // running. A share above 100 reads as an arithmetic bug rather than as pressure.
+    const line = statusLine({ ...base, context: { estimatedTokens: 220_000, budgetTokens: 190_000 } }, p);
+    assert.match(line, /\(100% used\)/);
+  });
+});

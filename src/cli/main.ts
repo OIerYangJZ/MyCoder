@@ -755,6 +755,9 @@ async function runOnce(
           {
             model: kernel.session.activeModelAlias,
             ...(resolved ? { contextWindow: resolved.profile.contextWindow } : {}),
+            // The same call `/status` makes. The line says nothing about context
+            // until it is worth saying, and then it says the figure `/status` would.
+            context: kernel.control.contextUsage(),
             requests: usage.modelRequests,
             tokens: usage.inputTokens + usage.outputTokens,
             costUsd: kernel.session.costBreakdown.totalUsd,

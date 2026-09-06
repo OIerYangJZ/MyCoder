@@ -216,6 +216,18 @@ export class ControlPlane {
     this.handlers.set(name, handler);
   }
 
+  /**
+   * The authoritative context estimate — the one `/status` prints.
+   *
+   * Exposed so a renderer can show context pressure without computing a second
+   * estimate of its own. `statusLine` abstained from a percentage for exactly that
+   * reason, and this is what removes the reason rather than the abstention: there is
+   * still one figure, and both readers get it from here.
+   */
+  contextUsage(): { estimatedTokens: number; budgetTokens: number } {
+    return this.host.contextUsage();
+  }
+
   commandNames(): string[] {
     return [...this.handlers.keys()].sort();
   }

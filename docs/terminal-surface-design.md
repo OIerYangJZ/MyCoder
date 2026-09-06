@@ -240,6 +240,10 @@ prints **no context percentage**, because the authoritative figure lives on the
 control-plane host and a second one computed here would disagree with `/status`.
 Nothing in this section changes that.
 
+> §11 revisits this and shows the share after all — by taking the host's figure
+> rather than computing one, which removes the reason for the abstention instead of
+> overruling it.
+
 ---
 
 ## 5. Syntax highlighting inside code blocks
@@ -586,3 +590,33 @@ reads. That is the same shape `/verbose` already had, and the same reason.
 | #   | Item                               | Needs an ADR?                                         | State    |
 | --- | ---------------------------------- | ----------------------------------------------------- | -------- |
 | 14  | The model's reasoning, shown (§10) | no — a rendering of bytes already arriving, as §1 was | **done** |
+
+---
+
+## 11. Context pressure, without a second estimate
+
+§4 refused a context percentage, and the reason was right: the authoritative figure
+is `ControlHost.contextUsage()`, and a percentage computed in the renderer would be a
+second estimate that disagrees with `/status`. That argument is against _computing_
+one, though, not against _showing_ one. So `ControlPlane` exposes the same call
+`/status` makes, `main.ts` passes what it returns into `StatusInfo`, and the line
+shows the host's number or none at all. There is still exactly one estimate.
+
+Two things it does not do:
+
+- **It is silent below 60%.** A percentage on every turn is a number a reader learns
+  to stop seeing, and then it is not there on the turn that mattered. The share
+  appears when it is news: yellow while there is room to finish, red past 90%, where
+  compaction is close enough to change what the next turn remembers.
+- **It measures against the usable budget, not the window.** The reserved output is
+  not available to the conversation. Measuring against the raw window would
+  under-report by exactly the reservation — and would then disagree with `/status`,
+  which is the thing this whole section is about not doing.
+
+The share joins the window it is a share of — `200k ctx (74% used)` — rather than
+becoming a second field, so the line does not grow and the number says what it is a
+number of.
+
+| #   | Item                                      | Needs an ADR?                                                    | State    |
+| --- | ----------------------------------------- | ---------------------------------------------------------------- | -------- |
+| 15  | Context pressure on the status line (§11) | no — one existing figure, read by a second reader, computed once | **done** |
