@@ -141,6 +141,7 @@ opened on 2026-09-06. After which:
 
 ```sh
 brew tap OIerYangJZ/mycoder
+brew trust OIerYangJZ/mycoder
 brew install mycoder
 ```
 

@@ -35,6 +35,7 @@ mycoder doctor
 
 ```bash
 brew tap OIerYangJZ/mycoder
+brew trust OIerYangJZ/mycoder   # Homebrew refuses to load a third-party tap without this
 brew install mycoder
 ```
 

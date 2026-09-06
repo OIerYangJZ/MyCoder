@@ -56,8 +56,14 @@ sentence about what should happen.
 
 ```sh
 brew tap OIerYangJZ/mycoder
+brew trust OIerYangJZ/mycoder
 brew install mycoder
 ```
+
+`brew trust` is not optional: Homebrew refuses to load a formula from a tap it
+has not been told to trust, and the error it prints names the command rather than
+explaining why. Third-party taps run arbitrary Ruby, so the refusal is right — this
+is simply where you say you meant it.
 
 Or from a release artifact you were handed, which is the same bytes:
 
