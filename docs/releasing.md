@@ -32,6 +32,8 @@ before relying on the workflow.
 ## Cutting a release, from a checkout
 
 ```sh
+# 1. the version, in the one place it lives. `pnpm mirrors` refuses if these drift.
+#    src/app.ts APP_VERSION and package.json "version" must both say it.
 pnpm test && pnpm mirrors && pnpm evidence && pnpm package:check
 pnpm release:pack            # builds dist/, packs, prints the sha256 and the commit
 pnpm release:formula         # rewrites Formula/mycoder.rb from that exact tarball
@@ -51,8 +53,12 @@ Only then does `publish` run, and only for a tag. It:
 1. downloads **the tarball the gate installed and ran** rather than packing a new
    one, so the published bytes are the tested bytes;
 2. refuses if the tag does not name the version in `package.json`;
-3. `npm publish <tarball> --provenance`, which signs a statement binding those bytes
-   to this workflow, this commit and this repository;
+3. `npm publish <tarball> --provenance --tag <alpha|beta|rc|latest>`, chosen from the
+   version's own suffix. `npm publish` sets `latest` by default whatever the version
+   says, so publishing a prerelease without this makes `npm install -g mycoder-cli`
+   hand an alpha to anyone who types the name — the version number lying through a
+   channel it does not control. The signature binds those bytes to this workflow,
+   this commit and this repository;
 4. creates the GitHub release with the same tarball attached;
 5. prints the two lines the Homebrew tap needs.
 

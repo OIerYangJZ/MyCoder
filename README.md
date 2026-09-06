@@ -29,7 +29,7 @@ Node **22.18+**. There are no runtime dependencies; that is the entire supply
 chain.
 
 ```bash
-npm install -g mycoder-cli      # the package is mycoder-cli; the command is mycoder
+npm install -g mycoder-cli@alpha    # the package is mycoder-cli; the command is mycoder
 mycoder doctor
 ```
 
@@ -44,8 +44,12 @@ pnpm install && pnpm build
 node bin/mycoder.mjs doctor
 ```
 
-<sub>The npm name is <code>mycoder-cli</code> because <code>mycoder</code> on npm
-belongs to an unrelated project. What you type afterwards is <code>mycoder</code>.
+<sub><code>@alpha</code> because this is one: the version is
+<code>0.1.0-alpha.13</code> and a prerelease is published under a prerelease
+dist-tag, so a bare <code>npm install -g mycoder-cli</code> deliberately resolves
+nothing until there is a stable release to resolve to. The npm name is
+<code>mycoder-cli</code> because <code>mycoder</code> on npm belongs to an
+unrelated project. What you type afterwards is <code>mycoder</code>.
 Releases are published from the tarball the release gate installed and ran, with
 <a href="https://docs.npmjs.com/generating-provenance-statements">npm provenance</a>
 — so the bytes on the registry are the bytes that were tested, and you can check

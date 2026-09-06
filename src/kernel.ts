@@ -126,8 +126,13 @@ import { createSkillTool } from './tools/builtin/skill.ts';
 import { HookRunner, loadHooks, type HookDefinition } from './extensions/hooks.ts';
 
 import { ControlPlane, type ControlHost } from './control/control-plane.ts';
+import { APP_VERSION } from './app.ts';
 
-export const KERNEL_VERSION = '0.1.0';
+/**
+ * Re-exported rather than declared: `src/app.ts` owns user-visible identity, and the
+ * version is that. Imported as well as re-exported because this file uses it.
+ */
+export const KERNEL_VERSION = APP_VERSION;
 
 export interface CreateKernelOptions {
   workspaceDir: string;

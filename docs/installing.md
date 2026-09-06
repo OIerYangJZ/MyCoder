@@ -40,9 +40,14 @@ The npm package is **`mycoder-cli`**; the command it installs is **`mycoder`**.
 name independently of the package name — see `docs/releasing.md`.
 
 ```sh
-npm install -g mycoder-cli
+npm install -g mycoder-cli@alpha
 mycoder --version
 ```
+
+`@alpha` because it is: the current version is `0.1.0-alpha.13`, and a prerelease is
+published under a prerelease dist-tag rather than `latest`. A bare
+`npm install -g mycoder-cli` resolves nothing on purpose — a version number that says
+alpha should not be what somebody gets by typing the name.
 
 ```sh
 brew tap OIerYangJZ/mycoder
@@ -52,7 +57,7 @@ brew install mycoder
 Or from a release artifact you were handed, which is the same bytes:
 
 ```sh
-npm install -g ./mycoder-cli-0.1.0.tgz
+npm install -g ./mycoder-cli-0.1.0-alpha.13.tgz
 ```
 
 Every release is published from the tarball the release gate installed and drove

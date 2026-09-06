@@ -10,6 +10,7 @@
  * cheap enough to cover exhaustively.
  */
 
+import { APP_NAME, APP_VERSION } from '../app.ts';
 import { sha256Hex } from '../util/ids.ts';
 import { kernelError, KernelErrorException } from '../util/errors.ts';
 import {
@@ -153,7 +154,7 @@ export class McpClient {
       {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: 'mycoder', version: '0.1.0' },
+        clientInfo: { name: APP_NAME, version: APP_VERSION },
       },
       this.handshakeTimeoutMs,
       signal,

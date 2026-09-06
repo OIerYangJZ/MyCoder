@@ -3,7 +3,7 @@
 A walk through a real working session, in the order you meet things.
 
 ```sh
-npm install -g mycoder-cli      # the package is mycoder-cli; the command is mycoder
+npm install -g mycoder-cli@alpha    # the package is mycoder-cli; the command is mycoder
 # or
 brew tap OIerYangJZ/mycoder && brew install mycoder
 

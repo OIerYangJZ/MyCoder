@@ -397,7 +397,21 @@ jobs:
       # this repository — which is the supply-chain form of the claim the rest of
       # this project makes about everything else: checkable, not asserted.
       - name: Publish to npm
-        run: npm publish "$TARBALL" --provenance --access public
+        run: |
+          set -euo pipefail
+          # A prerelease must not become `latest`. `npm publish` sets the `latest`
+          # dist-tag by default whatever the version says, so publishing an alpha
+          # without this makes `npm install -g mycoder-cli` install an alpha to
+          # anyone who types it — which is the version number lying through a
+          # channel the version number does not control.
+          case "$VERSION" in
+            *-alpha*) tag=alpha ;;
+            *-beta*) tag=beta ;;
+            *-rc*) tag=rc ;;
+            *) tag=latest ;;
+          esac
+          echo "publishing $VERSION under dist-tag $tag"
+          npm publish "$TARBALL" --provenance --access public --tag "$tag"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

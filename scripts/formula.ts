@@ -42,12 +42,13 @@ export function registryUrl(name: string, version: string): string {
   return `https://registry.npmjs.org/${name}/-/${file}`;
 }
 
-/** Rewrite the `url` and `sha256` lines, and nothing else. */
-export function applyToFormula(formula: string, url: string, sha256: string): string {
+/** Rewrite the `url`, `version` and `sha256` lines, and nothing else. */
+export function applyToFormula(formula: string, url: string, version: string, sha256: string): string {
   const withUrl = formula.replace(/^(\s*)url\s+".*"$/m, `$1url "${url}"`);
-  const withSha = withUrl.replace(/^(\s*)sha256\s+"[0-9a-f]*"$/m, `$1sha256 "${sha256}"`);
+  const withVersion = withUrl.replace(/^(\s*)version\s+".*"$/m, `$1version "${version}"`);
+  const withSha = withVersion.replace(/^(\s*)sha256\s+"[0-9a-f]*"$/m, `$1sha256 "${sha256}"`);
   if (withSha === formula) {
-    throw new Error(`${FORMULA}: no url/sha256 line to rewrite — has the formula changed shape?`);
+    throw new Error(`${FORMULA}: nothing to rewrite — has the formula changed shape?`);
   }
   return withSha;
 }
@@ -76,11 +77,15 @@ function main(): void {
   const url = registryUrl(pkg.name, pkg.version);
 
   const formulaPath = path.join(ROOT, FORMULA);
-  const updated = applyToFormula(readFileSync(formulaPath, 'utf8'), url, sha256);
+  const updated = applyToFormula(readFileSync(formulaPath, 'utf8'), url, pkg.version, sha256);
   writeFileSync(formulaPath, updated);
 
   process.stdout.write(
-    `${FORMULA} updated\n` + `  url    : ${url}\n` + `  sha256 : ${sha256}\n` + `  from   : ${tarball}\n`,
+    `${FORMULA} updated\n` +
+      `  url     : ${url}\n` +
+      `  version : ${pkg.version}\n` +
+      `  sha256  : ${sha256}\n` +
+      `  from    : ${tarball}\n`,
   );
 }
 

@@ -12,6 +12,18 @@
  * vanity, it is not colliding with somebody else's state.
  */
 
+/**
+ * The version this build claims to be.
+ *
+ * Here rather than in `kernel.ts` for the same reason the name is: it is user-visible
+ * identity, and it had already drifted — `mcp/client.ts` announced `0.1.0` to every
+ * MCP server from its own literal, which was correct only for as long as nobody
+ * changed the other one. `pnpm mirrors` holds it to `package.json`, because the
+ * number npm publishes and the number `mycoder --version` prints are the same claim
+ * and two places to write it is one place to get it wrong.
+ */
+export const APP_VERSION = '0.1.0-alpha.13';
+
 /** Directory and binary name. Lowercase: it becomes a path component. */
 export const APP_NAME = 'mycoder';
 

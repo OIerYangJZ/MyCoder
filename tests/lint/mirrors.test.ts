@@ -32,6 +32,7 @@ import {
   checkExitCodes,
   checkHookEvents,
   checkFormula,
+  checkVersion,
   checkPackagedFiles,
   checkReadmeTools,
   compareSets,
@@ -58,6 +59,7 @@ import { EXIT } from '../../src/cli/exit-codes.ts';
 import { CEILING_PINNED, WEAKENING_KEYS } from '../../src/config/weakening.ts';
 import { USER_HOOK_EVENTS } from '../../src/extensions/hooks.ts';
 import { TIERS } from '../../scripts/acceptance.ts';
+import { APP_VERSION } from '../../src/app.ts';
 
 const ROOT = new URL('../../', import.meta.url);
 const read = (rel: string): Promise<string> => readFile(new URL(rel, ROOT), 'utf8');
@@ -196,6 +198,20 @@ describe('packaged-files', () => {
   });
 });
 
+describe('version — the number a bug report identifies the build by', () => {
+  test('NEGATIVE CONTROL: package.json and APP_VERSION agree', () => {
+    const found = checkVersion(files.pkg.version, APP_VERSION);
+    assert.deepEqual(found, [], messages(found));
+  });
+
+  test('a manifest bumped without the constant is refused', () => {
+    // The direction this actually happens in: `npm version` edits package.json and
+    // nothing else, so the binary keeps printing the number it was released under.
+    const found = checkVersion('0.2.0', '0.1.0');
+    assert.match(found[0]?.message ?? '', /same claim/);
+  });
+});
+
 describe('homebrew-formula — the version that installs the wrong release', () => {
   test('NEGATIVE CONTROL: the shipped formula and package.json agree', () => {
     const found = checkFormula(files.pkg, files.formula);
@@ -219,6 +235,13 @@ describe('homebrew-formula — the version that installs the wrong release', () 
     const other = files.formula.replace(/sha256 "[0-9a-f]*"/, `sha256 "${'f'.repeat(64)}"`);
     assert.notEqual(other, files.formula, 'the fixture did not change the line it meant to');
     assert.deepEqual(checkFormula(files.pkg, other), []);
+  });
+
+  test('a formula whose stated version lags the manifest is refused', () => {
+    // Separate from the url check on purpose: the two can drift apart, and the
+    // stated version is the one Homebrew actually uses.
+    const found = checkFormula(files.pkg, files.formula.replace(/version "(.*)"/, 'version "0.0.9"'));
+    assert.match(found[0]?.message ?? '', /states version "0\.0\.9"/);
   });
 
   test('a formula that drops the licence is refused', () => {

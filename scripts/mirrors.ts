@@ -540,10 +540,43 @@ export function checkFormula(pkg: { name: string; version: string }, formula: st
     );
   }
 
+  const stated = /^\s*version\s+"(.*)"$/m.exec(formula)?.[1];
+  if (stated !== pkg.version) {
+    problems.push(
+      problem(
+        'homebrew-formula',
+        `Formula/mycoder.rb states version "${stated ?? '(none)'}" and package.json says ` +
+          `"${pkg.version}". The formula states it rather than letting Homebrew infer it, ` +
+          'because a prerelease suffix in a tarball name is exactly what that inference gets wrong.',
+      ),
+    );
+  }
+
   if (!/^\s*license\s+"MIT"$/m.test(formula)) {
     problems.push(problem('homebrew-formula', 'Formula/mycoder.rb does not declare the MIT license'));
   }
   return problems;
+}
+
+/**
+ * The version the package publishes against the version the binary prints.
+ *
+ * They are the same claim. `mycoder --version` reporting `0.1.0` while npm serves
+ * `0.1.0-alpha.13` gives a bug reporter a number that does not identify what they
+ * ran — and it had already happened once in miniature: `mcp/client.ts` announced its
+ * own literal `0.1.0` to every MCP server it connected to, correct only for as long
+ * as nobody changed the other one. There is now one constant, and this is what keeps
+ * it equal to the manifest.
+ */
+export function checkVersion(pkgVersion: string, appVersion: string): MirrorProblem[] {
+  if (pkgVersion === appVersion) return [];
+  return [
+    problem(
+      'version',
+      `package.json says "${pkgVersion}" and src/app.ts APP_VERSION says "${appVersion}". ` +
+        'The published version and the printed version are the same claim.',
+    ),
+  ];
 }
 
 export function checkPackagedFiles(required: readonly string[], files: readonly string[]): MirrorProblem[] {
@@ -736,12 +769,13 @@ export async function sources(
 async function main(): Promise<number> {
   const read = (rel: string): Promise<string> => readFile(path.join(ROOT, rel), 'utf8');
 
-  const [args, exitCodes, weakening, hooks, acceptance] = await Promise.all([
+  const [args, exitCodes, weakening, hooks, acceptance, app] = await Promise.all([
     import('../src/cli/args.ts'),
     import('../src/cli/exit-codes.ts'),
     import('../src/config/weakening.ts'),
     import('../src/extensions/hooks.ts'),
     import('./acceptance.ts'),
+    import('../src/app.ts'),
   ]);
   const { REQUIRED } = await import('./package-check.ts');
 
@@ -788,6 +822,12 @@ async function main(): Promise<number> {
       id: 'packaged-files',
       sides: 'scripts/package-check.ts ↔ package.json files',
       problems: checkPackagedFiles(REQUIRED, pkg.files ?? []),
+      checked: true,
+    },
+    {
+      id: 'version',
+      sides: 'package.json ↔ src/app.ts APP_VERSION',
+      problems: checkVersion(pkg.version, app.APP_VERSION),
       checked: true,
     },
     {

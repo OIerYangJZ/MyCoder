@@ -148,6 +148,36 @@ as taken rather than left implicit, because a commitment that lives only in a
 plan under `research/` has no history and can be amended silently — which is the
 mistake alpha.9 §25 made and ADR-0017 exists to prevent repeating.
 
+### 6. Amendment (2026-09-06): §5 is lifted for distribution, and A1 is still open
+
+`v0.1.0-alpha.13` is tagged, and it is published. §5 said alpha.12 was the last
+tag while CLOSURE A is open; this records that being overridden rather than letting
+the clause sit here contradicted by the tag list, which is the silent amendment
+ADR-0017 exists to prevent.
+
+**What changed and what did not.** §5's objection was that a tag asserts "this is
+usable by someone else" and that no such assertion had ever been checked. Part of
+that is now addressed: the release gate installs the packed artifact into a clean
+prefix on a machine with no checkout, runs it, and drives `doctor` through the
+unconfigured path to check it exits `3` and names the file to create — and the
+artifact that gets published is that same tarball, with npm provenance binding the
+bytes to the commit. That is a real check where there was none.
+
+**It is not A1.** A1 is a second operator using this to do their own work and
+reporting what happened. Nothing above involves a person who is not the author, and
+no amount of CI substitutes for one. The gate proves the artifact installs and
+starts; it says nothing about whether the thing is usable, which is the question A1
+asks. T4 of the acceptance suite remains open and remains a precondition of `rc.1`
+under decision 3, which is untouched.
+
+**So the tag says what it is.** `-alpha.13`, published under the `alpha` dist-tag,
+with `npm install -g mycoder-cli` deliberately resolving nothing. Somebody has to
+type `@alpha` to get it. That is the honest form of the assertion §5 was protecting:
+not "this is usable by someone else", but "this exists, it installs, and it is an
+alpha".
+
+Decided by the user on 2026-09-06, in the same terms §5 was: recorded as taken.
+
 ## Consequences
 
 **What this ADR grants: nothing.** It adds no tool, no capability, no
