@@ -61,7 +61,7 @@ native sandbox, and an `sshd` for the SSH matrix.
 ## Building the artifact, from a checkout
 
 ```bash
-pnpm release:pack   # produces mycoder-0.1.0.tgz
+pnpm release:pack   # produces mycoder-cli-0.1.0.tgz; see docs/releasing.md
 ```
 
 That is a maintainer step, not an install step. `pnpm package:check` reports what

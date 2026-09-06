@@ -26,8 +26,13 @@ MyCoder 在第一屏就回答第二个，逐维度回答，并且用的是真正
 Node **22.18+**。没有任何运行时依赖，供应链就到这里为止。
 
 ```bash
-npm install -g ./mycoder-0.1.0.tgz
+npm install -g mycoder-cli      # 包名是 mycoder-cli，命令是 mycoder
 mycoder doctor
+```
+
+```bash
+brew tap OIerYangJZ/mycoder
+brew install mycoder
 ```
 
 ```bash
@@ -35,6 +40,12 @@ mycoder doctor
 pnpm install && pnpm build
 node bin/mycoder.mjs doctor
 ```
+
+<sub>npm 上的包名叫 <code>mycoder-cli</code>，因为 <code>mycoder</code> 已经属于另一个
+无关项目。装完之后你敲的仍然是 <code>mycoder</code>。每次发布上传的都是发布门禁
+真正装过、跑过的那个 tarball，并附带
+<a href="https://docs.npmjs.com/generating-provenance-statements">npm provenance</a>
+—— 所以 registry 上的字节就是被测过的字节，这件事你可以自己验，不必信这里的话。</sub>
 
 **第一次用？**[`docs/using-mycoder.md`](docs/using-mycoder.md) 从头到尾走一遍
 真实会话 —— 审批弹窗、四种模式、怎么看它改了什么、以及长任务怎么把控。（英文）

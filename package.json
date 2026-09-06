@@ -1,8 +1,31 @@
 {
-  "name": "mycoder",
+  "comment:name": "The npm name is `mycoder-cli`; the command it installs is `mycoder`. `mycoder` on npm belongs to an unrelated project (drivecore/mycoder), and taking a name someone else already ships under is not something a package whose thesis is honest claims gets to do. `src/app.ts` owns the binary and directory name, so the two are decoupled by design (spec \u00a715).",
+  "name": "mycoder-cli",
   "version": "0.1.0",
-  "private": true,
   "description": "MyCoder \u2014 a coding agent kernel: small, verifiable, with explicit security boundaries.",
+  "license": "MIT",
+  "author": "Eli Thorne",
+  "homepage": "https://github.com/OIerYangJZ/MyCoder#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OIerYangJZ/MyCoder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/OIerYangJZ/MyCoder/issues"
+  },
+  "keywords": [
+    "agent",
+    "coding-agent",
+    "cli",
+    "llm",
+    "sandbox",
+    "policy",
+    "zero-dependencies"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "type": "module",
   "engines": {
     "node": ">=22.18.0"
@@ -17,6 +40,7 @@
   "scripts": {
     "agent": "node src/cli/main.ts",
     "build": "tsc -p tsconfig.build.json",
+    "prepack": "tsc -p tsconfig.build.json",
     "build:sandbox": "node scripts/build-sandbox.ts",
     "eval": "node evals/runners/run.ts",
     "eval:delegation-utility": "node evals/experiments/delegation-utility.ts",
@@ -31,6 +55,7 @@
     "mycoder": "node src/cli/main.ts",
     "package:check": "node scripts/package-check.ts",
     "release:pack": "node scripts/pack.ts",
+    "release:formula": "node scripts/formula.ts",
     "test": "node --test --experimental-strip-types \"tests/**/*.test.ts\"",
     "test:conformance": "node --test --experimental-strip-types tests/integration/backend-conformance.test.ts",
     "test:container": "KERNEL_CONTAINER=1 node --test --experimental-strip-types \"tests/live/container-*.test.ts\" \"tests/unit/container-plan.test.ts\" \"tests/integration/backend-conformance.test.ts\"",
@@ -61,6 +86,7 @@
   },
   "comment:dependencies": "v0.1 intentionally ships with zero RUNTIME dependencies; typescript, @types/node and prettier are devDependencies used only by `pnpm typecheck` and `pnpm format:check`. `pnpm lint` is scripts/lint.ts, a zero-dependency architecture linter \u2014 see its header for why it is not ESLint. Node >=22.6 strips TypeScript types natively and provides node:test, fetch, crypto and fs/promises. Glob matching, unified diff, TOML parsing and JSON Schema validation are implemented in src/util/ so that the kernel \u2014 and in particular its security tests \u2014 can run fully offline with no supply chain surface. See docs/adr/ADR-0009-zero-runtime-dependencies.md.",
   "files": [
+    "LICENSE",
     "bin/",
     "dist/",
     "src/",
@@ -72,6 +98,7 @@
     "docs/configuration-audit.md",
     "docs/installing.md",
     "docs/using-mycoder.md",
+    "docs/releasing.md",
     "docs/configuring-a-provider.md",
     "docs/web-access.md",
     "docs/development.md",

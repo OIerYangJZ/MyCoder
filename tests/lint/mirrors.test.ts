@@ -31,6 +31,7 @@ import {
   checkConfigurationAudit,
   checkExitCodes,
   checkHookEvents,
+  checkFormula,
   checkPackagedFiles,
   checkReadmeTools,
   compareSets,
@@ -70,7 +71,8 @@ const files = {
   adr: await read('docs/adr/ADR-0027-acceptance-tiers-and-the-rc1-gate.md'),
   audit: await read('docs/alpha12-enumeration-audit.md'),
   readme: await read('README.md'),
-  pkg: JSON.parse(await read('package.json')) as { files: string[] },
+  formula: await read('Formula/mycoder.rb'),
+  pkg: JSON.parse(await read('package.json')) as { files: string[]; name: string; version: string },
 };
 
 /**
@@ -191,6 +193,44 @@ describe('packaged-files', () => {
 
   test('package.json is covered without being listed, because npm always packs it', () => {
     assert.deepEqual(checkPackagedFiles(['package.json'], ['dist/']), []);
+  });
+});
+
+describe('homebrew-formula — the version that installs the wrong release', () => {
+  test('NEGATIVE CONTROL: the shipped formula and package.json agree', () => {
+    const found = checkFormula(files.pkg, files.formula);
+    assert.deepEqual(found, [], messages(found));
+  });
+
+  test('a formula left on the previous version is refused', () => {
+    // Homebrew derives the version from the url, so this installs the old release
+    // under the new tag, with a checksum that validates because it belongs to the
+    // tarball the stale url points at. Nothing about it looks like a failure.
+    const stale = files.formula.replace(files.pkg.version, '0.0.9');
+    const found = checkFormula(files.pkg, stale);
+    assert.match(found[0]?.message ?? '', /should point at/);
+  });
+
+  test('the checksum is deliberately not what is being checked', () => {
+    // It is filled by `pnpm release:formula` from the artifact that will be
+    // uploaded, and that artifact embeds the commit it was built from — so a
+    // committed hash is stale by construction, and checking it would fire on every
+    // change to anything.
+    const other = files.formula.replace(/sha256 "[0-9a-f]*"/, `sha256 "${'f'.repeat(64)}"`);
+    assert.notEqual(other, files.formula, 'the fixture did not change the line it meant to');
+    assert.deepEqual(checkFormula(files.pkg, other), []);
+  });
+
+  test('a formula that drops the licence is refused', () => {
+    // npm carries the licence in metadata; a tap does not, so the formula is the
+    // only place a brew user is told what they may do with this.
+    const found = checkFormula(files.pkg, files.formula.replace('license "MIT"', 'license :public_domain'));
+    assert.match(found[0]?.message ?? '', /MIT/);
+  });
+
+  test('a formula with no url at all is refused rather than passing vacuously', () => {
+    const found = checkFormula(files.pkg, 'class Mycoder < Formula\nend\n');
+    assert.match(found[0]?.message ?? '', /no url line/);
   });
 });
 

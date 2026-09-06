@@ -505,6 +505,47 @@ export function checkExitCodes(
  * *reachable* from some `files` entry — a required file outside the packaged set
  * can never be present, so the check that asserts it is unfalsifiable.
  */
+/**
+ * The Homebrew formula against the version being shipped.
+ *
+ * Homebrew derives the version from the `url`, so a formula whose url still names
+ * the previous release installs the previous release under the new tag's name —
+ * silently, and with a valid checksum, because the checksum belongs to the tarball
+ * the url points at. There is nothing about that failure that looks like a failure.
+ *
+ * The `sha256` is deliberately *not* checked here. It is filled by
+ * `pnpm release:formula` from the artifact that will be uploaded, and the artifact
+ * changes with every commit because it embeds one — so a committed hash would be
+ * stale by construction and the check would fire on every change to anything.
+ * What has to agree is the version, and the placeholder is what says the rest is
+ * pending rather than wrong.
+ */
+export function checkFormula(pkg: { name: string; version: string }, formula: string): MirrorProblem[] {
+  const problems: MirrorProblem[] = [];
+  const url = /^\s*url\s+"(.*)"$/m.exec(formula)?.[1];
+  if (url === undefined) {
+    problems.push(problem('homebrew-formula', 'Formula/mycoder.rb has no url line'));
+    return problems;
+  }
+
+  const file = `${pkg.name.replace(/^@[^/]+\//, '')}-${pkg.version}.tgz`;
+  const expected = `https://registry.npmjs.org/${pkg.name}/-/${file}`;
+  if (url !== expected) {
+    problems.push(
+      problem(
+        'homebrew-formula',
+        `Formula/mycoder.rb points at "${url}" and package.json says ${pkg.name}@${pkg.version}, ` +
+          `so it should point at "${expected}". Run \`pnpm release:formula\` after packing.`,
+      ),
+    );
+  }
+
+  if (!/^\s*license\s+"MIT"$/m.test(formula)) {
+    problems.push(problem('homebrew-formula', 'Formula/mycoder.rb does not declare the MIT license'));
+  }
+  return problems;
+}
+
 export function checkPackagedFiles(required: readonly string[], files: readonly string[]): MirrorProblem[] {
   const problems: MirrorProblem[] = [];
   // npm packs these whether `files` names them or not, so requiring one is not a
@@ -707,7 +748,11 @@ async function main(): Promise<number> {
   const contract = parseCliContract(await read('docs/cli-contract.md'));
   const configAudit = parseConfigurationAudit(await read('docs/configuration-audit.md'));
   const tiers = parseTierList(await read('docs/adr/ADR-0027-acceptance-tiers-and-the-rc1-gate.md'));
-  const pkg = JSON.parse(await read('package.json')) as { files?: string[] };
+  const pkg = JSON.parse(await read('package.json')) as {
+    files?: string[];
+    name: string;
+    version: string;
+  };
 
   let spec: string | undefined;
   try {
@@ -743,6 +788,12 @@ async function main(): Promise<number> {
       id: 'packaged-files',
       sides: 'scripts/package-check.ts ↔ package.json files',
       problems: checkPackagedFiles(REQUIRED, pkg.files ?? []),
+      checked: true,
+    },
+    {
+      id: 'homebrew-formula',
+      sides: 'package.json ↔ Formula/mycoder.rb',
+      problems: checkFormula(pkg, await read('Formula/mycoder.rb')),
       checked: true,
     },
     {

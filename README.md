@@ -29,8 +29,13 @@ Node **22.18+**. There are no runtime dependencies; that is the entire supply
 chain.
 
 ```bash
-npm install -g ./mycoder-0.1.0.tgz
+npm install -g mycoder-cli      # the package is mycoder-cli; the command is mycoder
 mycoder doctor
+```
+
+```bash
+brew tap OIerYangJZ/mycoder
+brew install mycoder
 ```
 
 ```bash
@@ -38,6 +43,13 @@ mycoder doctor
 pnpm install && pnpm build
 node bin/mycoder.mjs doctor
 ```
+
+<sub>The npm name is <code>mycoder-cli</code> because <code>mycoder</code> on npm
+belongs to an unrelated project. What you type afterwards is <code>mycoder</code>.
+Releases are published from the tarball the release gate installed and ran, with
+<a href="https://docs.npmjs.com/generating-provenance-statements">npm provenance</a>
+— so the bytes on the registry are the bytes that were tested, and you can check
+that rather than take it from here.</sub>
 
 **New here?** [`docs/using-mycoder.md`](docs/using-mycoder.md) walks through a
 real session end to end — the approval prompt, the four modes, seeing what it

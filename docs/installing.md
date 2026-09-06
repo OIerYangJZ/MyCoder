@@ -35,10 +35,35 @@ call that equivalent to a native Linux Engine.
 
 ## Install
 
+The npm package is **`mycoder-cli`**; the command it installs is **`mycoder`**.
+`mycoder` on npm belongs to an unrelated project, and `src/app.ts` owns the binary
+name independently of the package name — see `docs/releasing.md`.
+
 ```sh
-npm install -g ./mycoder-0.1.0.tgz     # from a release artifact
+npm install -g mycoder-cli
 mycoder --version
 ```
+
+```sh
+brew tap OIerYangJZ/mycoder
+brew install mycoder
+```
+
+Or from a release artifact you were handed, which is the same bytes:
+
+```sh
+npm install -g ./mycoder-cli-0.1.0.tgz
+```
+
+Every release is published from the tarball the release gate installed and drove
+`doctor` through, with [npm provenance](https://docs.npmjs.com/generating-provenance-statements)
+— a signed statement binding those bytes to the workflow, commit and repository
+that produced them. `npm view mycoder-cli` shows it, so the claim is checkable
+rather than made here.
+
+There is deliberately **no `curl | sh`**. It would not remove the Node requirement,
+which is the only prerequisite there is, and it would replace a checkable artifact
+with a script that runs before you have read it.
 
 Verify what you installed:
 
@@ -169,7 +194,7 @@ MYCODER_SANDBOX_BIN=$HOME/.local/lib/mycoder-sandbox mycoder build-sandbox
 ## Uninstall
 
 ```sh
-npm uninstall -g mycoder
+npm uninstall -g mycoder-cli                   # or: brew uninstall mycoder
 rm -rf ~/.config/mycoder                       # config, remotes, secrets you put there
 rm -rf ~/.local/share/mycoder                  # sessions (Linux)
 rm -rf ~/'Library/Application Support/mycoder' # sessions (macOS)

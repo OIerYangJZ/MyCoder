@@ -320,3 +320,135 @@ jobs:
             fi
           done
           echo "every tier ran and passed at this exact commit"
+
+  # ---------------------------------------------------------------------------
+  # Publication. Everything above proves the artifact; this is the only part that
+  # hands it to anyone.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish to npm and GitHub Releases
+    runs-on: ubuntu-latest
+    needs: [gate]
+    # A tag, and only a tag. `workflow_dispatch` exists so a release can be
+    # rehearsed against a commit before the tag is placed (see the top of this
+    # file) — a rehearsal that published would defeat the whole point of being
+    # able to find out it was premature.
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write # create the release and upload the tarball to it
+      id-token: write # npm provenance, which is the reason this job is not a script
+
+    environment: release
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # The artifact the gate verified, not a fresh one.
+      #
+      # Re-packing here would publish bytes nothing in this workflow has run. The
+      # tarball that `artifact` installed into a clean prefix and drove through
+      # `doctor` is the tarball that goes to the registry, and `npm publish
+      # <tarball>` is what makes that literal rather than aspirational.
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifact
+          path: dist-artifact
+
+      - name: The tag must name the version being published
+        run: |
+          set -euo pipefail
+          # `find`, not `ls dist-artifact/*.tgz`. The `artifact` job uploads the
+          # tarball alongside a log from `$RUNNER_TEMP`, and upload-artifact v4
+          # roots the archive at the least common ancestor of everything in it —
+          # so the tarball lands at a nesting depth that depends on where the
+          # runner put its temp directory, which is not something to hard-code.
+          tarball=$(find dist-artifact -name 'mycoder-*.tgz' -type f | head -1)
+          if [ -z "$tarball" ]; then
+            echo "PUBLISH BLOCKED: the gated artifact is not in the download."
+            find dist-artifact -type f
+            exit 1
+          fi
+          echo "tarball: $tarball"
+          version=$(node -p "require('./package.json').version")
+          tag="${GITHUB_REF#refs/tags/}"
+          # `v0.1.0` for `0.1.0`, and `v0.1.0-alpha.13` for a prerelease. A tag
+          # that names a different version than the package would publish under a
+          # number nobody can trace back to a commit.
+          if [ "$tag" != "v$version" ]; then
+            echo "PUBLISH BLOCKED: tag is '$tag' and package.json says '$version'."
+            exit 1
+          fi
+          echo "sha256: $(sha256sum "$tarball" | cut -d' ' -f1)"
+          echo "TARBALL=$tarball" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # `--provenance` is the reason `id-token: write` is above. It publishes a
+      # signed statement binding the tarball to this workflow, this commit and
+      # this repository — which is the supply-chain form of the claim the rest of
+      # this project makes about everything else: checkable, not asserted.
+      - name: Publish to npm
+        run: npm publish "$TARBALL" --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # After npm, deliberately. The registry is the thing the Homebrew formula's
+      # url points at, so a release that advertised the formula before the tarball
+      # existed would be advertising a checksum against a 404.
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          sha=$(sha256sum "$TARBALL" | cut -d' ' -f1)
+          notes=$(mktemp)
+          {
+            echo "## Install"
+            echo
+            echo '```sh'
+            echo "npm install -g mycoder-cli@$VERSION"
+            echo '```'
+            echo
+            echo '```sh'
+            echo "brew tap OIerYangJZ/mycoder"
+            echo "brew install mycoder"
+            echo '```'
+            echo
+            echo "## Artifact"
+            echo
+            echo "\`$(basename "$TARBALL")\`"
+            echo
+            echo "    sha256  $sha"
+            echo "    commit  $GITHUB_SHA"
+            echo
+            echo "Attached below and on npm as \`mycoder-cli@$VERSION\`, with provenance."
+            echo "The two are the same bytes: this workflow publishes the tarball the"
+            echo "release gate installed and ran, rather than packing a second one."
+          } > "$notes"
+
+          gh release create "$tag" "$TARBALL" \
+            --title "$tag" \
+            --notes-file "$notes" \
+            $(case "$tag" in *-alpha*|*-beta*|*-rc*) echo --prerelease;; esac)
+
+      # Printed, not committed. A workflow with write access to its own default
+      # branch is a wider capability than publishing, and the formula is one line
+      # of copying into the tap — which is a human step because opening a tap is.
+      - name: The formula lines for the tap
+        run: |
+          set -euo pipefail
+          sha=$(sha256sum "$TARBALL" | cut -d' ' -f1)
+          echo "Copy Formula/mycoder.rb into the tap with these two lines replaced:"
+          echo
+          echo "  url \"https://registry.npmjs.org/mycoder-cli/-/mycoder-cli-$VERSION.tgz\""
+          echo "  sha256 \"$sha\""

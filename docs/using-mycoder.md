@@ -2,10 +2,18 @@
 
 A walk through a real working session, in the order you meet things.
 
-`docs/installing.md` gets it onto the machine and a provider configured; this
-picks up from there and assumes `mycoder doctor` says **ready**. If it does not,
-stop here — `doctor` names the file to create and the command that proves it
-worked, and nothing below will make sense until it passes.
+```sh
+npm install -g mycoder-cli      # the package is mycoder-cli; the command is mycoder
+# or
+brew tap OIerYangJZ/mycoder && brew install mycoder
+
+mycoder doctor
+```
+
+`docs/installing.md` covers the rest of getting it onto the machine and a provider
+configured; this picks up from there and assumes `mycoder doctor` says **ready**. If
+it does not, stop here — `doctor` names the file to create and the command that
+proves it worked, and nothing below will make sense until it passes.
 
 ---
 
@@ -410,6 +418,7 @@ of number that gets believed.
 ## Where to go next
 
 - `docs/installing.md` — platforms, tiers, the native sandbox, uninstall
+- `docs/releasing.md` — how a release is cut, published and checked
 - `docs/configuring-a-provider.md` — every field, and local models
 - `docs/cli-contract.md` — what will not change inside `0.1.x`
 - `docs/threat-model.md` — what this defends against, and what it does not
