@@ -206,6 +206,10 @@ export interface Glyphs {
   /** Where a rule meets a side, so a frame can be divided without being reopened. */
   teeLeft: string;
   teeRight: string;
+  /** Where a column meets the top, bottom and middle rules of a table. */
+  topTee: string;
+  bottomTee: string;
+  cross: string;
   spinner: readonly string[];
 }
 
@@ -228,6 +232,9 @@ export function glyphs(fancy: boolean): Glyphs {
         vertical: '│',
         teeLeft: '├',
         teeRight: '┤',
+        topTee: '┬',
+        bottomTee: '┴',
+        cross: '┼',
         // A star that swells and settles, rather than the Braille wheel this used
         // to spin. Two reasons, and the second is the real one:
         //
@@ -258,6 +265,9 @@ export function glyphs(fancy: boolean): Glyphs {
         vertical: '|',
         teeLeft: '+',
         teeRight: '+',
+        topTee: '+',
+        bottomTee: '+',
+        cross: '+',
         spinner: ['-', '\\', '|', '/'],
       };
 }

@@ -498,3 +498,46 @@ here trades a claim for an appearance.
 | 10  | The input box, closed on four sides (§8)                    | no — ADR-0032 already owns the block; this changes what it draws | **done** |
 | 11  | The sent line as a margin mark (§8)                         | no                                                               | **done** |
 | 12  | Numbered menu rows, and the label column that lines up (§8) | no                                                               | **done** |
+
+---
+
+## 9. Tables
+
+Everything else in `markdown.ts` renders one input line to one output line, which is
+what lets it stream: a line arrives, it is drawn, it is gone. A table cannot do that.
+Its column widths are a property of the whole block, so the first row cannot be drawn
+until the last one has been read. Until this section, the fallback was to print the
+source — rows of raw pipes, ragged, and worse than useless in the one construct a
+model reaches for when it has something _comparable_ to say.
+
+So the table is the single thing the renderer buffers. A row is held as a candidate
+for exactly one line to find out whether a delimiter row follows it; if one does the
+block is collected, and if one does not the candidate is printed as the ordinary line
+it always was. That one-line latency is why the detection can afford to be permissive
+— `a | b` in a sentence is a candidate and costs nothing, because prose is never
+followed by `| --- | --- |`.
+
+Having bought the buffering, the width is worth spending it on:
+
+- **Columns are squeezed longest-first** until the frame fits `columns() - 1`, and a
+  squeezed cell is cut with an ellipsis rather than wrapped. The cut is escape-aware:
+  it copies sequences through without charging them width, and writes a reset when it
+  cuts, because the cut may have thrown away the reset that closed a span — and the
+  next thing that would have closed it is the end of the answer, so the frame, the
+  rest of the row and everything after it would have come out cyan.
+- **Below the floor it stops being a table.** Four columns on a phone-width terminal
+  cannot be drawn at any width; wrapping one puts the borders through the middle of
+  the text, which is worse than the raw pipes this replaced. Under `4` columns of
+  room per column the block is re-rendered as one record per row, each field under
+  its own heading. The data survives the frame.
+- **Alignment comes from the delimiter row**, `:---`, `---:` and `:---:`, because a
+  model that bothered to write them meant them, and a column of right-aligned numbers
+  is the case where it matters.
+
+Three glyphs were added — `topTee`, `bottomTee`, `cross` — with ASCII fallbacks, on
+the same rule as the rest of the set. No new terminal state: the block is still
+written top to bottom and never revisited.
+
+| #   | Item                              | Needs an ADR?                                                 | State    |
+| --- | --------------------------------- | ------------------------------------------------------------- | -------- |
+| 13  | Tables in the model's answer (§9) | no — a rendering of bytes already arriving, as §1 already was | **done** |
